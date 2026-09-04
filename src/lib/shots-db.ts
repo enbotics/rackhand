@@ -1,3 +1,16 @@
+export type Measurement = {
+  name: string;
+  description: string;
+  lengthMM: number;
+  widthMM: number;
+  heightMM: number | null;
+  angleDegrees: number;
+  dimensionConfidence: number;
+  /** Reprojection RMS (pixels) from the mat's 4-QR homography fit — how trustworthy the mm conversion for this shot was, not a confidence in the object itself. */
+  calibrationRmsPixels: number;
+  measuredAt: number;
+};
+
 export type Shot = {
   id: string;
   dataUrl: string;
@@ -5,6 +18,7 @@ export type Shot = {
   width: number;
   height: number;
   deviceLabel: string | null;
+  measurement?: Measurement;
 };
 
 const DB_NAME = "safelight";
@@ -47,6 +61,25 @@ export async function addShot(shot: Shot): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).add(shot);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function setShotMeasurement(id: string, measurement: Measurement): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const shot = getReq.result as Shot | undefined;
+      if (!shot) {
+        reject(new Error(`No shot with id "${id}"`));
+        return;
+      }
+      store.put({ ...shot, measurement });
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

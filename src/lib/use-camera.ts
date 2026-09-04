@@ -15,13 +15,20 @@ export function useCamera() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [mirrored, setMirrored] = useState(true);
+  // Off by default: a selfie-style mirrored preview makes sense for a
+  // face-to-camera video call, but this rig shoots objects on a desk from
+  // overhead, and lib/scan/matCalibration.ts's 4-QR winding-order check
+  // explicitly assumes a non-mirrored front view (see its
+  // isConvexWithExpectedWinding comment) — a mirrored capture flips that
+  // winding and fails calibration on every single shot, deterministically.
+  const [mirrored, setMirrored] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
-  const [streamVersion, setStreamVersion] = useState(0);
+  const [stream, setStream] = useState<MediaStream | null>(null);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    setStream(null);
   }, []);
 
   const refreshDevices = useCallback(async () => {
@@ -52,10 +59,10 @@ export function useCamera() {
             : { width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false,
         };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        streamRef.current = stream;
-        setStreamVersion((v) => v + 1);
-        const track = stream.getVideoTracks()[0];
+        const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+        streamRef.current = newStream;
+        setStream(newStream);
+        const track = newStream.getVideoTracks()[0];
         const settings = track?.getSettings();
         if (settings?.deviceId) setDeviceId(settings.deviceId);
         setStatus("live");
@@ -91,7 +98,6 @@ export function useCamera() {
 
   const stop = useCallback(() => {
     stopStream();
-    setStreamVersion((v) => v + 1);
     setStatus("idle");
   }, [stopStream]);
 
@@ -107,8 +113,7 @@ export function useCamera() {
     deviceId,
     mirrored,
     setMirrored: () => setMirrored((m) => !m),
-    stream: streamRef.current,
-    streamVersion,
+    stream,
     activeDeviceLabel,
     start,
     stop,
