@@ -15,9 +15,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Safelight — UGREEN CM717 test bench",
+  title: "Agentic Spare Parts Warehouse",
   description:
-    "A local test bench for the UGREEN CM717 webcam: live preview, shutter, and a shot gallery.",
+    "Warehouse command centre: scan a part, identify it against the catalog, and run approved putaway and retrieval through the warehouse agent.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

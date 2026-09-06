@@ -1,0 +1,89 @@
+/**
+ * The read model the command-center dashboard renders (Milestone 10).
+ *
+ * Types only, no runtime code and no server-only imports — same rule as
+ * scan-types.ts and catalog-match-types.ts, so a client component can render a
+ * bin or an inventory row without pulling Prisma into the browser bundle.
+ *
+ * WHY THIS EXISTS AT ALL: the authoritative tables address each other by id.
+ * A bin knows nothing about the part inside it without joining Inventory and
+ * Part; a Movement stores partId and binId, not a SKU and a bin code. Doing
+ * those joins in React would put warehouse logic in the browser and let two
+ * implementations of "what is in B03" drift apart. So the server composes the
+ * whole view once (dashboard-service.ts) and the UI only formats it.
+ *
+ * Every field here is derived from the database. Nothing in this contract may
+ * be inferred from a gantry animation, from previous React state, or from
+ * local scan history — the warehouse database is the only authority.
+ */
+import type { BinStatus, MovementStatus, MovementType } from "./types";
+
+/** One stack of one part inside one bin. */
+export interface BinContentView {
+  partId: string;
+  sku: string;
+  canonicalName: string;
+  quantity: number;
+}
+
+/**
+ * A bin as the map draws it. `status` is the Bin row's own status, never
+ * inferred from whether `contents` is empty: a RESERVED bin is empty AND
+ * unavailable, and collapsing those two facts would let the UI offer a bin the
+ * warehouse has already promised to something else.
+ */
+export interface BinView {
+  binId: string;
+  code: string;
+  status: BinStatus;
+  capacity: number;
+  contents: BinContentView[];
+  totalQuantity: number;
+}
+
+/** One part's stock, aggregated across every bin holding it. */
+export interface InventoryRowView {
+  partId: string;
+  sku: string;
+  canonicalName: string;
+  category: string | null;
+  totalQuantity: number;
+  locations: Array<{ binCode: string; quantity: number }>;
+}
+
+/**
+ * One warehouse operation, resolved to human-facing names.
+ *
+ * `source`/`destination` flatten the bin-or-station split the Movement table
+ * keeps (a putaway starts at the INTAKE station, not a bin), because an
+ * operator reads "INTAKE → B03" as one route.
+ */
+export interface MovementRowView {
+  id: string;
+  type: MovementType;
+  status: MovementStatus;
+  sku: string;
+  canonicalName: string;
+  quantity: number;
+  source: string | null;
+  destination: string | null;
+  /** Epoch ms, so the browser formats in the operator's own timezone. */
+  createdAt: number;
+  completedAt: number | null;
+}
+
+/** One authoritative snapshot of warehouse state. */
+export interface WarehouseOverview {
+  /** Epoch ms the server composed this snapshot. */
+  generatedAt: number;
+  bins: BinView[];
+  inventory: InventoryRowView[];
+  movements: MovementRowView[];
+  totals: {
+    /** Total units of stock held across every bin. */
+    units: number;
+    distinctParts: number;
+    binsAvailable: number;
+    binsOccupied: number;
+  };
+}

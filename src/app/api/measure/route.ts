@@ -5,6 +5,7 @@ import { measureFromMatHomography } from "@/lib/matMeasurement";
 import { detectMarkers } from "@/lib/scan/qrDetector";
 import { calibrate } from "@/lib/scan/matCalibration";
 import { MAT_ID } from "@/lib/scan/matGeometry";
+import type { MeasurementResult } from "@/lib/warehouse/scan-types";
 
 /**
  * POST /api/measure — takes one captured shot (with the printed calibration
@@ -105,7 +106,10 @@ export async function POST(request: Request) {
     return fail(500, "internal_error", "Could not convert the object's corners to real-world mm.");
   }
 
-  return NextResponse.json({
+  // Typed against the shared contract (lib/warehouse/scan-types.ts) that the
+  // client and the ScanResult conversion both read, so the two sides cannot
+  // drift. The response shape itself is unchanged.
+  const response: MeasurementResult = {
     name: outcome.measurement.name,
     description: outcome.measurement.description,
     lengthMM: measurement.lengthMM,
@@ -114,5 +118,7 @@ export async function POST(request: Request) {
     angleDegrees: measurement.angleDegrees,
     dimensionConfidence: outcome.measurement.dimensionConfidence,
     calibrationRmsPixels: calibration.rmsReprojectionErrorPixels,
-  });
+  };
+
+  return NextResponse.json(response);
 }

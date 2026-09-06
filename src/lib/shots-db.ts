@@ -1,13 +1,16 @@
-export type Measurement = {
-  name: string;
-  description: string;
-  lengthMM: number;
-  widthMM: number;
-  heightMM: number | null;
-  angleDegrees: number;
-  dimensionConfidence: number;
-  /** Reprojection RMS (pixels) from the mat's 4-QR homography fit — how trustworthy the mm conversion for this shot was, not a confidence in the object itself. */
-  calibrationRmsPixels: number;
+import { isScanResult } from "@/lib/warehouse/scan-result";
+import type { MeasurementResult, ScanResult } from "@/lib/warehouse/scan-types";
+
+/**
+ * The measured fields come from the shared `/api/measure` contract
+ * (lib/warehouse/scan-types.ts) so client and server cannot drift apart;
+ * `measuredAt` is the only piece this local record adds.
+ *
+ * `calibrationRmsPixels` is the reprojection RMS from the mat's 4-QR
+ * homography fit — how trustworthy the mm conversion for this shot was, not
+ * a confidence in the object itself.
+ */
+export type Measurement = MeasurementResult & {
   measuredAt: number;
 };
 
@@ -19,6 +22,8 @@ export type Shot = {
   height: number;
   deviceLabel: string | null;
   measurement?: Measurement;
+  /** Warehouse scan contract for this shot. Absent on shots taken before it existed, and on shots that were never measured. */
+  scanResult?: ScanResult;
 };
 
 const DB_NAME = "safelight";
@@ -40,6 +45,17 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+/**
+ * Stored records predate `scanResult` and are not revalidated on write by
+ * IndexedDB, so a persisted scan is only trusted if it still satisfies the
+ * contract — anything else loads as a shot without one rather than
+ * crashing the gallery.
+ */
+function fromStored(record: Shot): Shot {
+  if (record.scanResult === undefined || isScanResult(record.scanResult)) return record;
+  return { ...record, scanResult: undefined };
+}
+
 export async function getAllShots(): Promise<Shot[]> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -47,9 +63,9 @@ export async function getAllShots(): Promise<Shot[]> {
     const store = tx.objectStore(STORE);
     const req = store.getAll();
     req.onsuccess = () => {
-      const shots = (req.result as Shot[]).sort(
-        (a, b) => b.createdAt - a.createdAt
-      );
+      const shots = (req.result as Shot[])
+        .map(fromStored)
+        .sort((a, b) => b.createdAt - a.createdAt);
       resolve(shots);
     };
     req.onerror = () => reject(req.error);
@@ -66,7 +82,12 @@ export async function addShot(shot: Shot): Promise<void> {
   });
 }
 
-export async function setShotMeasurement(id: string, measurement: Measurement): Promise<void> {
+/** `scanResult` is optional so a measurement that failed ScanResult validation still persists its measurement. */
+export async function setShotMeasurement(
+  id: string,
+  measurement: Measurement,
+  scanResult?: ScanResult,
+): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -78,7 +99,9 @@ export async function setShotMeasurement(id: string, measurement: Measurement): 
         reject(new Error(`No shot with id "${id}"`));
         return;
       }
-      store.put({ ...shot, measurement });
+      // `scanResult` overwrites unconditionally: a re-measure that fails
+      // ScanResult validation must not leave the previous scan attached.
+      store.put({ ...shot, measurement, scanResult });
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);

@@ -1,0 +1,304 @@
+// Authoritative warehouse data layer (Milestone 2).
+//
+// This database is the source of truth for warehouse state: what parts the
+// catalog knows about, where physical stock sits, and what movements have
+// been requested. It is deliberately separate from the browser-side scanner
+// storage (IndexedDB, see src/lib/shots-db.ts), which holds captured images,
+// measurements and ScanResults as local scan history only.
+//
+// A ScanResult is NOT a Part: one is what the camera observed, the other is
+// authoritative catalog identity. Nothing here references a scanId — mapping
+// a scan onto a catalog part is Milestone 3's job.
+//
+// NOTE ON ENUMS: SQLite has no native enum type and Prisma does not emulate
+// one for this provider, so status/type columns are String. The allowed
+// values live in src/lib/warehouse/types.ts and are enforced by the
+// validation layer, which every service function runs input through.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  // Connection URL lives in prisma.config.ts (Prisma 7 moved it out of the
+  // schema); the app reads the same DATABASE_URL via the driver adapter.
+}
+
+/// A canonical warehouse catalog item. Authoritative identity.
+model Part {
+  id            String  @id @default(cuid())
+  sku           String  @unique
+  canonicalName String
+  category      String?
+  description   String?
+
+  /// Nullable throughout: the catalog may know a part before it knows its
+  /// size. Never negative — enforced by the validation layer.
+  lengthMM Float?
+  widthMM  Float?
+  heightMM Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventory   Inventory[]
+  movements   Movement[]
+  resolutions CatalogResolution[]
+
+  @@index([category])
+}
+
+/// A physical storage location. Gantry coordinates belong to a later
+/// milestone and are deliberately absent.
+model Bin {
+  id   String @id @default(cuid())
+  code String @unique
+
+  /// BinStatus: AVAILABLE | RESERVED | OCCUPIED | DISABLED
+  status String @default("AVAILABLE")
+
+  /// Maximum total units this bin may hold.
+  capacity Int @default(100)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventory            Inventory[]
+  movementsFromThisBin Movement[]  @relation("MovementSource")
+  movementsToThisBin   Movement[]  @relation("MovementDestination")
+
+  @@index([status])
+}
+
+/// Current stock of one part in one bin.
+model Inventory {
+  id       String @id @default(cuid())
+  partId   String
+  binId    String
+  /// Never negative — enforced in the inventory service, inside a transaction.
+  quantity Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  part Part @relation(fields: [partId], references: [id], onDelete: Restrict)
+  bin  Bin  @relation(fields: [binId], references: [id], onDelete: Restrict)
+
+  /// One row per part/bin pair. Combined with the one-SKU-per-bin rule in
+  /// the service layer, a bin holds at most one part at a time.
+  @@unique([partId, binId])
+  @@index([binId])
+}
+
+/// A requested warehouse state transition. Creating one does NOT mean a
+/// gantry moved anything — the physical lifecycle is a later milestone.
+model Movement {
+  id       String @id @default(cuid())
+  /// MovementType: PUTAWAY | RETRIEVAL | TRANSFER
+  type     String
+  partId   String
+  quantity Int
+  /// MovementStatus: PENDING | VALIDATED | RUNNING | COMPLETED | FAILED | CANCELLED
+  status   String @default("PENDING")
+
+  /// Nullable: a putaway starts at an intake station, a retrieval ends at an
+  /// output station. Those stations are free-text locations rather than fake
+  /// Bin rows, so bin availability logic never sees them.
+  sourceBinId         String?
+  destinationBinId    String?
+  sourceLocation      String?
+  destinationLocation String?
+
+  /// The ScanResult this movement came from (Milestone 7 putaway).
+  /// Durable provenance — never cleared, so a failed attempt stays traceable.
+  scanId String?
+
+  /// The GantryOperation this movement was executed by (Milestone 7).
+  /// The warehouse Movement is intent; the GantryOperation is the machine's
+  /// account of carrying it out. Recorded for both outcomes so a failed or
+  /// half-committed putaway can be reconciled against machine history.
+  /// Not a foreign key: gantry history is process-local, not a database table.
+  gantryOperationId String?
+
+  /// Idempotency lock for putaway (Milestone 7). Holds the scanId while the
+  /// putaway is PENDING/VALIDATED/RUNNING/COMPLETED, and is cleared when the
+  /// movement reaches FAILED or CANCELLED so the operator may retry the same
+  /// physical scan. Unique rather than checked-then-written, so two concurrent
+  /// submissions of one scan cannot both claim it.
+  idempotencyKey String? @unique
+
+  createdAt DateTime  @default(now())
+  /// Set only when a movement actually reaches a terminal state.
+  completedAt DateTime?
+
+  part           Part @relation(fields: [partId], references: [id], onDelete: Restrict)
+  sourceBin      Bin? @relation("MovementSource", fields: [sourceBinId], references: [id], onDelete: SetNull)
+  destinationBin Bin? @relation("MovementDestination", fields: [destinationBinId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([scanId])
+}
+
+/// Audit record of one human approval decision for a state-changing agent
+/// action (Milestone 9).
+///
+/// The Strands interrupt state itself lives in a bounded in-process store — it
+/// is runtime execution state, not warehouse truth, and must not survive a
+/// restart as something resumable. What belongs here is the DECISION: who
+/// approved what, when, and what it was approved to do. That is auditable
+/// warehouse history.
+///
+/// Never contains model reasoning, prompts, credentials or images.
+model ActionApproval {
+  id String @id
+
+  /// The tool the agent tried to call, e.g. "execute_putaway".
+  toolName String
+  /// Sanitized JSON summary shown to the operator: part, source, destination,
+  /// quantity. The exact arguments the approval is bound to.
+  summary String
+
+  /// PENDING | APPROVED | DENIED | EXPIRED. Terminal states never reopen.
+  status String @default("PENDING")
+
+  /// The Strands interrupt this approval authorises. Binding is exact: an
+  /// approval can never be applied to a different tool call.
+  interruptId String
+  /// The originating request id, reused on resume so approving twice cannot
+  /// execute the underlying operation twice.
+  requestId String
+
+  /// The observability trace this approval belongs to (Milestone 12).
+  /// Nullable because it is correlation, not authorization — an approval whose
+  /// trace failed to write is still a valid approval. It is what lets an
+  /// EXPIRED decision be reported on the timeline it interrupted, long after
+  /// the in-process snapshot is gone.
+  traceId String?
+
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  resolvedAt DateTime?
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// A human decision about which catalog Part an AMBIGUOUS scan represents
+/// (Milestone 9).
+///
+/// Deliberately NOT a matcher output. The deterministic matcher stays
+/// authoritative about machine confidence and never returns MATCHED for an
+/// ambiguous scan; this records that a person took responsibility for the
+/// identity instead. Keeping them separate preserves the provenance of every
+/// stored unit of stock.
+model CatalogResolution {
+  id String @id
+
+  /// The scan this decision belongs to. A resolution authorises exactly one
+  /// scan — it can never be replayed against a different one.
+  scanId String
+
+  /// What the matcher said. Only AMBIGUOUS is resolvable: NO_MATCH means there
+  /// were no plausible candidates, and inventing one is a different workflow.
+  originalMatchStatus String
+
+  /// JSON array of the part ids offered. The operator may confirm one of
+  /// these and nothing else, however the request is crafted.
+  candidatePartIds String
+
+  selectedPartId String?
+  /// PENDING | CONFIRMED | REJECTED | EXPIRED. Terminal states never reopen,
+  /// and a CONFIRMED selection is immutable.
+  status String @default("PENDING")
+
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  resolvedAt DateTime?
+
+  selectedPart Part? @relation(fields: [selectedPartId], references: [id], onDelete: Restrict)
+
+  @@index([scanId])
+  @@index([status])
+}
+
+/// One observability record per agent request (Milestone 12).
+///
+/// OBSERVATIONAL, NEVER AUTHORITATIVE. Inventory, Bin, Movement and Part are
+/// the warehouse's truth; these rows only describe what happened on the way
+/// there. Nothing may read a trace to decide warehouse state, and a failed
+/// trace write must never fail — or retry — a physical operation.
+///
+/// Never contains model reasoning, prompts, credentials or image bytes. The
+/// request summary is a bounded excerpt of the operator's own words, capped in
+/// src/lib/observability/sanitize.ts.
+model AgentTrace {
+  id String @id
+
+  /// RUNNING | WAITING_FOR_APPROVAL | COMPLETED | BLOCKED | FAILED | DENIED | EXPIRED
+  status String @default("RUNNING")
+
+  /// Truncated operator request. Never a system prompt or model output.
+  requestSummary String
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  durationMs  Int?
+
+  errorCode    String?
+  errorMessage String?
+
+  /// Small summary from the Strands AgentResult's own metrics. All nullable:
+  /// a trace must never depend on the SDK reporting metrics.
+  modelCalls     Int?
+  inputTokens    Int?
+  outputTokens   Int?
+  totalTokens    Int?
+  modelLatencyMs Int?
+
+  createdAt DateTime @default(now())
+
+  events TraceEvent[]
+
+  @@index([status])
+  @@index([startedAt])
+}
+
+/// One step in a trace's timeline (Milestone 12).
+///
+/// `sequence` is assigned by the trace service and is the display order —
+/// database row order is not relied on, and two events in the same millisecond
+/// still order deterministically.
+model TraceEvent {
+  id      String @id @default(cuid())
+  traceId String
+
+  /// See TRACE_EVENT_TYPES in src/lib/observability/types.ts.
+  type String
+  /// Monotonic within one trace, starting at 1.
+  sequence Int
+  /// STARTED | COMPLETED | BLOCKED | FAILED | INFO
+  status String
+
+  /// Tool name, graph node id, or similar. Null for events with no subject.
+  name String?
+  /// One operator-readable sentence, built from warehouse facts.
+  summary String
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  durationMs  Int?
+
+  /// Small sanitized JSON. Never a raw server object, image or prompt.
+  metadataJson String?
+
+  createdAt DateTime @default(now())
+
+  trace AgentTrace @relation(fields: [traceId], references: [id], onDelete: Cascade)
+
+  /// Deterministic ordering, and a duplicate sequence cannot be written twice.
+  @@unique([traceId, sequence])
+  @@index([traceId])
+}

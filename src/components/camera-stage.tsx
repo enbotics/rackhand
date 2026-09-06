@@ -3,29 +3,59 @@
 import { useEffect, useRef, useState } from "react";
 import { useCamera } from "@/lib/use-camera";
 import type { Shot } from "@/lib/shots-db";
-import {
-  AlertIcon,
-  CameraIcon,
-  ChevronDownIcon,
-  FlipIcon,
-} from "@/components/icons";
+import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/icons";
 
+/**
+ * The physical capture stage.
+ *
+ * The capture pipeline is unchanged from the scanner milestones: the same
+ * getUserMedia stream, the same canvas draw honouring the mirror setting, the
+ * same JPEG data URL handed to the caller. Milestone 10 changed the words and
+ * the controls around it, not the imaging — in particular the mirror default
+ * still comes from use-camera.ts, because the 4-QR calibration winding check
+ * fails deterministically on a mirrored frame.
+ *
+ * Camera state is stated on screen in plain language. An operator must never
+ * have to open a browser console to find out why nothing happened.
+ */
 export function CameraStage({
   onCapture,
+  scanning = false,
 }: {
   onCapture: (shot: Shot) => void;
+  /** True while the captured frame is being measured and matched. */
+  scanning?: boolean;
 }) {
   const camera = useCamera();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [flash, setFlash] = useState<"off" | "on" | "fade">("off");
-  const [pressed, setPressed] = useState(false);
+  const [resolution, setResolution] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = camera.stream;
     }
   }, [camera.stream]);
+
+  const statusLabel = scanning
+    ? "SCANNING…"
+    : camera.status === "live"
+      ? "CAMERA READY"
+      : camera.status === "requesting"
+        ? "STARTING CAMERA…"
+        : camera.status === "idle"
+          ? "CAMERA STANDBY"
+          : "CAMERA UNAVAILABLE";
+
+  const statusTone =
+    camera.status === "live"
+      ? scanning
+        ? "text-accent"
+        : "text-success"
+      : camera.status === "idle" || camera.status === "requesting"
+        ? "text-ink-muted"
+        : "text-danger";
 
   const capture = () => {
     const video = videoRef.current;
@@ -58,9 +88,6 @@ export function CameraStage({
     };
     onCapture(shot);
 
-    setPressed(true);
-    setTimeout(() => setPressed(false), 150);
-
     // paint the flash fully opaque with no transition, then fade it out
     // on the next frame — avoids relying on CSS animation fill-mode
     setFlash("on");
@@ -71,62 +98,66 @@ export function CameraStage({
 
   return (
     <div className="w-full">
-      <div className="glass relative overflow-hidden rounded-3xl border border-line shadow-[0_20px_50px_-20px_rgba(0,0,0,0.6)]">
-        {/* status pill */}
-        <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-full border border-line bg-bg/60 px-3 py-1.5 text-[11px] font-medium tracking-wide text-ink-muted backdrop-blur-md">
+      <div className="relative overflow-hidden rounded-lg border border-line bg-bg-elevated">
+        <div className="pointer-events-none absolute left-3 top-3 z-20 flex items-center gap-2 rounded-md border border-line bg-bg/80 px-2.5 py-1 font-mono text-[10px] font-medium tracking-[0.12em] backdrop-blur-md">
           <span
             className={`h-1.5 w-1.5 rounded-full ${
               camera.status === "live"
-                ? "bg-accent animate-glow-pulse"
-                : "bg-ink-faint"
+                ? scanning
+                  ? "bg-accent animate-glow-pulse"
+                  : "bg-success"
+                : camera.status === "idle" || camera.status === "requesting"
+                  ? "bg-ink-faint"
+                  : "bg-danger"
             }`}
           />
-          {camera.status === "live" ? "Live preview" : "Standby"}
+          <span className={statusTone}>{statusLabel}</span>
         </div>
 
-        <div className="relative aspect-video w-full overflow-hidden bg-bg-elevated">
+        <div className="relative aspect-video w-full overflow-hidden bg-black/40">
           {camera.status === "live" && (
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
-              className={`h-full w-full object-cover transition-transform duration-300 ${
-                camera.mirrored ? "-scale-x-100" : ""
-              }`}
+              onLoadedMetadata={(event) =>
+                setResolution({
+                  width: event.currentTarget.videoWidth,
+                  height: event.currentTarget.videoHeight,
+                })
+              }
+              className={`h-full w-full object-cover ${camera.mirrored ? "-scale-x-100" : ""}`}
             />
           )}
 
           {camera.status !== "live" && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 px-8 text-center animate-fade-in">
+            <div className="animate-fade-in absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
               {camera.status === "requesting" && (
                 <>
-                  <div className="h-9 w-9 rounded-full border-2 border-line border-t-accent animate-spin-slow" />
-                  <p className="text-sm text-ink-muted">
-                    Asking the browser to open the CM717…
-                  </p>
+                  <div className="animate-spin-slow h-8 w-8 rounded-full border-2 border-line border-t-accent" />
+                  <p className="text-sm text-ink-muted">Opening the overhead camera…</p>
                 </>
               )}
 
               {camera.status === "idle" && (
                 <>
-                  <div className="rounded-2xl border border-line bg-surface p-4 text-accent animate-breathe">
-                    <CameraIcon className="h-7 w-7" />
+                  <div className="rounded-lg border border-line bg-surface p-3.5 text-accent">
+                    <CameraIcon className="h-6 w-6" />
                   </div>
                   <div className="space-y-1.5">
-                    <h2 className="text-xl font-semibold text-ink">
-                      Wake the camera
-                    </h2>
-                    <p className="max-w-xs text-sm leading-relaxed text-ink-muted">
-                      Plug in the UGREEN CM717, then start the preview.
-                      Nothing leaves this browser tab.
+                    <h3 className="text-base font-semibold text-ink">Camera standby</h3>
+                    <p className="max-w-xs text-xs leading-relaxed text-ink-muted">
+                      Mount the overhead camera above the calibration mat, then start the preview.
+                      Frames are measured server-side and never leave this machine.
                     </p>
                   </div>
                   <button
+                    type="button"
                     onClick={() => camera.start()}
-                    className="mt-1 rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-bg transition-all duration-200 hover:bg-accent-2 hover:shadow-[0_0_24px_rgba(242,167,101,0.35)] active:scale-95"
+                    className="mt-1 rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-2"
                   >
-                    Start preview
+                    Start camera
                   </button>
                 </>
               )}
@@ -135,23 +166,25 @@ export function CameraStage({
                 camera.status === "error" ||
                 camera.status === "unsupported") && (
                 <>
-                  <div className="rounded-2xl border border-danger/30 bg-danger-soft p-4 text-danger">
-                    <AlertIcon className="h-7 w-7" />
+                  <div className="rounded-lg border border-danger/40 bg-danger-soft p-3.5 text-danger">
+                    <AlertIcon className="h-6 w-6" />
                   </div>
                   <div className="space-y-1.5">
-                    <h2 className="text-xl font-semibold text-ink">
-                      Camera stayed dark
-                    </h2>
-                    <p className="max-w-sm text-sm leading-relaxed text-ink-muted">
-                      {camera.errorMessage ??
-                        "Something kept the preview from starting."}
+                    <h3 className="text-base font-semibold text-ink">Camera unavailable</h3>
+                    <p className="max-w-sm text-xs leading-relaxed text-ink-muted">
+                      {camera.errorMessage ?? "The preview could not be started."}
                       {camera.status === "denied" &&
-                        " Check the site permissions in your browser's address bar and allow the camera."}
+                        " Allow camera access for this site in the browser address bar, then try again."}
+                    </p>
+                    <p className="max-w-sm text-xs leading-relaxed text-ink-faint">
+                      Inventory, the warehouse map, the agent and movement history all keep working
+                      without a camera.
                     </p>
                   </div>
                   <button
+                    type="button"
                     onClick={() => camera.start()}
-                    className="mt-1 rounded-full border border-line px-5 py-2.5 text-sm font-semibold text-ink transition-all duration-200 hover:border-accent hover:text-accent active:scale-95"
+                    className="mt-1 rounded-lg border border-line px-4 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent"
                   >
                     Try again
                   </button>
@@ -173,28 +206,34 @@ export function CameraStage({
 
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* control strip */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface/70 px-4 py-3">
-          <div className="flex items-center gap-2">
-            {camera.devices.length > 1 && camera.status === "live" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-3 py-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            {camera.devices.length > 1 && camera.status === "live" ? (
               <div className="relative">
                 <select
                   value={camera.deviceId ?? ""}
-                  onChange={(e) => camera.switchDevice(e.target.value)}
-                  className="appearance-none rounded-full border border-line bg-bg-elevated py-2 pl-3 pr-8 text-xs text-ink-muted outline-none transition-colors hover:border-accent-soft focus:border-accent"
+                  onChange={(event) => camera.switchDevice(event.target.value)}
+                  aria-label="Select camera"
+                  className="appearance-none rounded-md border border-line bg-bg-elevated py-1.5 pl-2.5 pr-7 font-mono text-[11px] text-ink-muted outline-none transition-colors hover:border-accent-soft focus:border-accent"
                 >
-                  {camera.devices.map((d, i) => (
-                    <option key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Camera ${i + 1}`}
+                  {camera.devices.map((device, index) => (
+                    <option key={device.deviceId} value={device.deviceId}>
+                      {device.label || `Camera ${index + 1}`}
                     </option>
                   ))}
                 </select>
-                <ChevronDownIcon className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint" />
+                <ChevronDownIcon className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint" />
               </div>
+            ) : (
+              camera.status === "live" && (
+                <span className="min-w-0 truncate font-mono text-[11px] text-ink-muted">
+                  {camera.activeDeviceLabel ?? "External camera"}
+                </span>
+              )
             )}
-            {camera.status === "live" && (
-              <span className="hidden font-mono text-[11px] text-ink-faint sm:inline">
-                {camera.activeDeviceLabel ?? "External camera"}
+            {resolution && camera.status === "live" && (
+              <span className="font-mono text-[11px] text-ink-faint">
+                {resolution.width} × {resolution.height}
               </span>
             )}
           </div>
@@ -203,34 +242,33 @@ export function CameraStage({
             <button
               type="button"
               onClick={camera.setMirrored}
-              title="Flip preview"
+              title="Flip preview horizontally"
+              aria-label="Flip preview horizontally"
               disabled={camera.status !== "live"}
-              className="rounded-full border border-line p-2 text-ink-muted transition-colors hover:border-accent-soft hover:text-accent disabled:pointer-events-none disabled:opacity-30"
+              className="rounded-md border border-line p-1.5 text-ink-muted transition-colors hover:border-accent-soft hover:text-accent disabled:pointer-events-none disabled:opacity-30"
             >
-              <FlipIcon className="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={capture}
-              disabled={camera.status !== "live"}
-              aria-label="Take a shot"
-              className={`group relative ml-1 grid h-12 w-12 place-items-center rounded-full border-2 border-accent transition-transform duration-150 disabled:pointer-events-none disabled:opacity-30 ${
-                pressed ? "scale-90" : "scale-100"
-              }`}
-            >
-              <span className="h-9 w-9 rounded-full bg-gradient-to-br from-accent to-accent-2 transition-all duration-150 group-active:h-7 group-active:w-7" />
+              <FlipIcon className="h-3.5 w-3.5" />
             </button>
 
             {camera.status === "live" && (
               <button
                 type="button"
                 onClick={camera.stop}
-                className="ml-1 rounded-full border border-line px-3 py-2 text-[11px] font-medium text-ink-muted transition-colors hover:border-danger/40 hover:text-danger"
+                className="rounded-md border border-line px-2.5 py-1.5 text-[11px] font-medium text-ink-muted transition-colors hover:border-danger/50 hover:text-danger"
               >
                 Stop
               </button>
             )}
+
+            {/* Labelled, never icon-only: this is the primary warehouse action. */}
+            <button
+              type="button"
+              onClick={capture}
+              disabled={camera.status !== "live" || scanning}
+              className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-2 disabled:pointer-events-none disabled:opacity-40"
+            >
+              {scanning ? "Scanning…" : "Scan Part"}
+            </button>
           </div>
         </div>
       </div>

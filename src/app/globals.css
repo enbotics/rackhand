@@ -1,22 +1,46 @@
 @import "tailwindcss";
 
+/*
+ * Industrial command-centre palette (Milestone 10).
+ *
+ * The token NAMES are unchanged from the scanner's own theme, so every
+ * existing component (camera stage, lightbox, shot cards) moved to the new
+ * look without being rewritten. Only the values changed: warm amber on near
+ * black became neutral graphite with a single steel-blue accent.
+ *
+ * ONE accent, used for interaction and for "the warehouse is doing something".
+ * The status colours below are separate and are reserved for meaning — a
+ * screen where everything is coloured says nothing. And no status is ever
+ * conveyed by colour alone: see dashboard-presentation.ts, where every status
+ * also carries a word and a symbol.
+ */
 :root {
-  --bg: #0d0e11;
-  --bg-elevated: #151519;
-  --surface: #18191e;
-  --surface-hover: #212228;
-  --glass: rgba(24, 25, 30, 0.6);
-  --accent: #f2a765;
-  --accent-2: #ff8a68;
-  --accent-soft: #d98c52;
-  --ink: #f4f4f6;
-  --ink-muted: #97979f;
-  --ink-faint: #5c5c64;
-  --line: #26272d;
-  --line-soft: #1e1f24;
-  --danger: #ff6b6b;
-  --danger-soft: #35201f;
-  --success: #6bcf9a;
+  --bg: #0b0d10;
+  --bg-elevated: #111419;
+  --surface: #14181e;
+  --surface-hover: #1b2028;
+  --glass: rgba(20, 24, 30, 0.72);
+
+  /* The single accent. */
+  --accent: #5b9dd9;
+  --accent-2: #7fb8e8;
+  --accent-soft: #3f7cb0;
+  --accent-tint: rgba(91, 157, 217, 0.12);
+
+  --ink: #e9ecf1;
+  --ink-muted: #98a2ae;
+  --ink-faint: #626d7a;
+
+  --line: #232a33;
+  --line-soft: #191f26;
+
+  /* Semantic status colours. Meaning only — never decoration. */
+  --success: #57a97c;
+  --success-soft: rgba(87, 169, 124, 0.12);
+  --warn: #d9a441;
+  --warn-soft: rgba(217, 164, 65, 0.12);
+  --danger: #d96a6a;
+  --danger-soft: rgba(217, 106, 106, 0.12);
 }
 
 @theme inline {
@@ -27,6 +51,7 @@
   --color-accent: var(--accent);
   --color-accent-2: var(--accent-2);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-tint: var(--accent-tint);
   --color-ink: var(--ink);
   --color-ink-muted: var(--ink-muted);
   --color-ink-faint: var(--ink-faint);
@@ -35,6 +60,9 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
   --font-display: var(--font-sora);
   --font-sans: var(--font-sora);
   --font-mono: var(--font-plex-mono);
@@ -56,15 +84,14 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* faint atmosphere — a soft accent glow up top, a quiet vignette down low */
+/* A single cool wash from above. Deliberately colourless — the accent is for
+   things the operator can act on, not for background decoration. */
 .atmosphere {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background:
-    radial-gradient(60% 40% at 50% 0%, rgba(242, 167, 101, 0.09), transparent 65%),
-    radial-gradient(80% 60% at 85% 100%, rgba(255, 138, 104, 0.05), transparent 60%);
+  background: radial-gradient(75% 45% at 50% 0%, rgba(91, 157, 217, 0.06), transparent 70%);
 }
 
 .glass {
@@ -74,8 +101,8 @@ body {
 }
 
 @keyframes breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(242, 167, 101, 0.3), 0 0 20px 0 rgba(242, 167, 101, 0.12); }
-  50% { box-shadow: 0 0 0 8px rgba(242, 167, 101, 0), 0 0 28px 4px rgba(242, 167, 101, 0.24); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(91, 157, 217, 0.28), 0 0 20px 0 rgba(91, 157, 217, 0.1); }
+  50% { box-shadow: 0 0 0 8px rgba(91, 157, 217, 0), 0 0 28px 4px rgba(91, 157, 217, 0.2); }
 }
 
 @keyframes fade-up {
@@ -126,8 +153,21 @@ body {
   animation: spin-slow 1s linear infinite;
 }
 
+/* Respect the operator's motion preference — a control room should not move
+   more than it has to. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe,
+  .animate-fade-up,
+  .animate-fade-in,
+  .animate-pop,
+  .animate-glow-pulse,
+  .animate-spin-slow {
+    animation: none;
+  }
+}
+
 ::selection {
-  background: rgba(242, 167, 101, 0.25);
+  background: rgba(91, 157, 217, 0.28);
   color: var(--ink);
 }
 

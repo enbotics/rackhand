@@ -32,6 +32,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...opted in: .env holds only the local SQLite DATABASE_URL, so a fresh
+# clone works with no setup. Secrets stay in .env.local, still ignored above.
+!.env
+# ...and the template, which documents the variable names and no values.
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +44,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# warehouse database (Milestone 2) — the SQLite file is local state, not source
+/prisma/*.db
+/prisma/*.db-journal
+/prisma/*.db-shm
+/prisma/*.db-wal
+/prisma/test-*.db
+
+# generated Prisma client — recreated by `prisma generate` (npm postinstall)
+/src/generated
+.env
+.env.example

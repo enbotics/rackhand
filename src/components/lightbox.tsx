@@ -3,7 +3,10 @@
 import { useEffect, useState } from "react";
 import type { Measurement, Shot } from "@/lib/shots-db";
 import { setShotMeasurement } from "@/lib/shots-db";
-import { CloseIcon, DownloadIcon, SparkleIcon, TrashIcon } from "@/components/icons";
+import { measurementToScanResult } from "@/lib/warehouse/scan-result";
+import type { ScanResult } from "@/lib/warehouse/scan-types";
+import type { CatalogMatchResult } from "@/lib/warehouse/catalog-match-types";
+import { CloseIcon, DownloadIcon, RulerIcon, SparkleIcon, TrashIcon } from "@/components/icons";
 
 function formatFull(ts: number) {
   const d = new Date(ts);
@@ -29,11 +32,21 @@ export function Lightbox({
   shot: Shot;
   onClose: () => void;
   onDelete: (id: string) => void;
-  onMeasured: (id: string, measurement: Measurement) => void;
+  onMeasured: (id: string, measurement: Measurement, scanResult?: ScanResult) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [measuring, setMeasuring] = useState(false);
   const [measureError, setMeasureError] = useState<string | null>(null);
+  const [matching, setMatching] = useState(false);
+  const [matchState, setMatchState] = useState<
+    { scanId: string; result?: CatalogMatchResult; error?: string } | null
+  >(null);
+
+  // A verdict belongs to the scan it was computed from. Tagging it with the
+  // scanId and checking that during render means a different shot (or a
+  // re-measure) simply stops showing it — no effect, no stale match.
+  const activeMatch =
+    matchState && matchState.scanId === shot.scanResult?.scanId ? matchState : null;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -71,12 +84,52 @@ export function Lightbox({
         calibrationRmsPixels: body.calibrationRmsPixels,
         measuredAt: Date.now(),
       };
-      await setShotMeasurement(shot.id, measurement);
-      onMeasured(shot.id, measurement);
+      // The measurement itself is good at this point; ScanResult is a
+      // separate contract on top of it, so a rejected conversion still keeps
+      // (and shows) the measurement rather than failing the whole measure.
+      const conversion = measurementToScanResult(measurement, { capturedAt: shot.createdAt });
+      const scanResult = conversion.ok ? conversion.scanResult : undefined;
+      if (!conversion.ok) {
+        setMeasureError(
+          `Measured, but no scan record was created — ${conversion.issues.join("; ")}.`,
+        );
+      }
+
+      await setShotMeasurement(shot.id, measurement, scanResult);
+      onMeasured(shot.id, measurement, scanResult);
     } catch (err) {
       setMeasureError(err instanceof Error ? err.message : "Measurement failed.");
     } finally {
       setMeasuring(false);
+    }
+  };
+
+  /**
+   * Developer view of Milestone 3's catalog matcher. Read-only: the endpoint
+   * never registers a part or touches inventory, so this button is safe to
+   * press repeatedly.
+   */
+  const matchCatalog = async () => {
+    const scanResult = shot.scanResult;
+    if (!scanResult) return;
+    setMatching(true);
+    setMatchState(null);
+    try {
+      const res = await fetch("/api/warehouse/catalog/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scanResult }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error?.message ?? "Catalog match failed.");
+      setMatchState({ scanId: scanResult.scanId, result: body as CatalogMatchResult });
+    } catch (err) {
+      setMatchState({
+        scanId: scanResult.scanId,
+        error: err instanceof Error ? err.message : "Catalog match failed.",
+      });
+    } finally {
+      setMatching(false);
     }
   };
 
@@ -174,12 +227,71 @@ export function Lightbox({
                 <span>rotation ∠ {shot.measurement.angleDegrees.toFixed(0)}°</span>
                 <span>mat calibration {shot.measurement.calibrationRmsPixels.toFixed(1)}px RMS</span>
               </div>
+
+              {shot.scanResult && (
+                <p className="mt-1 truncate font-mono text-[10px] text-ink-faint">
+                  {shot.scanResult.scanId}
+                </p>
+              )}
             </div>
           )}
 
           {measureError && (
             <div className="animate-fade-in border-t border-line-soft bg-danger-soft px-4 py-2.5">
               <p className="text-xs text-danger">{measureError}</p>
+            </div>
+          )}
+
+          {activeMatch?.result && (
+            <div className="animate-fade-in border-t border-line-soft bg-surface/60 px-4 py-3">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">
+                Catalog match
+              </p>
+              {activeMatch.result.status === "MATCHED" ? (
+                <>
+                  <div className="mt-1 flex items-baseline justify-between gap-3">
+                    <p className="min-w-0 truncate text-sm font-semibold text-ink">
+                      <span className="font-mono text-accent">{activeMatch.result.matchedPart.sku}</span>
+                      <span className="ml-2 font-normal text-ink-muted">
+                        {activeMatch.result.matchedPart.canonicalName}
+                      </span>
+                    </p>
+                    <span className="shrink-0 font-mono text-sm font-semibold text-accent">
+                      {Math.round(activeMatch.result.confidence * 100)}%
+                    </span>
+                  </div>
+                  {activeMatch.result.alternatives.length > 0 && (
+                    <p className="mt-1 font-mono text-[10px] text-ink-faint">
+                      alternative{activeMatch.result.alternatives.length > 1 ? "s" : ""}:{" "}
+                      {activeMatch.result.alternatives
+                        .map((a) => `${a.sku} — ${Math.round(a.confidence * 100)}%`)
+                        .join(", ")}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="mt-1 text-sm font-semibold text-ink">
+                    {activeMatch.result.status === "AMBIGUOUS"
+                      ? "Ambiguous — needs review"
+                      : "No catalog match"}
+                  </p>
+                  <p className="mt-0.5 text-xs text-ink-muted">{activeMatch.result.reason}</p>
+                  {activeMatch.result.candidates.length > 0 && (
+                    <p className="mt-1 font-mono text-[10px] text-ink-faint">
+                      {activeMatch.result.candidates
+                        .map((c) => `${c.sku} — ${Math.round(c.confidence * 100)}%`)
+                        .join(", ")}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {activeMatch?.error && (
+            <div className="animate-fade-in border-t border-line-soft bg-danger-soft px-4 py-2.5">
+              <p className="text-xs text-danger">{activeMatch.error}</p>
             </div>
           )}
         </div>
@@ -218,9 +330,19 @@ export function Lightbox({
                 <SparkleIcon className={`h-3.5 w-3.5 ${measuring ? "animate-glow-pulse" : ""}`} />
                 {measuring ? "Measuring…" : shot.measurement ? "Re-measure" : "Measure"}
               </button>
+              {shot.scanResult && (
+                <button
+                  onClick={matchCatalog}
+                  disabled={matching}
+                  className="flex items-center gap-1.5 rounded-full border border-line px-3.5 py-2 text-xs font-medium text-ink-muted transition-colors hover:border-accent-soft hover:text-accent disabled:pointer-events-none disabled:opacity-50"
+                >
+                  <RulerIcon className="h-3.5 w-3.5" />
+                  {matching ? "Matching…" : "Match catalog"}
+                </button>
+              )}
               <a
                 href={shot.dataUrl}
-                download={`safelight-${shot.id}.jpg`}
+                download={`scan-${shot.id}.jpg`}
                 className="flex items-center gap-1.5 rounded-full bg-gradient-to-br from-accent to-accent-2 px-3.5 py-2 text-xs font-semibold text-bg transition-opacity hover:opacity-90"
               >
                 <DownloadIcon className="h-3.5 w-3.5" />
