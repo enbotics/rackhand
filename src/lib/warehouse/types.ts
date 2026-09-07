@@ -116,7 +116,11 @@ export function parseBinCode(code: string): { bed: number; slot: number } | null
   if (!match) return null;
   const bed = Number(match[1]);
   const slot = Number(match[2]);
-  if (bed < 1 || slot < 1) return null;
+  // Both bounds, not just the lower one. A shelf with six beds has no bed 9,
+  // and returning {bed: 9, slot: 99} would let a caller derive a coordinate
+  // well outside the rack — somewhere a machine would drive to quite happily.
+  if (bed < 1 || bed > STORAGE_BEDS) return null;
+  if (slot < 1 || slot > SLOTS_PER_BED) return null;
   return { bed, slot };
 }
 
