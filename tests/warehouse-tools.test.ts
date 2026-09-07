@@ -15,7 +15,7 @@ import {
   searchCatalogTool,
   searchInventoryTool,
 } from "@/lib/agents/tools";
-import { EXECUTE_PUTAWAY_TOOL_NAME, executePutawayTool } from "@/lib/agents/tools/execute-putaway";
+import { executePutawayTool } from "@/lib/agents/tools/execute-putaway";
 import { EXECUTE_RETRIEVAL_TOOL_NAME, executeRetrievalTool } from "@/lib/agents/tools/execute-retrieval";
 import { runWithRequestContext as withRequest } from "@/lib/agents/request-context";
 import type { ScanResult } from "@/lib/warehouse/scan-types";
@@ -106,7 +106,7 @@ beforeEach(async () => {
 /* ------------------------------------------------------------- registry */
 
 describe("tool registry", () => {
-  it("exposes the seven read-only tools plus exactly two write tools", () => {
+  it("exposes guided putaway coordination plus exactly one agent write tool", () => {
     expect([...WAREHOUSE_AGENT_TOOL_NAMES]).toEqual([
       "get_gantry_status",
       "search_catalog",
@@ -115,7 +115,8 @@ describe("tool registry", () => {
       "get_bin_status",
       "list_available_bins",
       "match_catalog",
-      "execute_putaway",
+      "request_guided_putaway",
+      "get_guided_putaway_status",
       "execute_retrieval",
     ]);
     expect(WAREHOUSE_AGENT_TOOLS).toHaveLength(WAREHOUSE_AGENT_TOOL_NAMES.length);
@@ -158,7 +159,7 @@ describe("tool registry", () => {
       expect(t.toolSpec).toBeTruthy();
       expect(t.toolSpec.inputSchema).toBeTruthy();
       expect(t.description.length).toBeGreaterThan(80);
-      if (t.name !== EXECUTE_PUTAWAY_TOOL_NAME && t.name !== EXECUTE_RETRIEVAL_TOOL_NAME) {
+      if (t.name !== EXECUTE_RETRIEVAL_TOOL_NAME) {
         expect(t.description, `${t.name} must declare it is read-only`).toMatch(/read-only/i);
       }
     }
@@ -173,17 +174,14 @@ describe("tool registry", () => {
     expect(executePutawayTool.description).not.toMatch(/read-only/i);
   });
 
-  it("has exactly two tools capable of writing", () => {
+  it("has exactly one agent tool capable of writing", () => {
     // Detected by the explicit marker every write tool carries. Testing for
     // the absence of "read-only" would misfire: execute_retrieval mentions the
     // read-only tools when telling the model to resolve a SKU first.
     const writers = WAREHOUSE_AGENT_TOOLS.filter((t) =>
       t.description.includes("CHANGES WAREHOUSE STATE"),
     );
-    expect(writers.map((t) => t.name)).toEqual([
-      EXECUTE_PUTAWAY_TOOL_NAME,
-      EXECUTE_RETRIEVAL_TOOL_NAME,
-    ]);
+    expect(writers.map((t) => t.name)).toEqual([EXECUTE_RETRIEVAL_TOOL_NAME]);
   });
 
   it("makes the retrieval tool announce its consequences too", () => {

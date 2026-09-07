@@ -88,8 +88,10 @@ describe("approval policy", () => {
       "get_bin_status",
       "list_available_bins",
       "match_catalog",
+      "request_guided_putaway",
+      "get_guided_putaway_status",
     ]);
-    expect([...APPROVAL_REQUIRED_TOOL_NAMES]).toEqual(["execute_putaway", "execute_retrieval"]);
+    expect([...APPROVAL_REQUIRED_TOOL_NAMES]).toEqual(["execute_retrieval"]);
 
     const free = new Set<string>(APPROVAL_FREE_TOOL_NAMES);
     for (const name of APPROVAL_REQUIRED_TOOL_NAMES) expect(free.has(name)).toBe(false);

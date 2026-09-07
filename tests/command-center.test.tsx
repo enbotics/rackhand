@@ -74,6 +74,7 @@ function stockedOverview(): WarehouseOverview {
             sku: "BRG-6204",
             canonicalName: "6204 Deep Groove Ball Bearing",
             quantity: 2,
+            imageUrl: null,
           },
         ],
       };
@@ -472,7 +473,7 @@ describe("command centre — approval", () => {
             status: "OCCUPIED" as const,
             totalQuantity: 1,
             contents: [
-              { partId: "p_new", sku: "NEW-0001", canonicalName: "Newly stored part", quantity: 1 },
+              { partId: "p_new", sku: "NEW-0001", canonicalName: "Newly stored part", quantity: 1, imageUrl: null },
             ],
           }
         : bin,
@@ -1000,7 +1001,7 @@ describe("current scan panel", () => {
     );
 
     expect(screen.getByText("NO MATCH")).toBeTruthy();
-    expect(screen.getByText(/Putaway is not available for this scan/)).toBeTruthy();
+    expect(screen.getByText(/Putaway is on hold/)).toBeTruthy();
     expect(screen.queryByText(/stored/i)).toBeNull();
   });
 

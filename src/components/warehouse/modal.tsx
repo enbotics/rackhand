@@ -17,25 +17,30 @@ export function Modal({
   onClose,
   children,
   maxWidthClassName = "max-w-lg",
+  dismissible = true,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   /** Callers with more content (the bin/bed admin panel) can widen the shell. */
   maxWidthClassName?: string;
+  /** False while a physical workflow is active and losing the dialog would hide its state. */
+  dismissible?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (dismissible && e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [dismissible, onClose]);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in sm:p-8"
-      onClick={onClose}
+      onClick={() => {
+        if (dismissible) onClose();
+      }}
       role="presentation"
     >
       <div
@@ -49,13 +54,15 @@ export function Modal({
           <h2 id="modal-title" className="font-mono text-xs uppercase tracking-[0.14em] text-ink-muted">
             {title}
           </h2>
-          <button
-            onClick={onClose}
-            className="rounded-full p-1.5 text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink"
-            aria-label="Close"
-          >
-            <CloseIcon className="h-5 w-5" />
-          </button>
+          {dismissible && (
+            <button
+              onClick={onClose}
+              className="rounded-full p-1.5 text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink"
+              aria-label="Close"
+            >
+              <CloseIcon className="h-5 w-5" />
+            </button>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-4">{children}</div>
       </div>

@@ -3,7 +3,7 @@
 import { CameraStage } from "@/components/camera-stage";
 import { AgentPanel } from "../agent-panel";
 import { ApprovalCard } from "../approval-card";
-import { CatalogResolutionCard } from "../catalog-resolution-card";
+import { GuidedPutawayDialog } from "../guided-putaway-dialog";
 import { CurrentScanPanel } from "../current-scan-panel";
 import { WorkflowPanel } from "../workflow-panel";
 import { EmptyState, Panel } from "../ui";
@@ -39,10 +39,28 @@ export function OperateView() {
             <CameraStage onCapture={session.onCapture} scanning={session.scanning} />
           </Panel>
 
-          <CurrentScanPanel
-            state={session.scanState}
+          {session.scanState.scan === null && (
+            <CurrentScanPanel state={session.scanState} identity={null} confirmed={null} />
+          )}
+
+          <GuidedPutawayDialog
+            scanState={session.scanState}
             identity={session.identity}
             confirmed={session.confirmed}
+            identification={session.identification}
+            identityRejected={session.identityRejected}
+            identityBusy={session.identityBusy}
+            identityError={session.identityError}
+            openRequestVersion={session.guidedPutawayRequestVersion}
+            bins={session.bins}
+            gantry={session.gantry}
+            shots={session.shots}
+            onSelectIdentity={session.selectCandidate}
+            onRejectIdentity={session.rejectIdentification}
+            onRegisterNewPart={session.registerNewPart}
+            registeringPart={session.registeringPart}
+            registerError={session.registerError}
+            onWarehouseChanged={session.refresh}
           />
         </div>
 
@@ -58,25 +76,14 @@ export function OperateView() {
             onRetry={session.retryLast}
           />
 
-          {session.hasDecision ? (
-            <>
-              <ApprovalCard
-                approval={session.approval}
-                outcome={session.outcome}
-                busy={session.agentBusy}
-                latestMovement={session.movements[0] ?? null}
-                onDecide={session.decide}
-              />
-              <CatalogResolutionCard
-                identification={session.identification}
-                confirmed={session.confirmed}
-                rejected={session.identityRejected}
-                busy={session.identityBusy}
-                error={session.identityError}
-                onSelect={session.selectCandidate}
-                onReject={session.rejectIdentification}
-              />
-            </>
+          {session.approval || session.outcome ? (
+            <ApprovalCard
+              approval={session.approval}
+              outcome={session.outcome}
+              busy={session.agentBusy}
+              latestMovement={session.movements[0] ?? null}
+              onDecide={session.decide}
+            />
           ) : (
             <Panel title="Human decisions">
               <EmptyState>

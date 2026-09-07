@@ -5,6 +5,7 @@ import { GantryStatusPanel } from "../gantry-status";
 import { InventoryPanel } from "../inventory-panel";
 import { WarehouseMap } from "../warehouse-map";
 import { ManageBinsModal } from "../admin/manage-bins-modal";
+import { BinDetailModal } from "../bin-detail-modal";
 import { useWarehouseSession } from "../session";
 import { PageShell } from "./shell";
 
@@ -18,6 +19,11 @@ import { PageShell } from "./shell";
 export function WarehouseView() {
   const session = useWarehouseSession();
   const [managingBins, setManagingBins] = useState(false);
+  const [selectedBinId, setSelectedBinId] = useState<string | null>(null);
+  // Looked up fresh on every render, not captured at click-time, so an edit
+  // made inside the modal (which calls onWarehouseChanged -> session.refresh)
+  // shows up in the same modal instantly rather than needing a re-open.
+  const selectedBin = session.bins.find((bin) => bin.binId === selectedBinId) ?? null;
 
   return (
     <PageShell
@@ -36,6 +42,7 @@ export function WarehouseView() {
               session.gantry?.state !== "IDLE" ? session.gantry?.currentLocation : null
             }
             onManageBins={() => setManagingBins(true)}
+            onSelectBin={(bin) => setSelectedBinId(bin.binId)}
           />
           <InventoryPanel
             inventory={session.inventory}
@@ -58,6 +65,14 @@ export function WarehouseView() {
         <ManageBinsModal
           bins={session.bins}
           onClose={() => setManagingBins(false)}
+          onChanged={session.refresh}
+        />
+      )}
+
+      {selectedBin && (
+        <BinDetailModal
+          bin={selectedBin}
+          onClose={() => setSelectedBinId(null)}
           onChanged={session.refresh}
         />
       )}

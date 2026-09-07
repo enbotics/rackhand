@@ -74,8 +74,8 @@ export function createWarehouseAgent(model: Model<BaseModelConfig> = createWareh
     tools: WAREHOUSE_AGENT_TOOLS,
     /**
      * Human-in-the-loop (Milestone 9). Read-only tools are listed and run
-     * freely; everything else — which today means execute_putaway and
-     * execute_retrieval — pauses the agent with `stopReason: "interrupt"`
+     * freely; everything else — which today means execute_retrieval — pauses
+     * the agent with `stopReason: "interrupt"`
      * before the tool callback runs, so no warehouse state can change until a
      * person answers. The default (no classifier) is "approval required", so a
      * tool added later is gated unless someone deliberately allows it.
@@ -240,7 +240,7 @@ export function validateAgentScanResult(value: unknown): ScanResult | null {
  * out-of-band via request-context.ts.
  */
 export const IDENTITY_RESOLVED_NOTICE =
-  "[system: the operator has already confirmed which catalog part this scan is. The confirmed identity is attached to this request and execute_putaway will use it. Do not ask them to identify it again, and do not treat the ambiguous match as a blocker.]";
+  "[system: the operator has already confirmed which catalog part this scan is. The confirmed identity is attached to this request and request_guided_putaway will use it. Do not ask them to identify it again, and do not treat the ambiguous match as a blocker.]";
 
 export const SCAN_ATTACHED_NOTICE =
   "[system: a validated ScanResult is attached to this request. Use the match_catalog tool to compare it against the catalog. Do not ask the operator to paste scan data.]";

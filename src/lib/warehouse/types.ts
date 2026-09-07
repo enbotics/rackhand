@@ -13,13 +13,19 @@
 export const BIN_STATUSES = ["AVAILABLE", "RESERVED", "OCCUPIED", "DISABLED"] as const;
 export type BinStatus = (typeof BIN_STATUSES)[number];
 
-export const MOVEMENT_TYPES = ["PUTAWAY", "RETRIEVAL", "TRANSFER"] as const;
+/** ADJUSTMENT: a direct operator override of a bin's quantity — instantaneous, no gantry involved. */
+export const MOVEMENT_TYPES = ["PUTAWAY", "RETRIEVAL", "TRANSFER", "ADJUSTMENT"] as const;
 export type MovementType = (typeof MOVEMENT_TYPES)[number];
 
 export const MOVEMENT_STATUSES = [
   "PENDING",
   "VALIDATED",
   "RUNNING",
+  "PRESENTING",
+  "AWAITING_PLACEMENT",
+  "RETURNING",
+  "READY_TO_COMMIT",
+  "READY_TO_CANCEL",
   "COMPLETED",
   "FAILED",
   "CANCELLED",
@@ -122,6 +128,14 @@ export interface CreatePartInput {
   lengthMM?: number | null;
   widthMM?: number | null;
   heightMM?: number | null;
+  /**
+   * Omit this to get the schema default (false) — repository.createPart never
+   * calls an LLM itself. The real end-to-end path (POST /api/warehouse/parts)
+   * classifies via src/lib/agents/returnability-classifier.ts and passes the
+   * result in; tests/scripts creating a Part directly get a plain false
+   * unless they explicitly set one, exactly like before this field existed.
+   */
+  returnable?: boolean;
 }
 
 export interface ListPartsOptions {

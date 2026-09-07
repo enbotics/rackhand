@@ -1,7 +1,7 @@
 /**
  * execute_retrieval — the agent's second and last state-changing capability.
  *
- * A thin adapter, like execute_putaway. Every decision that matters — does the
+ * A thin adapter over the retrieval workflow. Every decision that matters — does the
  * part exist, is there stock, which bin, is the gantry free, may inventory
  * decrease — belongs to `executeRetrieval` in the warehouse layer, which is
  * callable and testable with no LLM anywhere near it.

@@ -13,6 +13,7 @@ function makeSimulator() {
     pickDelayMs: 3,
     dropDelayMs: 3,
     homeDelayMs: 4,
+    binTransferDelayMs: 12,
     historyLimit: 5,
   });
 }
@@ -169,6 +170,40 @@ describe("retrieval", () => {
   it("rejects a source equal to the destination", async () => {
     await expectGantryError(
       gantry.retrieve({ source: "OUTPUT", destination: "OUTPUT" } as unknown as RetrievalRequest),
+      "invalid_location",
+    );
+  });
+});
+
+describe("guided bin transfer", () => {
+  it("presents a selected bin at INTAKE and returns it to the same slot", async () => {
+    const presented = await gantry.presentBin({ source: "B2-01", destination: "INTAKE" });
+
+    expect(presented).toMatchObject({
+      type: "BIN_PRESENTATION",
+      source: "B2-01",
+      destination: "INTAKE",
+      status: "COMPLETED",
+    });
+    expect((await gantry.getStatus()).currentLocation).toBe("INTAKE");
+
+    const returned = await gantry.returnBin({ source: "INTAKE", destination: "B2-01" });
+    expect(returned).toMatchObject({
+      type: "BIN_RETURN",
+      source: "INTAKE",
+      destination: "B2-01",
+      status: "COMPLETED",
+    });
+    expect((await gantry.getStatus()).currentLocation).toBe("B2-01");
+  });
+
+  it("rejects malformed presentation and return routes", async () => {
+    await expectGantryError(
+      gantry.presentBin({ source: "not-a-bin", destination: "INTAKE" }),
+      "invalid_location",
+    );
+    await expectGantryError(
+      gantry.returnBin({ source: "INTAKE", destination: "not-a-bin" }),
       "invalid_location",
     );
   });

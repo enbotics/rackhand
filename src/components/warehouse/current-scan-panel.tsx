@@ -195,8 +195,8 @@ export function CurrentScanPanel({
               <div className="mt-2">
                 <p className="text-xs leading-relaxed text-ink">{scan.match.reason}</p>
                 <p className="mt-1 text-xs text-ink-muted">
-                  {IDENTITY_PROVENANCE.NO_MATCH} Putaway is not available for this scan, and
-                  registering a new part is not part of this system.
+                  {IDENTITY_PROVENANCE.NO_MATCH} Putaway is on hold — register it as a new
+                  catalog part below to continue, or scan a part the catalog already knows.
                 </p>
               </div>
             )}
