@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { useCamera } from "@/lib/use-camera";
 import type { Shot } from "@/lib/shots-db";
 import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/icons";
@@ -18,14 +18,16 @@ import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/i
  * Camera state is stated on screen in plain language. An operator must never
  * have to open a browser console to find out why nothing happened.
  */
-export function CameraStage({
-  onCapture,
-  scanning = false,
-}: {
+export interface CameraStageHandle {
+  /** Captures the current live frame without starting the measurement pipeline. */
+  captureFrame: () => Shot | null;
+}
+
+export const CameraStage = forwardRef<CameraStageHandle, {
   onCapture: (shot: Shot) => void;
   /** True while the captured frame is being measured and matched. */
   scanning?: boolean;
-}) {
+}>(function CameraStage({ onCapture, scanning = false }, ref) {
   const camera = useCamera();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -57,19 +59,19 @@ export function CameraStage({
         ? "text-ink-muted"
         : "text-danger";
 
-  const capture = () => {
+  const captureFrame = useCallback((): Shot | null => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || camera.status !== "live") return;
+    if (!video || !canvas || camera.status !== "live") return null;
 
     const w = video.videoWidth;
     const h = video.videoHeight;
-    if (!w || !h) return;
+    if (!w || !h) return null;
 
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) return null;
 
     if (camera.mirrored) {
       ctx.translate(w, 0);
@@ -86,19 +88,25 @@ export function CameraStage({
       height: h,
       deviceLabel: camera.activeDeviceLabel,
     };
-    onCapture(shot);
-
     // paint the flash fully opaque with no transition, then fade it out
     // on the next frame — avoids relying on CSS animation fill-mode
     setFlash("on");
     requestAnimationFrame(() => {
       requestAnimationFrame(() => setFlash("fade"));
     });
+    return shot;
+  }, [camera.activeDeviceLabel, camera.mirrored, camera.status]);
+
+  useImperativeHandle(ref, () => ({ captureFrame }), [captureFrame]);
+
+  const capture = () => {
+    const shot = captureFrame();
+    if (shot) onCapture(shot);
   };
 
   return (
-    <div className="w-full">
-      <div className="relative overflow-hidden rounded-lg border border-line bg-bg-elevated">
+    <div className="flex h-full w-full flex-col">
+      <div className="relative flex h-full flex-col overflow-hidden rounded-lg border border-line bg-bg-elevated">
         <div className="pointer-events-none absolute left-3 top-3 z-20 flex items-center gap-2 rounded-md border border-line bg-bg/80 px-2.5 py-1 font-mono text-[10px] font-medium tracking-[0.12em] backdrop-blur-md">
           <span
             className={`h-1.5 w-1.5 rounded-full ${
@@ -114,7 +122,11 @@ export function CameraStage({
           <span className={statusTone}>{statusLabel}</span>
         </div>
 
-        <div className="relative aspect-video w-full overflow-hidden bg-black/40">
+        {/* Was a fixed aspect-video box — now grows to fill whatever height
+            the panel actually has, so the camera stage never leaves blank
+            space beneath it. object-cover on the <video> keeps the live feed
+            filling this box cleanly regardless of its resulting aspect ratio. */}
+        <div className="relative min-h-[260px] w-full flex-1 overflow-hidden bg-black/40">
           {camera.status === "live" && (
             <video
               ref={videoRef}
@@ -274,4 +286,4 @@ export function CameraStage({
       </div>
     </div>
   );
-}
+});

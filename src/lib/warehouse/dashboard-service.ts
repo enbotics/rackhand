@@ -15,6 +15,7 @@
  */
 import { prisma } from "./db";
 import type {
+  BinSnapshotView,
   BinView,
   InventoryRowView,
   MovementRowView,
@@ -52,8 +53,45 @@ async function loadPutawayImages(): Promise<Map<string, string>> {
   return byPartBin;
 }
 
+/** Latest captured placement evidence per physical destination bin. */
+async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
+  const rows = await prisma.movement.findMany({
+    where: {
+      destinationBinId: { not: null },
+      verificationImageUrl: { not: null },
+      verificationCapturedAt: { not: null },
+    },
+    orderBy: { verificationCapturedAt: "desc" },
+    select: {
+      id: true,
+      destinationBinId: true,
+      verificationImageUrl: true,
+      verificationCapturedAt: true,
+      status: true,
+    },
+  });
+  const byBin = new Map<string, BinSnapshotView>();
+  for (const row of rows) {
+    if (
+      !row.destinationBinId ||
+      !row.verificationImageUrl ||
+      !row.verificationCapturedAt ||
+      byBin.has(row.destinationBinId)
+    ) {
+      continue;
+    }
+    byBin.set(row.destinationBinId, {
+      imageUrl: row.verificationImageUrl,
+      capturedAt: row.verificationCapturedAt.getTime(),
+      movementId: row.id,
+      movementStatus: row.status as MovementStatus,
+    });
+  }
+  return byBin;
+}
+
 export async function getWarehouseOverview(movementLimit?: number): Promise<WarehouseOverview> {
-  const [bins, inventoryRows, movements, putawayImages] = await Promise.all([
+  const [bins, inventoryRows, movements, putawayImages, latestBinSnapshots] = await Promise.all([
     prisma.bin.findMany({
       orderBy: { code: "asc" },
       include: { inventory: { include: { part: true }, orderBy: { part: { sku: "asc" } } } },
@@ -68,6 +106,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       include: { part: true, sourceBin: true, destinationBin: true },
     }),
     loadPutawayImages(),
+    loadLatestBinSnapshots(),
   ]);
 
   const binViews: BinView[] = bins.map((bin) => {
@@ -91,6 +130,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       capacity: bin.capacity,
       contents,
       totalQuantity: contents.reduce((sum, item) => sum + item.quantity, 0),
+      latestSnapshot: latestBinSnapshots.get(bin.id) ?? null,
     };
   });
 

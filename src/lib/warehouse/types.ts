@@ -136,6 +136,8 @@ export interface CreatePartInput {
    * unless they explicitly set one, exactly like before this field existed.
    */
   returnable?: boolean;
+  /** The part's representative photo — see Part.imageUrl in schema.prisma. Omit for none. */
+  imageUrl?: string | null;
 }
 
 export interface ListPartsOptions {

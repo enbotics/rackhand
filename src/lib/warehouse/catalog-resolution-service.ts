@@ -107,6 +107,7 @@ export async function requestCatalogResolution(
         heightMM: part?.heightMM ?? null,
       },
       evidence: candidate.evidence,
+      imageUrl: part?.imageUrl ?? null,
     };
   });
 

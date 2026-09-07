@@ -1060,6 +1060,7 @@ describe("catalog resolution card", () => {
         confidence: 0.79,
         dimensions: { lengthMM: 47, widthMM: 47, heightMM: 14 },
         evidence: EVIDENCE,
+        imageUrl: null,
       },
       {
         partId: "p_b",
@@ -1068,6 +1069,7 @@ describe("catalog resolution card", () => {
         confidence: 0.75,
         dimensions: { lengthMM: 52, widthMM: 52, heightMM: 15 },
         evidence: EVIDENCE,
+        imageUrl: null,
       },
     ],
   };
@@ -1081,18 +1083,22 @@ describe("catalog resolution card", () => {
         rejected={false}
         busy={false}
         error={null}
+        detectedName={null}
         onSelect={onSelect}
         onReject={() => {}}
+        onRegisterNewPart={() => {}}
+        registeringPart={false}
+        registerError={null}
       />,
     );
 
     expect(screen.getByText(/Human decision required/)).toBeTruthy();
-    expect(screen.getByText("BRG-6204")).toBeTruthy();
-    expect(screen.getByText(/match 79%/)).toBeTruthy();
-    expect(screen.getByText("BRG-6205")).toBeTruthy();
+    expect(screen.getByText("6204 Deep Groove Ball Bearing")).toBeTruthy();
+    expect(screen.getByText("79%")).toBeTruthy();
+    expect(screen.getByText("6205 Deep Groove Ball Bearing")).toBeTruthy();
     expect(screen.getByRole("button", { name: "None of these" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Select BRG-6205" }));
+    fireEvent.click(screen.getByRole("button", { name: /Select BRG-6205/ }));
     expect(onSelect).toHaveBeenCalledWith("p_b");
   });
 
@@ -1104,8 +1110,12 @@ describe("catalog resolution card", () => {
         rejected={false}
         busy={false}
         error="That part was not offered as a candidate for this scan."
+        detectedName={null}
         onSelect={() => {}}
         onReject={() => {}}
+        onRegisterNewPart={() => {}}
+        registeringPart={false}
+        registerError={null}
       />,
     );
 
@@ -1113,7 +1123,7 @@ describe("catalog resolution card", () => {
       screen.getByText("That part was not offered as a candidate for this scan."),
     ).toBeTruthy();
     // Still pending: nothing was confirmed on the strength of a click.
-    expect(screen.getByRole("button", { name: "Select BRG-6204" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Select BRG-6204/ })).toBeTruthy();
   });
 
   it("preserves provenance once an identity is confirmed", () => {
@@ -1130,13 +1140,40 @@ describe("catalog resolution card", () => {
         rejected={false}
         busy={false}
         error={null}
+        detectedName={null}
         onSelect={() => {}}
         onReject={() => {}}
+        onRegisterNewPart={() => {}}
+        registeringPart={false}
+        registerError={null}
       />,
     );
 
     expect(screen.getByText(/Identity confirmed/)).toBeTruthy();
     expect(screen.getByText(/Human verified/)).toBeTruthy();
     expect(screen.queryByText("MATCHED")).toBeNull();
+  });
+
+  it("offers a clear way to register a new part once every candidate is rejected", () => {
+    const onRegisterNewPart = vi.fn();
+    render(
+      <CatalogResolutionCard
+        identification={null}
+        confirmed={null}
+        rejected={true}
+        busy={false}
+        error={null}
+        detectedName="Brass male-female standoff"
+        onSelect={() => {}}
+        onReject={() => {}}
+        onRegisterNewPart={onRegisterNewPart}
+        registeringPart={false}
+        registerError={null}
+      />,
+    );
+
+    expect(screen.getByText("Brass male-female standoff")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Register as new catalog part" }));
+    expect(onRegisterNewPart).toHaveBeenCalledTimes(1);
   });
 });

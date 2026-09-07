@@ -75,17 +75,78 @@ function deferred<T>() {
 }
 
 describe("guided putaway dialog", () => {
-  it("shows separate gantry/database states and saves only after confirmation", async () => {
+  it("matches the physical warehouse order and keeps unavailable slot positions", () => {
+    const makeBin = (
+      code: string,
+      status: "AVAILABLE" | "OCCUPIED" = "AVAILABLE",
+    ) => ({
+      binId: `bin_${code}`,
+      code,
+      status,
+      capacity: 100,
+      contents: [],
+      totalQuantity: status === "OCCUPIED" ? 1 : 0,
+    });
+
+    const { container } = render(
+      <GuidedPutawayDialog
+        scanState={SCAN_STATE}
+        identity="MATCHED"
+        confirmed={null}
+        identification={null}
+        identityRejected={false}
+        identityBusy={false}
+        identityError={null}
+        openRequestVersion={0}
+        bins={[
+          makeBin("B1-02"),
+          makeBin("B6-03"),
+          makeBin("B6-01"),
+          makeBin("B6-02", "OCCUPIED"),
+          makeBin("B1-01"),
+        ]}
+        gantry={null}
+        shots={[]}
+        onSelectIdentity={() => {}}
+        onRejectIdentity={() => {}}
+        onReconsiderIdentity={() => {}}
+        onRegisterNewPart={() => {}}
+        registeringPart={false}
+        registerError={null}
+        onCaptureVerification={() => null}
+        onWarehouseChanged={() => {}}
+      />,
+    );
+
+    const rows = [...container.querySelectorAll("[data-shelf-bed]")];
+    expect(rows.map((row) => row.getAttribute("data-shelf-bed"))).toEqual(["6", "1"]);
+    expect(rows[0]?.textContent).toContain("B6-01B6-02occupiedB6-03");
+    const occupied = screen.getByRole("button", { name: "B6-02, occupied" });
+    expect((occupied as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("requires a reviewed placement photo before returning the filled bin", async () => {
     const presentation = deferred<Response>();
     const returned = deferred<Response>();
     const committed = deferred<Response>();
     const requests: string[] = [];
+    const requestBodies = new Map<string, Record<string, unknown>>();
+    const verificationShot = {
+      id: "verification_1",
+      dataUrl: "data:image/jpeg;base64,cGxhY2VtZW50",
+      createdAt: 1_700_000_010_000,
+      width: 1280,
+      height: 720,
+      deviceLabel: "Overhead camera",
+    };
+    const onCaptureVerification = vi.fn(() => verificationShot);
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         requests.push(url);
+        if (typeof init?.body === "string") requestBodies.set(url, JSON.parse(init.body));
         if (url === "/api/warehouse/guided-putaway") {
           return response({
             ok: true,
@@ -143,9 +204,11 @@ describe("guided putaway dialog", () => {
         shots={[]}
         onSelectIdentity={() => {}}
         onRejectIdentity={() => {}}
+        onReconsiderIdentity={() => {}}
         onRegisterNewPart={() => {}}
         registeringPart={false}
         registerError={null}
+        onCaptureVerification={onCaptureVerification}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -156,7 +219,7 @@ describe("guided putaway dialog", () => {
 
     await waitFor(() => expect(screen.getByText("Fetching bin")).toBeTruthy());
     expect(container.querySelector(".animate-bin-fetch")).toBeTruthy();
-    expect(screen.getByText("Slot reserved")).toBeTruthy();
+    expect(screen.queryByText("Supabase database")).toBeNull();
     expect(requests.some((url) => url.endsWith("/return"))).toBe(false);
     expect(requests.some((url) => url.endsWith("/commit"))).toBe(false);
 
@@ -178,11 +241,22 @@ describe("guided putaway dialog", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Waiting for placement")).toBeTruthy());
-    expect(screen.getByText("Waiting to save")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Yes, item placed" }));
+    const verifyButton = screen.getByRole("button", { name: "Verify photo & return bin" });
+    expect((verifyButton as HTMLButtonElement).disabled).toBe(true);
+    expect(requests.some((url) => url.endsWith("/return"))).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Take verification photo" }));
+    expect(screen.getByAltText("Verification photo for bin B1-02")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retake photo" }));
+    expect(onCaptureVerification).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Verify photo & return bin" }));
 
     await waitFor(() => expect(screen.getByText("Returning bin")).toBeTruthy());
-    expect(screen.getByText("Waiting to save")).toBeTruthy();
+    expect(requestBodies.get("/api/warehouse/guided-putaway/movement_1/return")).toEqual({
+      placed: true,
+      verificationImageDataUrl: verificationShot.dataUrl,
+      verificationCapturedAt: verificationShot.createdAt,
+    });
 
     returned.resolve(
       await response({
@@ -201,8 +275,7 @@ describe("guided putaway dialog", () => {
       }),
     );
 
-    await waitFor(() => expect(screen.getByText("Saving inventory")).toBeTruthy());
-    expect(screen.getByText("Movement complete")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("Movement complete")).toBeTruthy());
 
     committed.resolve(
       await response({
@@ -222,9 +295,8 @@ describe("guided putaway dialog", () => {
       }),
     );
 
-    await waitFor(() => expect(screen.getByText("Inventory saved")).toBeTruthy());
-    expect(screen.getByText("Movement complete")).toBeTruthy();
-    expect(screen.getByText("Putaway complete")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("Putaway complete")).toBeTruthy());
+    expect(screen.queryByText("Supabase database")).toBeNull();
   });
 
   /**
@@ -275,9 +347,11 @@ describe("guided putaway dialog", () => {
         shots={[]}
         onSelectIdentity={() => {}}
         onRejectIdentity={() => {}}
+        onReconsiderIdentity={() => {}}
         onRegisterNewPart={() => {}}
         registeringPart={false}
         registerError={null}
+        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -290,7 +364,7 @@ describe("guided putaway dialog", () => {
     expect(screen.queryByRole("button", { name: "B1-02" })).toBeNull();
     expect(container.querySelector(".animate-bin-fetch")).toBeNull();
     // NO_MATCH specifically offers a way forward, not just a dead end.
-    expect(screen.getByRole("button", { name: "Register as new part" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Register as new catalog part" })).toBeTruthy();
   });
 
   it("calls onRegisterNewPart when the operator registers a NO_MATCH scan", () => {
@@ -323,14 +397,16 @@ describe("guided putaway dialog", () => {
         shots={[]}
         onSelectIdentity={() => {}}
         onRejectIdentity={() => {}}
+        onReconsiderIdentity={() => {}}
         onRegisterNewPart={onRegisterNewPart}
         registeringPart={false}
         registerError={null}
+        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Register as new part" }));
+    fireEvent.click(screen.getByRole("button", { name: "Register as new catalog part" }));
     expect(onRegisterNewPart).toHaveBeenCalledTimes(1);
   });
 
@@ -363,9 +439,11 @@ describe("guided putaway dialog", () => {
         shots={[]}
         onSelectIdentity={() => {}}
         onRejectIdentity={() => {}}
+        onReconsiderIdentity={() => {}}
         onRegisterNewPart={() => {}}
         registeringPart={true}
         registerError="The warehouse could not be reached. Try again."
+        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -398,9 +476,11 @@ describe("guided putaway dialog", () => {
       shots: [],
       onSelectIdentity: () => {},
       onRejectIdentity: () => {},
+      onReconsiderIdentity: () => {},
       onRegisterNewPart: () => {},
       registeringPart: false,
       registerError: null,
+      onCaptureVerification: () => null,
       onWarehouseChanged: () => {},
     };
     const { rerender } = render(

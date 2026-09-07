@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GantryStatus } from "@/lib/gantry/types";
 import type { Shot } from "@/lib/shots-db";
 import type { BinView } from "@/lib/warehouse/dashboard-types";
+import { groupBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import type {
-  GuidedDatabaseStatus,
   GuidedGantryStatus,
   GuidedPutawayResult,
 } from "@/lib/warehouse/guided-putaway-types";
@@ -47,16 +47,6 @@ async function postJson(url: string, body: unknown = {}) {
   return { ok: response.ok, data };
 }
 
-const DB_LABELS: Record<GuidedDatabaseStatus, string> = {
-  CHECKING: "Checking slot",
-  RESERVED: "Slot reserved",
-  WAITING_TO_SAVE: "Waiting to save",
-  SAVING: "Saving inventory",
-  SAVED: "Inventory saved",
-  RELEASED: "Reservation released",
-  RECONCILIATION_REQUIRED: "Needs reconciliation",
-};
-
 const GANTRY_LABELS: Record<GuidedGantryStatus, string> = {
   IDLE: "Ready",
   FETCHING_BIN: "Fetching bin",
@@ -66,14 +56,14 @@ const GANTRY_LABELS: Record<GuidedGantryStatus, string> = {
   FAILED: "Movement failed",
 };
 
-function toneForStatus(status: GuidedDatabaseStatus | GuidedGantryStatus) {
-  if (status === "SAVED" || status === "RELEASED" || status === "COMPLETED") {
+function toneForStatus(status: GuidedGantryStatus) {
+  if (status === "COMPLETED") {
     return "border-success/40 bg-success-soft text-success";
   }
-  if (status === "FAILED" || status === "RECONCILIATION_REQUIRED") {
+  if (status === "FAILED") {
     return "border-danger/40 bg-danger-soft text-danger";
   }
-  if (status === "WAITING_TO_SAVE" || status === "WAITING_FOR_PLACEMENT") {
+  if (status === "WAITING_FOR_PLACEMENT") {
     return "border-warn/40 bg-warn-soft text-warn";
   }
   return "border-accent-soft/60 bg-accent-tint text-accent";
@@ -88,7 +78,7 @@ function LiveStatus({
   label: string;
   value: string;
   detail: string;
-  status: GuidedDatabaseStatus | GuidedGantryStatus;
+  status: GuidedGantryStatus;
 }) {
   return (
     <div className={`rounded-xl border p-3 ${toneForStatus(status)}`}>
@@ -124,7 +114,7 @@ function putawayBlockedReason(
   switch (identity) {
     case "AMBIGUOUS":
       return identityRejected
-        ? "You rejected every candidate the matcher offered, so this scan has no catalog identity. Scan the part again."
+        ? "This scan has no catalog identity yet — register it as a new part in the identification card above, or scan again."
         : "The matcher cannot tell which catalog part this is. Choose the correct part above before picking a slot.";
     case "NO_MATCH":
       return "No catalog part is close enough to this scan. Register it as a new catalog part below, or scan a part the catalog already knows.";
@@ -183,9 +173,11 @@ export function GuidedPutawayDialog({
   shots,
   onSelectIdentity,
   onRejectIdentity,
+  onReconsiderIdentity,
   onRegisterNewPart,
   registeringPart,
   registerError,
+  onCaptureVerification,
   onWarehouseChanged,
 }: {
   scanState: ScanState;
@@ -202,10 +194,14 @@ export function GuidedPutawayDialog({
   shots: Shot[];
   onSelectIdentity: (partId: string) => void;
   onRejectIdentity: () => void;
+  /** Opens a new audited identity choice before any slot is reserved. */
+  onReconsiderIdentity: () => void;
   /** Registers the current NO_MATCH scan as a brand-new catalog part. */
   onRegisterNewPart: () => void;
   registeringPart: boolean;
   registerError: string | null;
+  /** Captures the current live camera frame without starting a new scan. */
+  onCaptureVerification: () => Shot | null;
   onWarehouseChanged: () => void;
 }) {
   const scanId = scanState.scan?.scanResult?.scanId ?? null;
@@ -213,17 +209,19 @@ export function GuidedPutawayDialog({
   const [phase, setPhase] = useState<Phase>("CHOOSING");
   const [selectedBin, setSelectedBin] = useState<string | null>(null);
   const [operation, setOperation] = useState<PutawayOperation | null>(null);
-  const [databaseStatus, setDatabaseStatus] = useState<GuidedDatabaseStatus>("CHECKING");
   const [gantryStatus, setGantryStatus] = useState<GuidedGantryStatus>("IDLE");
   const [liveGantry, setLiveGantry] = useState<GantryStatus | null>(null);
+  const [placementPhoto, setPlacementPhoto] = useState<Shot | null>(null);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const seenScan = useRef<string | null>(null);
   const seenOpenRequest = useRef(0);
+  const [lastSeenPhase, setLastSeenPhase] = useState(scanState.phase);
 
   const availableBins = useMemo(
     () => bins.filter((bin) => bin.status === "AVAILABLE"),
     [bins],
   );
+  const shelfRows = useMemo(() => groupBinsInShelfOrder(bins), [bins]);
   const identityReady = identity === "MATCHED" || identity === "HUMAN_CONFIRMED";
   const blockedReason = putawayBlockedReason(
     identity,
@@ -231,17 +229,30 @@ export function GuidedPutawayDialog({
     identityRejected,
   );
 
-  useEffect(() => {
-    if (scanState.phase !== "READY" || !scanId || seenScan.current === scanId) return;
-    seenScan.current = scanId;
-    setOpen(true);
-    setPhase("CHOOSING");
-    setSelectedBin(null);
-    setOperation(null);
-    setDatabaseStatus("CHECKING");
-    setGantryStatus("IDLE");
-    setError(null);
-  }, [scanId, scanState.phase]);
+  /**
+   * Opens the popup the INSTANT a capture starts, not once matching finishes.
+   * MEASURING is entered exactly once per new capture (handleCapture in
+   * session.tsx always sets it first). Adjusted directly during render
+   * (React's own recommended pattern for "reset state when an external value
+   * changes") rather than in a useEffect, which would otherwise fire a
+   * cascade of extra renders for what is really just "this render already
+   * knows the answer." Everything below CurrentScanPanel still waits for an
+   * actual scan object (see the `scanState.scan &&` guard further down), so
+   * this only controls WHEN the popup appears and resets, not what it shows.
+   */
+  if (scanState.phase !== lastSeenPhase) {
+    setLastSeenPhase(scanState.phase);
+    if (scanState.phase === "MEASURING") {
+      setOpen(true);
+      setPhase("CHOOSING");
+      setSelectedBin(null);
+      setOperation(null);
+      setGantryStatus("IDLE");
+      setPlacementPhoto(null);
+      setVerificationError(null);
+      setError(null);
+    }
+  }
 
   useEffect(() => {
     if (!scanId || openRequestVersion <= seenOpenRequest.current) return;
@@ -277,9 +288,6 @@ export function GuidedPutawayDialog({
         (typeof envelope?.message === "string" ? envelope.message : null) ??
         "The guided putaway could not continue.",
     );
-    setDatabaseStatus(
-      (result.databaseStatus as GuidedDatabaseStatus) ?? "RECONCILIATION_REQUIRED",
-    );
     setGantryStatus((result.gantryStatus as GuidedGantryStatus) ?? "FAILED");
   }, []);
 
@@ -288,8 +296,9 @@ export function GuidedPutawayDialog({
     if (!scanResult || !identityReady) return;
     setSelectedBin(destinationBinCode);
     setPhase("RESERVING");
-    setDatabaseStatus("CHECKING");
     setGantryStatus("IDLE");
+    setPlacementPhoto(null);
+    setVerificationError(null);
     setError(null);
 
     try {
@@ -310,7 +319,6 @@ export function GuidedPutawayDialog({
         destinationBinCode: reserved.destinationBinCode,
         part: reserved.part,
       });
-      setDatabaseStatus("RESERVED");
       onWarehouseChanged();
 
       setPhase("FETCHING");
@@ -325,13 +333,11 @@ export function GuidedPutawayDialog({
         return;
       }
       setPhase("AWAITING_PLACEMENT");
-      setDatabaseStatus("WAITING_TO_SAVE");
       setGantryStatus("WAITING_FOR_PLACEMENT");
       onWarehouseChanged();
     } catch {
       applyFailure({
-        message: "The warehouse could not be reached. Check the gantry and Supabase state before retrying.",
-        databaseStatus: "RECONCILIATION_REQUIRED",
+        message: "The warehouse could not be reached. Check the gantry before retrying.",
         gantryStatus: "FAILED",
       });
     }
@@ -340,18 +346,38 @@ export function GuidedPutawayDialog({
   const settle = useCallback(
     async (placed: boolean) => {
       if (!operation) return;
+      if (placed && !placementPhoto) {
+        setVerificationError("Take a fresh photo of the item inside the bin before returning it.");
+        return;
+      }
       setPhase("RETURNING");
       setGantryStatus("RETURNING_BIN");
-      setDatabaseStatus(placed ? "WAITING_TO_SAVE" : "RESERVED");
+      setVerificationError(null);
       setError(null);
       let returned: GuidedPutawayResult;
       try {
         const response = await postJson(
           `/api/warehouse/guided-putaway/${operation.movementId}/return`,
-          { placed },
+          placed
+            ? {
+                placed: true,
+                verificationImageDataUrl: placementPhoto!.dataUrl,
+                verificationCapturedAt: placementPhoto!.createdAt,
+              }
+            : { placed: false },
         );
         returned = response.data as unknown as GuidedPutawayResult;
         if (!response.ok || !returned.ok) {
+          if (
+            !returned.ok &&
+            (returned.reason === "placement_photo_required" ||
+              returned.reason === "placement_photo_upload_failed")
+          ) {
+            setPhase("AWAITING_PLACEMENT");
+            setGantryStatus("WAITING_FOR_PLACEMENT");
+            setVerificationError(returned.message);
+            return;
+          }
           applyFailure(response.data);
           onWarehouseChanged();
           return;
@@ -360,14 +386,12 @@ export function GuidedPutawayDialog({
         applyFailure({
           message:
             "The gantry return result could not be read. Verify the physical bin before continuing.",
-          databaseStatus: "RECONCILIATION_REQUIRED",
           gantryStatus: "FAILED",
         });
         return;
       }
 
       setGantryStatus(returned.gantryStatus);
-      setDatabaseStatus("SAVING");
       setPhase("SAVING");
       try {
         const commitResponse = await postJson(
@@ -379,27 +403,38 @@ export function GuidedPutawayDialog({
           onWarehouseChanged();
           return;
         }
-        setDatabaseStatus(placed ? "SAVED" : "RELEASED");
         setPhase(placed ? "COMPLETED" : "CANCELLED");
         onWarehouseChanged();
       } catch {
         applyFailure({
           message:
-            "The gantry completed, but the Supabase result could not be read. Reconciliation is required before acting again.",
-          databaseStatus: "RECONCILIATION_REQUIRED",
+            "The gantry completed, but the inventory result could not be read. Reconciliation is required before acting again.",
           gantryStatus: "COMPLETED",
         });
         onWarehouseChanged();
       }
     },
-    [applyFailure, onWarehouseChanged, operation],
+    [applyFailure, onWarehouseChanged, operation, placementPhoto],
   );
 
-  if (!scanState.scan) return null;
+  const captureVerification = useCallback(() => {
+    const shot = onCaptureVerification();
+    if (!shot) {
+      setVerificationError("The camera is not ready. Start the live camera, then retry.");
+      return;
+    }
+    setPlacementPhoto(shot);
+    setVerificationError(null);
+  }, [onCaptureVerification]);
+
+  // Nothing captured yet — genuinely nothing to show, not even a collapsed
+  // reopen button. Every other phase (MEASURING, FAILED, MATCHING, READY) has
+  // something worth surfacing, even before a scan object exists.
+  if (scanState.phase === "EMPTY") return null;
   if (!open) {
     return (
       <button type="button" onClick={() => setOpen(true)} className={BUTTON_VARIANTS.secondary}>
-        Review latest scan and put away
+        {scanState.scan ? "Review latest scan and put away" : "Review scan status"}
       </button>
     );
   }
@@ -408,6 +443,7 @@ export function GuidedPutawayDialog({
     phase,
   );
   const destination = operation?.destinationBinCode ?? selectedBin;
+  const destinationBin = bins.find((bin) => bin.code === destination) ?? null;
 
   return (
     <Modal
@@ -417,92 +453,177 @@ export function GuidedPutawayDialog({
       maxWidthClassName="max-w-4xl"
     >
       <div className="space-y-4">
+        {/* The one section that's ALWAYS here — measuring, failed, matching,
+            or a settled result. Everything below needs an actual scan object
+            to act on, so it waits behind the guard just after this. */}
         <CurrentScanPanel state={scanState} identity={identity} confirmed={confirmed} />
 
-        {identity === "AMBIGUOUS" && identification && (
-          <CatalogResolutionCard
-            identification={identification}
-            confirmed={confirmed}
-            rejected={identityRejected}
-            busy={identityBusy}
-            error={identityError}
-            onSelect={onSelectIdentity}
-            onReject={onRejectIdentity}
-          />
+        {scanState.scan && (
+        <>
+        {/* Renders for the pending AND the rejected state — a rejected
+            AMBIGUOUS scan still needs a way forward (registering as new),
+            not just a dead end. The component itself returns null once
+            neither identification nor rejected applies. */}
+        {phase === "CHOOSING" &&
+          !identityReady &&
+          identity === "AMBIGUOUS" &&
+          (identification || identityRejected) && (
+          <div className="animate-stage-reveal" data-guided-step="identity">
+            <CatalogResolutionCard
+              identification={identification}
+              confirmed={confirmed}
+              rejected={identityRejected}
+              busy={identityBusy}
+              error={identityError}
+              detectedName={scanState.scan?.measurement?.name ?? null}
+              onSelect={onSelectIdentity}
+              onReject={onRejectIdentity}
+              onRegisterNewPart={onRegisterNewPart}
+              registeringPart={registeringPart}
+              registerError={registerError}
+            />
+          </div>
         )}
 
-        {phase === "CHOOSING" && (
-          <section className="rounded-xl border border-line bg-surface p-4">
+        {phase === "CHOOSING" &&
+          !identityReady &&
+          identity === "AMBIGUOUS" &&
+          !identification &&
+          !identityRejected && (
+            <section
+              className="animate-stage-reveal rounded-xl border border-accent-soft/60 bg-surface p-4"
+              data-guided-step="identity"
+            >
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
+                Step 1 · Identification required
+              </p>
+              <div className="mt-4 flex items-center gap-2.5 text-xs text-ink-muted">
+                <span className="animate-spin-slow h-3.5 w-3.5 rounded-full border-2 border-line border-t-accent" />
+                Loading catalog choices…
+              </div>
+            </section>
+          )}
+
+        {phase === "CHOOSING" && !identityReady && identity !== "AMBIGUOUS" && (
+          <section
+            className="animate-stage-reveal rounded-xl border border-accent-soft/60 bg-surface p-4"
+            data-guided-step="identity"
+          >
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
+              Step 1 · Identification required
+            </p>
+            {identity === "NO_MATCH" ? (
+              <>
+                <p className="mt-2 text-sm font-semibold text-ink">
+                  This item is not in the catalog yet.
+                </p>
+                <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
+                  Register it using this scan&apos;s measurement and photo. Available slots will
+                  appear only after its identity is ready.
+                </p>
+                {registerError && (
+                  <div className="mt-3">
+                    <ErrorNote>{registerError}</ErrorNote>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={onRegisterNewPart}
+                  disabled={registeringPart}
+                  className={`${BUTTON_VARIANTS.primary} mt-4 w-full sm:w-auto`}
+                >
+                  {registeringPart ? "Registering…" : "Register as new catalog item"}
+                </button>
+              </>
+            ) : (
+              <div className="mt-3">
+                <ErrorNote>{blockedReason ?? "Waiting for catalog identification."}</ErrorNote>
+              </div>
+            )}
+          </section>
+        )}
+
+        {phase === "CHOOSING" && identityReady && (
+          <section
+            className="animate-stage-reveal rounded-xl border border-line bg-surface p-4"
+            data-guided-step="slots"
+          >
+            {confirmed && (
+              <button
+                type="button"
+                onClick={onReconsiderIdentity}
+                disabled={identityBusy}
+                className={`${BUTTON_VARIANTS.secondary} mb-4`}
+              >
+                ← {identityBusy ? "Opening identity choices…" : "Back to identification"}
+              </button>
+            )}
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
-                  Available slots
+                  Step 2 · Available slots
                 </p>
                 <p className="mt-1 text-xs text-ink-muted">
-                  {blockedReason
-                    ? "Putaway is on hold until this scan has a catalog identity."
-                    : "Choose where this identified item will be stored."}
+                  Choose where this identified item will be stored.
                 </p>
               </div>
-              {/* Shown even while blocked, on purpose: it separates "the shelf is
-                  full" from "the catalog does not know this part", which are
-                  two completely different problems for the operator. */}
-              <span
-                className={`font-mono text-xs ${blockedReason ? "text-ink-faint" : "text-success"}`}
-              >
+              <span className="font-mono text-xs text-success">
                 {availableBins.length} available
               </span>
             </div>
-            {blockedReason ? (
-              <div className="mt-4 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2">
-                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
-                  ! Putaway unavailable
-                </p>
-                <p className="mt-1.5 text-xs leading-relaxed text-ink">{blockedReason}</p>
-                {identity === "NO_MATCH" && (
-                  <div className="mt-3 border-t border-warn/30 pt-3">
-                    <p className="text-xs leading-relaxed text-ink-muted">
-                      This adds{" "}
-                      <strong className="text-ink">
-                        {scanState.scan?.measurement?.name ?? "this object"}
-                      </strong>{" "}
-                      to the catalog using the measurement above, then lets this scan continue
-                      into the normal slot-picker below.
-                    </p>
-                    {registerError && (
-                      <div className="mt-2">
-                        <ErrorNote>{registerError}</ErrorNote>
-                      </div>
-                    )}
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={onRegisterNewPart}
-                        disabled={registeringPart}
-                        className={BUTTON_VARIANTS.primary}
-                      >
-                        {registeringPart ? "Registering…" : "Register as new part"}
-                      </button>
+            {availableBins.length > 0 ? (
+              <div
+                className="mt-4 flex flex-col gap-2"
+                role="group"
+                aria-label="Available slots in physical shelf order"
+              >
+                {shelfRows.map((row) => (
+                  <div
+                    key={row.bed ?? "unplaced"}
+                    className="flex items-stretch gap-2"
+                    data-shelf-bed={row.bed ?? "unplaced"}
+                  >
+                    <span className="flex w-10 shrink-0 items-center justify-end pr-1 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
+                      {row.bed === null ? "—" : `bed ${row.bed}`}
+                    </span>
+                    <div
+                      className="grid flex-1 gap-2"
+                      style={{
+                        gridTemplateColumns: `repeat(${row.bins.length}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {row.bins.map((bin) =>
+                        bin.status === "AVAILABLE" ? (
+                          <button
+                            key={bin.binId}
+                            type="button"
+                            onClick={() => void start(bin.code)}
+                            aria-pressed={selectedBin === bin.code}
+                            className={`min-h-12 rounded-lg border px-2 py-2 font-mono text-xs transition-all ${
+                              selectedBin === bin.code
+                                ? "border-accent bg-accent-tint text-accent shadow-[0_0_0_1px_rgba(91,157,217,0.25)]"
+                                : "border-line bg-bg-elevated text-ink-muted hover:border-accent-soft hover:text-ink"
+                            }`}
+                          >
+                            {bin.code}
+                          </button>
+                        ) : (
+                          <button
+                            key={bin.binId}
+                            type="button"
+                            disabled
+                            aria-label={`${bin.code}, ${bin.status.toLowerCase()}`}
+                            className="flex min-h-12 flex-col items-center justify-center rounded-lg border border-line/60 bg-bg-elevated/40 px-2 py-1 font-mono text-[10px] text-ink-faint opacity-55"
+                          >
+                            <span>{bin.code}</span>
+                            <span className="mt-0.5 text-[8px] uppercase tracking-[0.08em]">
+                              {bin.status.toLowerCase()}
+                            </span>
+                          </button>
+                        ),
+                      )}
                     </div>
                   </div>
-                )}
-              </div>
-            ) : availableBins.length > 0 ? (
-              <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-5 md:grid-cols-6">
-                {availableBins.map((bin) => (
-                  <button
-                    key={bin.binId}
-                    type="button"
-                    onClick={() => void start(bin.code)}
-                    aria-pressed={selectedBin === bin.code}
-                    className={`rounded-lg border px-3 py-3 font-mono text-xs transition-all ${
-                      selectedBin === bin.code
-                        ? "border-accent bg-accent-tint text-accent shadow-[0_0_0_1px_rgba(91,157,217,0.25)]"
-                        : "border-line bg-bg-elevated text-ink-muted hover:border-accent-soft hover:text-ink"
-                    }`}
-                  >
-                    {bin.code}
-                  </button>
                 ))}
               </div>
             ) : (
@@ -515,7 +636,7 @@ export function GuidedPutawayDialog({
 
         {phase !== "CHOOSING" && (
           <>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3">
               <LiveStatus
                 label="Gantry"
                 value={GANTRY_LABELS[gantryStatus]}
@@ -526,12 +647,6 @@ export function GuidedPutawayDialog({
                 }
                 status={gantryStatus}
               />
-              <LiveStatus
-                label="Supabase database"
-                value={DB_LABELS[databaseStatus]}
-                detail={destination ? `Destination ${destination}` : "Validating destination…"}
-                status={databaseStatus}
-              />
             </div>
             <GantryMotion phase={phase} binCode={destination} />
           </>
@@ -540,19 +655,77 @@ export function GuidedPutawayDialog({
         {phase === "AWAITING_PLACEMENT" && operation && (
           <section className="rounded-xl border border-warn/40 bg-warn-soft p-4">
             <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
-              Human confirmation required
+              Photo verification required
             </p>
             <p className="mt-2 text-sm text-ink">
               Place <strong>{operation.part.sku}</strong> ({operation.part.canonicalName}) into bin{" "}
-              <strong>{operation.destinationBinCode}</strong>. Has the item been placed inside?
+              <strong>{operation.destinationBinCode}</strong>, then capture the bin before returning it.
             </p>
-            <div className="mt-4 flex flex-wrap justify-end gap-2">
+            {destinationBin && (
+              <p className="mt-1 font-mono text-[10px] text-ink-muted">
+                Capacity after placement: {destinationBin.totalQuantity + 1}/{destinationBin.capacity} units
+              </p>
+            )}
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-line bg-bg-elevated">
+              {placementPhoto ? (
+                <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  {/* A just-captured local data URL; it is uploaded only when the operator verifies it. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={placementPhoto.dataUrl}
+                    alt={`Verification photo for bin ${operation.destinationBinCode}`}
+                    className="max-h-64 w-full rounded-lg border border-line object-contain"
+                  />
+                  <div className="space-y-1 sm:w-44">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-success">
+                      Photo ready
+                    </p>
+                    <p className="text-xs leading-relaxed text-ink-muted">
+                      Check that the item and remaining bin space are clearly visible.
+                    </p>
+                    <p className="font-mono text-[9px] text-ink-faint">
+                      {new Date(placementPhoto.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-4 py-7 text-center">
+                  <p className="text-xs text-ink-muted">No placement photo captured yet.</p>
+                  <p className="mt-1 text-[11px] text-ink-faint">
+                    Use the live camera to show the item inside the presented bin.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {verificationError && (
+              <div className="mt-3">
+                <ErrorNote>{verificationError}</ErrorNote>
+              </div>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
               <button type="button" onClick={() => void settle(false)} className={BUTTON_VARIANTS.secondary}>
                 No, return empty bin
               </button>
-              <button type="button" onClick={() => void settle(true)} className={BUTTON_VARIANTS.approve}>
-                Yes, item placed
-              </button>
+              <div className="flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={captureVerification}
+                  className={BUTTON_VARIANTS.secondary}
+                >
+                  {placementPhoto ? "Retake photo" : "Take verification photo"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void settle(true)}
+                  disabled={!placementPhoto}
+                  className={BUTTON_VARIANTS.approve}
+                >
+                  Verify photo &amp; return bin
+                </button>
+              </div>
             </div>
           </section>
         )}
@@ -561,8 +734,8 @@ export function GuidedPutawayDialog({
           <div className="rounded-xl border border-success/40 bg-success-soft p-4 text-success">
             <p className="font-semibold">Putaway complete</p>
             <p className="mt-1 text-xs leading-relaxed">
-              The gantry returned bin {operation.destinationBinCode}, and Supabase saved one{" "}
-              {operation.part.sku} in that slot.
+              The verified bin photo was recorded and the gantry returned bin{" "}
+              {operation.destinationBinCode} with one {operation.part.sku}.
             </p>
           </div>
         )}
@@ -581,6 +754,8 @@ export function GuidedPutawayDialog({
               Close
             </button>
           </div>
+        )}
+        </>
         )}
       </div>
     </Modal>

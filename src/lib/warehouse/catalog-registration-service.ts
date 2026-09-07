@@ -17,8 +17,10 @@
  * this file never claims that for itself.
  */
 import { randomUUID } from "node:crypto";
+import { prisma } from "./db";
 import { createPart, getPartById } from "./repository";
 import { matchScanToCatalog } from "./catalog-matcher";
+import { uploadPutawayPhoto } from "./storage";
 import { classifyReturnable } from "@/lib/agents/returnability-classifier";
 import { collectScanResultIssues } from "./scan-result";
 import { WarehouseError } from "./errors";
@@ -39,13 +41,37 @@ export type CatalogRegistrationResult =
   | { outcome: "already_matched"; part: Part };
 
 /**
- * Creates a new catalog Part directly from what THIS scan measured, so the
- * standard matcher can find it on a re-check. Only ever called for a scan the
- * matcher has already called NO_MATCH — re-verified here rather than trusted
- * from the caller, since the catalog can change between the operator seeing
- * NO_MATCH and clicking the button.
+ * Whether a human has already, explicitly said "none of the offered
+ * candidates are this part" for this exact scan — a durable fact recorded by
+ * rejectCatalogResolution, independent of what the deterministic matcher
+ * itself still reports. The matcher does not change its mind: an AMBIGUOUS
+ * scan stays AMBIGUOUS forever, because a REJECTED resolution doesn't erase
+ * the candidates that made it plausible-looking in the first place. This is
+ * what makes it safe to register anyway — the SAME kind of human judgement
+ * call that already lets a CONFIRMED resolution authorise a putaway despite
+ * the matcher never saying MATCHED.
  */
-export async function registerScanAsPart(scanResult: ScanResult): Promise<CatalogRegistrationResult> {
+async function hasRejectedEveryCandidate(scanId: string): Promise<boolean> {
+  const rejection = await prisma.catalogResolution.findFirst({
+    where: { scanId, status: "REJECTED" },
+  });
+  return rejection !== null;
+}
+
+/**
+ * Creates a new catalog Part directly from what THIS scan measured, so the
+ * standard matcher can find it on a re-check. Callable in two situations,
+ * both re-verified here rather than trusted from the caller:
+ *  - the matcher currently says NO_MATCH, or
+ *  - the matcher says AMBIGUOUS, but an operator has already explicitly
+ *    rejected every candidate it offered for this exact scan.
+ * Anything else (a live, unaddressed AMBIGUOUS, or an outright MATCHED) is
+ * refused — the operator must resolve or reject before this file acts.
+ */
+export async function registerScanAsPart(
+  scanResult: ScanResult,
+  imageDataUrl?: string,
+): Promise<CatalogRegistrationResult> {
   const issues = collectScanResultIssues(scanResult);
   if (issues.length > 0) {
     throw new WarehouseError("validation_failed", "Invalid scanResult.", issues);
@@ -55,12 +81,10 @@ export async function registerScanAsPart(scanResult: ScanResult): Promise<Catalo
   if (freshMatch.status === "MATCHED") {
     return { outcome: "already_matched", part: await requirePart(freshMatch.matchedPart.id) };
   }
-  if (freshMatch.status !== "NO_MATCH") {
-    // AMBIGUOUS: something in the catalog now looks plausible. Not this
-    // file's call to make — an operator resolves that the normal way.
+  if (freshMatch.status === "AMBIGUOUS" && !(await hasRejectedEveryCandidate(scanResult.scanId))) {
     throw new WarehouseError(
       "validation_failed",
-      "This scan is no longer NO_MATCH — the catalog now has a plausible candidate. Resolve the ambiguity instead of registering a new part.",
+      "This scan has plausible catalog candidates. Choose one, or reject every candidate first, before registering a new part.",
     );
   }
 
@@ -70,6 +94,17 @@ export async function registerScanAsPart(scanResult: ScanResult): Promise<Catalo
     description: scanResult.object.description || null,
   });
 
+  // Best-effort, exactly like guided-putaway-service's own photo upload: a
+  // failed upload must never block the catalog from gaining this part.
+  let imageUrl: string | null = null;
+  if (imageDataUrl) {
+    try {
+      imageUrl = await uploadPutawayPhoto(scanResult.scanId, imageDataUrl);
+    } catch (error) {
+      console.error("[catalog-registration] photo upload failed, continuing without it:", error);
+    }
+  }
+
   const part = await createPart({
     sku: generateSku(),
     canonicalName,
@@ -78,6 +113,7 @@ export async function registerScanAsPart(scanResult: ScanResult): Promise<Catalo
     widthMM: scanResult.dimensions.widthMM,
     heightMM: scanResult.dimensions.heightMM,
     returnable,
+    imageUrl,
   });
 
   return { outcome: "created", part };

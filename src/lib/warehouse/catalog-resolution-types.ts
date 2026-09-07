@@ -27,6 +27,8 @@ export interface ResolutionCandidate {
   confidence: number;
   dimensions: { lengthMM: number | null; widthMM: number | null; heightMM: number | null };
   evidence: CatalogMatchAlternative["evidence"];
+  /** The part's representative photo, or null if it has none — a human picks by sight, not by SKU. */
+  imageUrl: string | null;
 }
 
 export type CatalogResolutionRequestResult =

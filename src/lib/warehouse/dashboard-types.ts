@@ -32,6 +32,14 @@ export interface BinContentView {
   imageUrl: string | null;
 }
 
+/** Most recent placement-verification photo captured for one physical bin. */
+export interface BinSnapshotView {
+  imageUrl: string;
+  capturedAt: number;
+  movementId: string;
+  movementStatus: MovementStatus;
+}
+
 /**
  * A bin as the map draws it. `status` is the Bin row's own status, never
  * inferred from whether `contents` is empty: a RESERVED bin is empty AND
@@ -45,6 +53,8 @@ export interface BinView {
   capacity: number;
   contents: BinContentView[];
   totalQuantity: number;
+  /** Optional for compatibility with older cached overview responses. */
+  latestSnapshot?: BinSnapshotView | null;
 }
 
 /** One part's stock, aggregated across every bin holding it. */
