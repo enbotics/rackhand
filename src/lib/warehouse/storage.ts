@@ -78,3 +78,29 @@ export async function uploadPutawayPhoto(scanId: string, imageDataUrl: string): 
   const { data } = client.storage.from(BUCKET).getPublicUrl(path);
   return data.publicUrl;
 }
+
+/**
+ * Stores the fresh, operator-reviewed view of a presented bin. Unlike the
+ * intake scan photo above, this upload is required before the gantry may
+ * return a bin containing a newly placed item.
+ */
+export async function uploadBinVerificationPhoto(
+  movementId: string,
+  binCode: string,
+  imageDataUrl: string,
+): Promise<string> {
+  await ensureBucket();
+  const { bytes, contentType } = decodeDataUrl(imageDataUrl);
+  const safeBinCode = binCode.toUpperCase().replace(/[^A-Z0-9-]/g, "-");
+  const path = `bin-verifications/${safeBinCode}/${movementId}.jpg`;
+
+  const client = getClient();
+  const { error } = await client.storage.from(BUCKET).upload(path, bytes, {
+    contentType,
+    upsert: true,
+  });
+  if (error) throw new Error(`Supabase Storage upload failed: ${error.message}`);
+
+  const { data } = client.storage.from(BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}

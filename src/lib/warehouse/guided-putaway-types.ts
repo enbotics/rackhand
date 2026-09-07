@@ -14,6 +14,15 @@ export interface GuidedPutawayRequest {
   imageDataUrl?: string;
 }
 
+/** The human decision at the presented bin. Placement requires fresh photo evidence. */
+export type GuidedPlacementDecision =
+  | { placed: false }
+  | {
+      placed: true;
+      verificationImageDataUrl: string;
+      verificationCapturedAt: number;
+    };
+
 export type GuidedDatabaseStatus =
   | "CHECKING"
   | "RESERVED"

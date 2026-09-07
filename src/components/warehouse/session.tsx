@@ -131,6 +131,8 @@ export interface WarehouseSession {
   guidedPutawayRequestVersion: number;
   selectCandidate: (partId: string) => void;
   rejectIdentification: () => void;
+  /** Opens a fresh audited decision before putaway so an operator can revise an identity. */
+  reconsiderIdentification: () => void;
   /** Registers a NO_MATCH scan as a brand-new catalog part, then re-checks the match. */
   registerNewPart: () => void;
   registeringPart: boolean;
@@ -234,7 +236,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     [],
   );
 
-  const requestIdentification = useCallback(async (scanResult: ScanResult) => {
+  const requestIdentification = useCallback(async (scanResult: ScanResult): Promise<boolean> => {
     setIdentityBusy(true);
     setIdentityError(null);
     try {
@@ -250,14 +252,17 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
           expiresAt: result.expiresAt,
           candidates: result.candidates,
         });
+        return true;
       }
       // MATCHED / NO_MATCH / RESCAN_REQUIRED need no card: the scan panel
       // already shows the matcher's verdict, and none of them is resolvable.
     } catch {
       setIdentityError("The identification service could not be reached.");
+      return false;
     } finally {
       setIdentityBusy(false);
     }
+    return false;
   }, []);
 
   /**
@@ -597,6 +602,20 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     }
   }, [identification]);
 
+  const reconsiderIdentification = useCallback(async () => {
+    const scanResult = scanState.scan?.scanResult;
+    if (!scanResult || !confirmed) return;
+
+    // Never rewrite the earlier CONFIRMED decision: it remains valid audit
+    // history. A new pending resolution is opened, and only once that succeeds
+    // does the browser retire the old choice for this not-yet-started putaway.
+    if (await requestIdentification(scanResult)) {
+      setConfirmed(null);
+      setIdentityRejected(false);
+      setRegisterError(null);
+    }
+  }, [confirmed, requestIdentification, scanState.scan?.scanResult]);
+
   /**
    * Registers the current NO_MATCH scan as a brand-new catalog Part, then
    * re-runs the SAME /catalog/match call handleCapture uses — the new part
@@ -609,7 +628,13 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     setRegisteringPart(true);
     setRegisterError(null);
     try {
-      const { ok, data } = await postJson("/api/warehouse/catalog/register", { scanResult });
+      // Same lookup guided-putaway-dialog's start() uses: the shot behind
+      // this scan becomes the new part's representative photo.
+      const shot = shots.find((s) => s.id === scanState.scan!.shotId);
+      const { ok, data } = await postJson("/api/warehouse/catalog/register", {
+        scanResult,
+        ...(shot ? { imageDataUrl: shot.dataUrl } : {}),
+      });
       if (!ok) {
         setRegisterError((data.error as { message?: string } | undefined)?.message ?? "Registration failed.");
         return;
@@ -632,7 +657,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     } finally {
       setRegisteringPart(false);
     }
-  }, [scanState.scan]);
+  }, [scanState.scan, shots]);
 
   const identity = scanState.scan
     ? deriveScanIdentity({
@@ -689,6 +714,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       guidedPutawayRequestVersion,
       selectCandidate: (partId) => void selectCandidate(partId),
       rejectIdentification: () => void rejectIdentification(),
+      reconsiderIdentification: () => void reconsiderIdentification(),
       registerNewPart: () => void registerNewPart(),
       registeringPart,
       registerError,
@@ -739,6 +765,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     guidedPutawayRequestVersion,
     selectCandidate,
     rejectIdentification,
+    reconsiderIdentification,
     registerNewPart,
     registeringPart,
     registerError,

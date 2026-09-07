@@ -2,7 +2,7 @@
 
 import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { BIN_STATUS_PRESENTATION } from "@/lib/warehouse/dashboard-presentation";
-import { parseBinCode } from "@/lib/warehouse/types";
+import { groupBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel, StatusChip } from "./ui";
 
 /**
@@ -19,19 +19,6 @@ import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel, StatusChip } from "./ui"
  * warehouse the database does not agree with.
  */
 
-/** Groups bins by bed, highest bed first, so the panel mirrors the rack. */
-function byBed(bins: BinView[]): Array<{ bed: number | null; bins: BinView[] }> {
-  const beds = new Map<number | null, BinView[]>();
-  for (const bin of bins) {
-    // A code that does not parse still has to appear — silently dropping a bin
-    // would hide stock. It collects under a null bed instead.
-    const bed = parseBinCode(bin.code)?.bed ?? null;
-    beds.set(bed, [...(beds.get(bed) ?? []), bin]);
-  }
-  return [...beds.entries()]
-    .sort((a, b) => (b[0] ?? -1) - (a[0] ?? -1))
-    .map(([bed, bins]) => ({ bed, bins }));
-}
 export function WarehouseMap({
   bins,
   loading,
@@ -82,7 +69,7 @@ export function WarehouseMap({
         )
       ) : (
         <div className="flex flex-col gap-2">
-          {byBed(bins).map((row) => (
+          {groupBinsInShelfOrder(bins).map((row) => (
             <div key={row.bed ?? "unplaced"} className="flex items-stretch gap-2">
               <span className="flex w-10 shrink-0 items-center justify-end pr-1 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-faint">
                 {row.bed === null ? "—" : `bed ${row.bed}`}

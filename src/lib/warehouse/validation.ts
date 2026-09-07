@@ -142,6 +142,7 @@ export interface ValidatedPart {
   widthMM: number | null;
   heightMM: number | null;
   returnable: boolean;
+  imageUrl: string | null;
 }
 
 export function validateCreatePart(input: CreatePartInput): ValidatedPart {
@@ -156,6 +157,7 @@ export function validateCreatePart(input: CreatePartInput): ValidatedPart {
     widthMM: c.optionalDimension("widthMM", input?.widthMM),
     heightMM: c.optionalDimension("heightMM", input?.heightMM),
     returnable: c.optionalBoolean("returnable", input?.returnable, false),
+    imageUrl: c.optionalText("imageUrl", input?.imageUrl, 500),
   };
   c.throwIfInvalid("part");
   return part;

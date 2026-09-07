@@ -13,13 +13,14 @@ import { resolveCatalogIdentity } from "./catalog-identity";
 import { applyInventoryAddition } from "./inventory-service";
 import { collectScanResultIssues } from "./scan-result";
 import { getBinByCode } from "./repository";
-import { uploadPutawayPhoto } from "./storage";
+import { uploadBinVerificationPhoto, uploadPutawayPhoto } from "./storage";
 import { getGantryController } from "@/lib/gantry/factory";
 import { isGantryError } from "@/lib/gantry/errors";
 import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Bin, Movement, Part } from "@/generated/prisma/client";
 import type {
   GuidedPutawayContext,
+  GuidedPlacementDecision,
   GuidedPutawayRequest,
   GuidedPutawayResult,
   GuidedPutawayStatusView,
@@ -430,17 +431,66 @@ export async function presentGuidedPutawayBin(movementId: string): Promise<Guide
 /** Return the bin and durably bind the operator's placement decision. */
 export async function returnGuidedPutawayBin(
   movementId: string,
-  placed: boolean,
+  decision: GuidedPlacementDecision,
 ): Promise<GuidedPutawayResult> {
   const loaded = await movementWithContext(movementId);
   if (!loaded || !loaded.destinationBin || loaded.type !== "PUTAWAY") {
     return failure("movement_not_found", "That guided putaway does not exist.");
   }
   const info = context(loaded, loaded.part, loaded.destinationBin);
+  const placed = decision.placed;
+
+  let verification:
+    | { verificationImageUrl: string; verificationCapturedAt: Date }
+    | undefined;
+  if (placed) {
+    const capturedAt = new Date(decision.verificationCapturedAt);
+    const invalidTimestamp =
+      !Number.isFinite(decision.verificationCapturedAt) ||
+      capturedAt.getTime() < loaded.createdAt.getTime() ||
+      capturedAt.getTime() > Date.now() + 60_000;
+    if (
+      typeof decision.verificationImageDataUrl !== "string" ||
+      !decision.verificationImageDataUrl.startsWith("data:image/") ||
+      invalidTimestamp
+    ) {
+      return failure(
+        "placement_photo_required",
+        "Take a fresh verification photo of the item inside the presented bin before returning it.",
+        {
+          ...info,
+          databaseStatus: "WAITING_TO_SAVE",
+          gantryStatus: "WAITING_FOR_PLACEMENT",
+        },
+      );
+    }
+
+    try {
+      verification = {
+        verificationImageUrl: await uploadBinVerificationPhoto(
+          loaded.id,
+          loaded.destinationBin.code,
+          decision.verificationImageDataUrl,
+        ),
+        verificationCapturedAt: capturedAt,
+      };
+    } catch (error) {
+      console.error("[guided-putaway] verification photo upload failed", error);
+      return failure(
+        "placement_photo_upload_failed",
+        "The verification photo could not be saved. The bin is still at intake—retry the photo before returning it.",
+        {
+          ...info,
+          databaseStatus: "WAITING_TO_SAVE",
+          gantryStatus: "WAITING_FOR_PLACEMENT",
+        },
+      );
+    }
+  }
 
   const claimed = await prisma.movement.updateMany({
     where: { id: loaded.id, status: "AWAITING_PLACEMENT" },
-    data: { status: "RETURNING" },
+    data: { status: "RETURNING", ...verification },
   });
   if (claimed.count !== 1) {
     return failure("invalid_putaway_stage", `This putaway is already ${loaded.status}.`, {

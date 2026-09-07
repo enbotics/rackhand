@@ -57,6 +57,7 @@ describe("request_guided_putaway tool", () => {
       category: "bearing",
       description: null,
       returnable: false,
+      imageUrl: null,
       lengthMM: 47,
       widthMM: 47,
       heightMM: 14,

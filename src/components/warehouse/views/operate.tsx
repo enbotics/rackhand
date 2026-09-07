@@ -1,10 +1,10 @@
 "use client";
 
-import { CameraStage } from "@/components/camera-stage";
+import { useRef } from "react";
+import { CameraStage, type CameraStageHandle } from "@/components/camera-stage";
 import { AgentPanel } from "../agent-panel";
 import { ApprovalCard } from "../approval-card";
 import { GuidedPutawayDialog } from "../guided-putaway-dialog";
-import { CurrentScanPanel } from "../current-scan-panel";
 import { WorkflowPanel } from "../workflow-panel";
 import { EmptyState, Panel } from "../ui";
 import { useWarehouseSession } from "../session";
@@ -26,22 +26,22 @@ import { PageShell } from "./shell";
  */
 export function OperateView() {
   const session = useWarehouseSession();
+  const cameraRef = useRef<CameraStageHandle>(null);
 
   return (
     <PageShell
       title="Operate"
       intent="Scan a part, settle its identity, ask the agent, and approve what it wants to do."
-      footer="Captured frames stay in this browser as local scan history and are never treated as inventory. Bins, stock and movements are read from the warehouse database on every refresh."
     >
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <div className="flex flex-col gap-4 xl:col-span-7">
-          <Panel title="Live camera">
-            <CameraStage onCapture={session.onCapture} scanning={session.scanning} />
+          <Panel title="Stationary Scan" className="flex-1">
+            <CameraStage
+              ref={cameraRef}
+              onCapture={session.onCapture}
+              scanning={session.scanning}
+            />
           </Panel>
-
-          {session.scanState.scan === null && (
-            <CurrentScanPanel state={session.scanState} identity={null} confirmed={null} />
-          )}
 
           <GuidedPutawayDialog
             scanState={session.scanState}
@@ -57,9 +57,11 @@ export function OperateView() {
             shots={session.shots}
             onSelectIdentity={session.selectCandidate}
             onRejectIdentity={session.rejectIdentification}
+            onReconsiderIdentity={session.reconsiderIdentification}
             onRegisterNewPart={session.registerNewPart}
             registeringPart={session.registeringPart}
             registerError={session.registerError}
+            onCaptureVerification={() => cameraRef.current?.captureFrame() ?? null}
             onWarehouseChanged={session.refresh}
           />
         </div>

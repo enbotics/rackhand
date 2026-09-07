@@ -49,6 +49,16 @@ model Part {
   /// misclassified part is safer treated as "not shared" than the reverse.
   returnable Boolean @default(false)
 
+  /// The representative photo used to RECOGNIZE this part — shown as a
+  /// clickable candidate tile when a human disambiguates an AMBIGUOUS scan,
+  /// so identity is chosen by sight, not by reading a generated SKU. Set
+  /// once, at registration time, from the scan that created the part (see
+  /// catalog-registration-service.ts); null for parts with no such scan (the
+  /// seeded demo catalog, or a part created via the plain parts API).
+  /// Unrelated to Movement.imageUrl, which is a per-putaway-event audit photo
+  /// for the bin-detail modal, not an identification aid.
+  imageUrl String?
+
   /// Nullable throughout: the catalog may know a part before it knows its
   /// size. Never negative — enforced by the validation layer.
   lengthMM Float?
@@ -122,6 +132,12 @@ model Movement {
   /// known and there is nothing to gain from deleting it after the fact.
   imageUrl String?
 
+  /// Fresh evidence captured only after the destination bin is presented and
+  /// the operator has placed the item. A successful upload is the human
+  /// verification gate that permits the gantry to return the bin.
+  verificationImageUrl   String?
+  verificationCapturedAt DateTime?
+
   /// Set only for type ADJUSTMENT — a direct operator override of a bin's
   /// quantity, from the bin-detail modal. The precise before/after, since
   /// `quantity` above holds the size of the change (always positive) to stay
@@ -131,7 +147,7 @@ model Movement {
   /// MovementStatus: PENDING | VALIDATED | RUNNING | PRESENTING |
   /// AWAITING_PLACEMENT | RETURNING | READY_TO_COMMIT | READY_TO_CANCEL |
   /// COMPLETED | FAILED | CANCELLED
-  status   String @default("PENDING")
+  status           String @default("PENDING")
 
   /// Nullable: a putaway starts at an intake station, a retrieval ends at an
   /// output station. Those stations are free-text locations rather than fake
@@ -159,7 +175,7 @@ model Movement {
   /// submissions of one scan cannot both claim it.
   idempotencyKey String? @unique
 
-  createdAt DateTime  @default(now())
+  createdAt   DateTime  @default(now())
   /// Set only when a movement actually reaches a terminal state.
   completedAt DateTime?
 
@@ -170,6 +186,7 @@ model Movement {
   @@index([status])
   @@index([createdAt])
   @@index([scanId])
+  @@index([destinationBinId, verificationCapturedAt])
 }
 
 /// Audit record of one human approval decision for a state-changing agent
@@ -189,7 +206,7 @@ model ActionApproval {
   toolName String
   /// Sanitized JSON summary shown to the operator: part, source, destination,
   /// quantity. The exact arguments the approval is bound to.
-  summary String
+  summary  String
 
   /// PENDING | APPROVED | DENIED | EXPIRED. Terminal states never reopen.
   status String @default("PENDING")
@@ -199,7 +216,7 @@ model ActionApproval {
   interruptId String
   /// The originating request id, reused on resume so approving twice cannot
   /// execute the underlying operation twice.
-  requestId String
+  requestId   String
 
   /// The observability trace this approval belongs to (Milestone 12).
   /// Nullable because it is correlation, not authorization — an approval whose
@@ -242,7 +259,7 @@ model CatalogResolution {
   selectedPartId String?
   /// PENDING | CONFIRMED | REJECTED | EXPIRED. Terminal states never reopen,
   /// and a CONFIRMED selection is immutable.
-  status String @default("PENDING")
+  status         String  @default("PENDING")
 
   createdAt  DateTime  @default(now())
   expiresAt  DateTime
@@ -306,14 +323,14 @@ model TraceEvent {
   traceId String
 
   /// See TRACE_EVENT_TYPES in src/lib/observability/types.ts.
-  type String
+  type     String
   /// Monotonic within one trace, starting at 1.
   sequence Int
   /// STARTED | COMPLETED | BLOCKED | FAILED | INFO
-  status String
+  status   String
 
   /// Tool name, graph node id, or similar. Null for events with no subject.
-  name String?
+  name    String?
   /// One operator-readable sentence, built from warehouse facts.
   summary String
 
