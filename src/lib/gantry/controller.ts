@@ -2,7 +2,7 @@
  * The contract every gantry implementation satisfies — the whole point of
  * this milestone.
  *
- * Callers ask for warehouse-level intent ("put this away in B03"), never for
+ * Callers ask for warehouse-level intent ("put this away in B2-01"), never for
  * axes or steps. That keeps the rest of the application, and the later
  * Strands tool, identical whether a simulator or real hardware is underneath;
  * swapping them is a factory change, not an application change.

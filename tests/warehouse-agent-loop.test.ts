@@ -126,7 +126,7 @@ describe("agent loop reaches the tool", () => {
   it("reports genuine controller state, not a canned reading", async () => {
     const controller = getGantryController();
     await controller.home();
-    await controller.putaway({ source: "INTAKE", destination: "B03" });
+    await controller.putaway({ source: "INTAKE", destination: "B2-01" });
 
     const model = new ScriptedModel([
       toolUseTurn("get_gantry_status", "tooluse_1"),
@@ -138,7 +138,7 @@ describe("agent loop reaches the tool", () => {
     const toolResult = JSON.stringify(
       agent.messages.flatMap((m) => m.content.filter((b) => b.type === "toolResultBlock")),
     );
-    expect(toolResult).toContain("B03");
+    expect(toolResult).toContain("B2-01");
     expect(toolResult).toContain('"homed":true');
   });
 
@@ -164,7 +164,7 @@ describe("agent loop reaches the tool", () => {
     ]);
     const agent = buildAgent(model);
 
-    await agent.invoke("Move the gantry to B03.");
+    await agent.invoke("Move the gantry to B2-01.");
 
     // Nothing moved, and the loop surfaced an error result rather than acting.
     expect(await controller.getRecentOperations()).toEqual([]);

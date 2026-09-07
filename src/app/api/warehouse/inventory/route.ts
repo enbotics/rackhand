@@ -12,7 +12,7 @@ import type { InventoryMutationInput } from "@/lib/warehouse/types";
 
 /**
  * GET  /api/warehouse/inventory?sku=BRG-6204 — stock for one part
- * GET  /api/warehouse/inventory?bin=B03      — stock in one bin
+ * GET  /api/warehouse/inventory?bin=B2-01      — stock in one bin
  * GET  /api/warehouse/inventory              — every inventory row
  * POST /api/warehouse/inventory              — { action: "add" | "remove", sku, binCode, quantity }
  *

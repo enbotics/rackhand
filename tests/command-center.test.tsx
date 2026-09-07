@@ -1,15 +1,35 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { CommandCenter } from "@/components/warehouse/command-center";
+import { WarehouseNav } from "@/components/warehouse/nav";
+import { WarehouseSessionProvider } from "@/components/warehouse/session";
+import { OperateView } from "@/components/warehouse/views/operate";
+import { WarehouseView } from "@/components/warehouse/views/warehouse-view";
+import { HistoryView } from "@/components/warehouse/views/history-view";
+import { ActivityView } from "@/components/warehouse/views/activity-view";
 import { CurrentScanPanel } from "@/components/warehouse/current-scan-panel";
 import { CatalogResolutionCard } from "@/components/warehouse/catalog-resolution-card";
 import type { WarehouseOverview } from "@/lib/warehouse/dashboard-types";
 import type { GantryStatus } from "@/lib/gantry/types";
 import type { ScanState } from "@/components/warehouse/state";
 
+vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
+vi.mock("next/link", () => ({
+  default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+
 /**
  * The Milestone 10 command centre, rendered.
+ *
+ * Milestone 13 split it across four routes. These tests render the WHOLE
+ * surface — every view inside one session provider — because that is what
+ * they were always asserting: that one operator session behaves correctly
+ * end to end. Which page a panel now lives on is a layout decision; that an
+ * approved action refreshes bins, inventory AND history is not.
  *
  * Every server call is stubbed, so what these tests actually assert is what
  * the dashboard DOES WITH a server answer: that bin status comes from the
@@ -24,7 +44,7 @@ import type { ScanState } from "@/components/warehouse/state";
 function emptyOverview(): WarehouseOverview {
   return {
     generatedAt: 1_700_000_000_000,
-    bins: ["A01", "A02", "A03", "B01", "B02", "B03"].map((code) => ({
+    bins: ["B1-01", "B1-02", "B1-03", "B1-04", "B1-05", "B2-01"].map((code) => ({
       binId: `bin_${code}`,
       code,
       status: "AVAILABLE" as const,
@@ -41,9 +61,9 @@ function emptyOverview(): WarehouseOverview {
 function stockedOverview(): WarehouseOverview {
   const overview = emptyOverview();
   overview.bins = overview.bins.map((bin) => {
-    if (bin.code === "A02") return { ...bin, status: "RESERVED" as const };
-    if (bin.code === "A03") return { ...bin, status: "DISABLED" as const };
-    if (bin.code === "B03") {
+    if (bin.code === "B1-02") return { ...bin, status: "RESERVED" as const };
+    if (bin.code === "B1-03") return { ...bin, status: "DISABLED" as const };
+    if (bin.code === "B2-01") {
       return {
         ...bin,
         status: "OCCUPIED" as const,
@@ -68,8 +88,8 @@ function stockedOverview(): WarehouseOverview {
       category: "bearing",
       totalQuantity: 3,
       locations: [
-        { binCode: "A01", quantity: 1 },
-        { binCode: "B03", quantity: 2 },
+        { binCode: "B1-01", quantity: 1 },
+        { binCode: "B2-01", quantity: 2 },
       ],
     },
     {
@@ -78,7 +98,7 @@ function stockedOverview(): WarehouseOverview {
       canonicalName: "M8 x 50 Hex Bolt",
       category: "fastener",
       totalQuantity: 5,
-      locations: [{ binCode: "B01", quantity: 5 }],
+      locations: [{ binCode: "B1-04", quantity: 5 }],
     },
   ];
   overview.movements = [
@@ -90,7 +110,7 @@ function stockedOverview(): WarehouseOverview {
       canonicalName: "6204 Deep Groove Ball Bearing",
       quantity: 1,
       source: "INTAKE",
-      destination: "B03",
+      destination: "B2-01",
       createdAt: 1_700_000_000_000,
       completedAt: 1_700_000_001_000,
     },
@@ -101,7 +121,7 @@ function stockedOverview(): WarehouseOverview {
       sku: "BOLT-M8-50",
       canonicalName: "M8 x 50 Hex Bolt",
       quantity: 1,
-      source: "B01",
+      source: "B1-04",
       destination: "OUTPUT",
       createdAt: 1_699_999_000_000,
       completedAt: 1_699_999_001_000,
@@ -133,7 +153,7 @@ const RETRIEVAL_APPROVAL = {
       action: "RETRIEVAL",
       sku: "BRG-6204",
       canonicalName: "6204 Deep Groove Ball Bearing",
-      source: "B03",
+      source: "B2-01",
       destination: "OUTPUT",
       quantity: 1,
     },
@@ -171,7 +191,7 @@ beforeEach(() => {
     status: 200,
     body: {
       status: "COMPLETED",
-      message: "BRG-6204 is stored in B03.",
+      message: "BRG-6204 is stored in B2-01.",
       agent: "warehouse-agent",
       model: "test-model",
       toolCalls: ["search_inventory"],
@@ -216,14 +236,33 @@ afterEach(() => {
 });
 
 function panel(title: string): HTMLElement {
-  const heading = screen.getByRole("heading", { name: title });
+  // getAllBy rather than getBy so a panel that later appears on two pages does
+  // not break every test that reaches into it.
+  const heading = screen.getAllByRole("heading", { name: title })[0];
+  if (!heading) throw new Error(`No panel found for "${title}"`);
   const section = heading.closest("section");
   if (!section) throw new Error(`No panel found for "${title}"`);
   return section as HTMLElement;
 }
 
+/**
+ * Every view, in one session, so a panel's page is a layout detail here and
+ * the assertions stay about behaviour.
+ */
+function AllViews() {
+  return (
+    <WarehouseSessionProvider>
+      <WarehouseNav />
+      <OperateView />
+      <WarehouseView />
+      <HistoryView />
+      <ActivityView />
+    </WarehouseSessionProvider>
+  );
+}
+
 async function renderDashboard() {
-  render(<CommandCenter />);
+  render(<AllViews />);
   // Wait for the first authoritative snapshot rather than asserting against a
   // loading frame.
   await waitFor(() => expect(screen.getByRole("heading", { name: "Inventory" })).toBeTruthy());
@@ -242,7 +281,8 @@ describe("command centre — initial state", () => {
   it("renders every dashboard area without needing a current scan", async () => {
     await renderDashboard();
 
-    expect(screen.getByRole("heading", { name: "Agentic Spare Parts Warehouse" })).toBeTruthy();
+    expect(screen.getByText("Spare Parts Warehouse")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Operate" })).toBeTruthy();
     for (const title of [
       "Live camera",
       "Current scan",
@@ -254,7 +294,14 @@ describe("command centre — initial state", () => {
       "Agent activity",
       "Recent scans",
     ]) {
-      expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+      expect(screen.getAllByRole("heading", { name: title }).length).toBeGreaterThan(0);
+    }
+
+    // Every section of the menu is reachable from every page. Scoped to the
+    // nav landmark: the brand link also contains the word "Warehouse".
+    const menu = screen.getByRole("navigation", { name: "Command centre sections" });
+    for (const label of ["Operate", "Warehouse", "History", "Activity"]) {
+      expect(within(menu).getByRole("link", { name: new RegExp(label) })).toBeTruthy();
     }
 
     expect(screen.getByRole("button", { name: /Scan Part/ })).toBeTruthy();
@@ -304,9 +351,9 @@ describe("command centre — authoritative warehouse state", () => {
 
     await waitFor(() => expect(inventory.getByText("BRG-6204")).toBeTruthy());
     expect(inventory.getByText("Qty 3")).toBeTruthy();
-    expect(inventory.getByText("A01 (1), B03 (2)")).toBeTruthy();
+    expect(inventory.getByText("B1-01 (1), B2-01 (2)")).toBeTruthy();
     expect(inventory.getByText("Qty 5")).toBeTruthy();
-    expect(inventory.getByText("B01")).toBeTruthy();
+    expect(inventory.getByText("B1-04")).toBeTruthy();
   });
 
   it("filters inventory on screen without re-querying the warehouse", async () => {
@@ -331,7 +378,7 @@ describe("command centre — authoritative warehouse state", () => {
     await waitFor(() => expect(history.getByText("COMPLETED")).toBeTruthy());
     expect(history.getByText("FAILED")).toBeTruthy();
     expect(history.getByText("BRG-6204")).toBeTruthy();
-    expect(history.getByText("INTAKE → B03")).toBeTruthy();
+    expect(history.getByText("INTAKE → B2-01")).toBeTruthy();
   });
 });
 
@@ -349,7 +396,7 @@ describe("command centre — approval", () => {
     const card = within(panel("Approval required"));
     expect(card.getByText("RETRIEVAL")).toBeTruthy();
     expect(card.getByText("BRG-6204")).toBeTruthy();
-    expect(card.getByText("B03 → OUTPUT")).toBeTruthy();
+    expect(card.getByText("B2-01 → OUTPUT")).toBeTruthy();
     expect(card.getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(card.getByRole("button", { name: "Deny" })).toBeTruthy();
     // Nothing may have executed yet.
@@ -395,7 +442,7 @@ describe("command centre — approval", () => {
         sku: "BRG-6204",
         canonicalName: "6204 Deep Groove Ball Bearing",
         quantity: 1,
-        source: "B03",
+        source: "B2-01",
         destination: "OUTPUT",
         createdAt: 1_700_000_100_000,
         completedAt: 1_700_000_101_000,
@@ -419,7 +466,7 @@ describe("command centre — approval", () => {
 
     const after = emptyOverview();
     after.bins = after.bins.map((bin) =>
-      bin.code === "B02"
+      bin.code === "B1-05"
         ? {
             ...bin,
             status: "OCCUPIED" as const,
@@ -437,7 +484,7 @@ describe("command centre — approval", () => {
         canonicalName: "Newly stored part",
         category: null,
         totalQuantity: 1,
-        locations: [{ binCode: "B02", quantity: 1 }],
+        locations: [{ binCode: "B1-05", quantity: 1 }],
       },
     ];
     after.movements = [
@@ -449,7 +496,7 @@ describe("command centre — approval", () => {
         canonicalName: "Newly stored part",
         quantity: 1,
         source: "INTAKE",
-        destination: "B02",
+        destination: "B1-05",
         createdAt: 1_700_000_200_000,
         completedAt: 1_700_000_201_000,
       },
@@ -467,7 +514,7 @@ describe("command centre — approval", () => {
       expect(within(panel("Inventory")).getByText("NEW-0001")).toBeTruthy(),
     );
     expect(within(panel("Digital warehouse")).getByText("OCCUPIED")).toBeTruthy();
-    expect(within(panel("Recent movements")).getByText("INTAKE → B02")).toBeTruthy();
+    expect(within(panel("Recent movements")).getByText("INTAKE → B1-05")).toBeTruthy();
   });
 
   it("cancels on denial and shows no success anywhere", async () => {
@@ -708,7 +755,7 @@ describe("command centre — agent activity trace", () => {
         category: "TOOL",
         status: "COMPLETED",
         name: "search_inventory",
-        summary: "BRG-6204 — 2 in stock, B03 (2)",
+        summary: "BRG-6204 — 2 in stock, B2-01 (2)",
         startedAt: "2026-09-06T10:42:02.000Z",
         completedAt: "2026-09-06T10:42:02.084Z",
         durationMs: 84,
@@ -732,7 +779,7 @@ describe("command centre — agent activity trace", () => {
         category: "GANTRY",
         status: "COMPLETED",
         name: "RETRIEVAL",
-        summary: "Gantry RETRIEVAL B03 → OUTPUT completed.",
+        summary: "Gantry RETRIEVAL B2-01 → OUTPUT completed.",
         startedAt: null,
         completedAt: "2026-09-06T10:42:06.000Z",
         durationMs: 643,
@@ -744,7 +791,7 @@ describe("command centre — agent activity trace", () => {
         category: "WAREHOUSE",
         status: "COMPLETED",
         name: "BRG-6204",
-        summary: "Inventory BRG-6204 in B03: -1, 1 remaining.",
+        summary: "Inventory BRG-6204 in B2-01: -1, 1 remaining.",
         startedAt: null,
         completedAt: "2026-09-06T10:42:06.000Z",
         durationMs: null,
@@ -776,10 +823,10 @@ describe("command centre — agent activity trace", () => {
     );
     const view = within(panel("Agent activity"));
 
-    expect(view.getByText("BRG-6204 — 2 in stock, B03 (2)")).toBeTruthy();
+    expect(view.getByText("BRG-6204 — 2 in stock, B2-01 (2)")).toBeTruthy();
     expect(view.getByText("Operator approved the action.")).toBeTruthy();
-    expect(view.getByText("Gantry RETRIEVAL B03 → OUTPUT completed.")).toBeTruthy();
-    expect(view.getByText("Inventory BRG-6204 in B03: -1, 1 remaining.")).toBeTruthy();
+    expect(view.getByText("Gantry RETRIEVAL B2-01 → OUTPUT completed.")).toBeTruthy();
+    expect(view.getByText("Inventory BRG-6204 in B2-01: -1, 1 remaining.")).toBeTruthy();
 
     // Categories are words, not only colours.
     for (const label of ["AGENT", "TOOL", "HUMAN", "GANTRY", "WAREHOUSE"]) {

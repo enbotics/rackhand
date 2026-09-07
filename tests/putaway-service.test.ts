@@ -7,6 +7,7 @@ import { getGantryController, resetGantryController } from "@/lib/gantry/factory
 import type { SimulatedGantryController } from "@/lib/gantry/simulator";
 import type { ScanResult } from "@/lib/warehouse/scan-types";
 import { resetWarehouse } from "./helpers";
+import { SEED_BIN_CODES } from "@/lib/warehouse/types";
 
 /**
  * Milestone 7 is a state-integrity milestone, so most of these tests assert
@@ -104,12 +105,12 @@ afterEach(() => {
 
 describe("successful putaway", () => {
   it("commits inventory, occupies the bin and completes the movement", async () => {
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.part.sku).toBe("BRG-6204");
-    expect(result.destinationBinCode).toBe("B03");
+    expect(result.destinationBinCode).toBe("B2-01");
     expect(result.inventoryQuantityAdded).toBe(1);
     expect(result.status).toBe("COMPLETED");
     expect(result.gantryOperationId).toMatch(/^gantry_/);
@@ -118,11 +119,11 @@ describe("successful putaway", () => {
     const inventory = await prisma.inventory.findMany({ include: { bin: true, part: true } });
     expect(inventory).toHaveLength(1);
     expect(inventory[0].quantity).toBe(1);
-    expect(inventory[0].bin.code).toBe("B03");
+    expect(inventory[0].bin.code).toBe("B2-01");
     expect(inventory[0].part.sku).toBe("BRG-6204");
 
     // Bin
-    expect(await binStatus("B03")).toBe("OCCUPIED");
+    expect(await binStatus("B2-01")).toBe("OCCUPIED");
 
     // Movement
     const movement = await prisma.movement.findUniqueOrThrow({ where: { id: result.movementId } });
@@ -140,7 +141,7 @@ describe("successful putaway", () => {
     expect(operations[0].status).toBe("COMPLETED");
     expect(operations[0].type).toBe("PUTAWAY");
     expect(operations[0].source).toBe("INTAKE");
-    expect(operations[0].destination).toBe("B03");
+    expect(operations[0].destination).toBe("B2-01");
   });
 
   it("picks the first available bin by code when no destination is given", async () => {
@@ -148,16 +149,16 @@ describe("successful putaway", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // findAvailableBin policy: first AVAILABLE ordered by code.
-    expect(result.destinationBinCode).toBe("A01");
+    expect(result.destinationBinCode).toBe("B1-01");
   });
 
   it("skips bins that are not AVAILABLE when choosing automatically", async () => {
-    await setBinStatus("A01", "DISABLED");
-    await setBinStatus("A02", "RESERVED");
+    await setBinStatus("B1-01", "DISABLED");
+    await setBinStatus("B1-02", "RESERVED");
 
     const result = await executePutaway({ scanResult: scanOf() });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.destinationBinCode).toBe("A03");
+    if (result.ok) expect(result.destinationBinCode).toBe("B1-03");
   });
 });
 
@@ -177,7 +178,7 @@ describe("catalog match gating", () => {
         widthMM: 13.5,
         heightMM: 5.3,
       }),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
     });
 
     expect(result.ok).toBe(false);
@@ -201,7 +202,7 @@ describe("catalog match gating", () => {
         widthMM: 70,
         heightMM: 80,
       }),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
     });
 
     expect(result.ok).toBe(false);
@@ -230,10 +231,10 @@ describe("catalog match gating", () => {
 
 describe("destination validation", () => {
   it("rejects an occupied bin and never starts the gantry", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
     const before = await warehouseState();
 
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("bin_unavailable");
@@ -242,8 +243,8 @@ describe("destination validation", () => {
   });
 
   it("rejects a RESERVED bin", async () => {
-    await setBinStatus("B03", "RESERVED");
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    await setBinStatus("B2-01", "RESERVED");
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("bin_unavailable");
   });
@@ -255,7 +256,7 @@ describe("destination validation", () => {
   });
 
   it("reports no_available_bin when the warehouse is full", async () => {
-    for (const code of ["A01", "A02", "A03", "B01", "B02", "B03"]) {
+    for (const code of SEED_BIN_CODES) {
       await setBinStatus(code, "OCCUPIED");
     }
     const result = await executePutaway({ scanResult: scanOf() });
@@ -274,11 +275,11 @@ describe("gantry failures", () => {
     resetGantryController();
     const homing = getGantryController().home();
 
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("gantry_busy");
-    expect(await binStatus("B03")).toBe("AVAILABLE");
+    expect(await binStatus("B2-01")).toBe("AVAILABLE");
     expect(await prisma.inventory.count()).toBe(0);
 
     await homing;
@@ -287,7 +288,7 @@ describe("gantry failures", () => {
   it("marks the movement FAILED and frees the bin when pickup fails", async () => {
     simulator().failNextOperation("pickup_failed");
 
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -297,7 +298,7 @@ describe("gantry failures", () => {
     expect(result.gantryOperationId).toBeDefined();
 
     expect(await prisma.inventory.count()).toBe(0);
-    expect(await binStatus("B03")).toBe("AVAILABLE");
+    expect(await binStatus("B2-01")).toBe("AVAILABLE");
 
     const movement = await prisma.movement.findUniqueOrThrow({ where: { id: result.movementId! } });
     expect(movement.status).toBe("FAILED");
@@ -312,20 +313,20 @@ describe("gantry failures", () => {
   it("handles a movement timeout the same way", async () => {
     simulator().failNextOperation("movement_timeout");
 
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("movement_timeout");
     expect(await prisma.inventory.count()).toBe(0);
-    expect(await binStatus("B03")).toBe("AVAILABLE");
+    expect(await binStatus("B2-01")).toBe("AVAILABLE");
   });
 
   it("allows the same scan to be retried after a failure", async () => {
     simulator().failNextOperation("drop_failed");
-    const first = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const first = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
     expect(first.ok).toBe(false);
 
-    const second = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const second = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
     expect(second.ok).toBe(true);
     expect(await prisma.inventory.count()).toBe(1);
     // Two movements: the failed attempt is kept as operational history.
@@ -339,8 +340,8 @@ describe("idempotency", () => {
   it("does not put the same scan away twice", async () => {
     const scan = scanOf();
 
-    const first = await executePutaway({ scanResult: scan, destinationBinCode: "B03" });
-    const second = await executePutaway({ scanResult: scan, destinationBinCode: "B02" });
+    const first = await executePutaway({ scanResult: scan, destinationBinCode: "B2-01" });
+    const second = await executePutaway({ scanResult: scan, destinationBinCode: "B1-05" });
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
@@ -351,21 +352,21 @@ describe("idempotency", () => {
     expect(second.movementId).toBe(first.movementId);
     expect(second.gantryOperationId).toBe(first.gantryOperationId);
     // The second call must not honour its different destination.
-    expect(second.destinationBinCode).toBe("B03");
+    expect(second.destinationBinCode).toBe("B2-01");
 
     const inventory = await prisma.inventory.findMany();
     expect(inventory).toHaveLength(1);
     expect(inventory[0].quantity).toBe(1);
     expect(await prisma.movement.count()).toBe(1);
     expect(await getGantryController().getRecentOperations()).toHaveLength(1);
-    expect(await binStatus("B02")).toBe("AVAILABLE");
+    expect(await binStatus("B1-05")).toBe("AVAILABLE");
   });
 
   it("runs the gantry only once for concurrent duplicates of one scan", async () => {
     const scan = scanOf();
     const results = await Promise.all([
-      executePutaway({ scanResult: scan, destinationBinCode: "B03" }),
-      executePutaway({ scanResult: scan, destinationBinCode: "B03" }),
+      executePutaway({ scanResult: scan, destinationBinCode: "B2-01" }),
+      executePutaway({ scanResult: scan, destinationBinCode: "B2-01" }),
     ]);
 
     expect(results.filter((r) => r.ok && !r.duplicate)).toHaveLength(1);
@@ -383,8 +384,8 @@ describe("concurrent putaway into one bin", () => {
     // near-identical catalog part here would make both scans AMBIGUOUS and
     // test the matcher instead of the reservation.
     const [a, b] = await Promise.all([
-      executePutaway({ scanResult: scanOf({ scanId: "scan_1788574200001_aaa" }), destinationBinCode: "B03" }),
-      executePutaway({ scanResult: scanOf({ scanId: "scan_1788574200002_bbb" }), destinationBinCode: "B03" }),
+      executePutaway({ scanResult: scanOf({ scanId: "scan_1788574200001_aaa" }), destinationBinCode: "B2-01" }),
+      executePutaway({ scanResult: scanOf({ scanId: "scan_1788574200002_bbb" }), destinationBinCode: "B2-01" }),
     ]);
 
     const succeeded = [a, b].filter((r) => r.ok);
@@ -398,9 +399,9 @@ describe("concurrent putaway into one bin", () => {
     // One bin, one SKU, one unit — never double occupancy.
     const inventory = await prisma.inventory.findMany({ include: { bin: true } });
     expect(inventory).toHaveLength(1);
-    expect(inventory[0].bin.code).toBe("B03");
+    expect(inventory[0].bin.code).toBe("B2-01");
     expect(inventory[0].quantity).toBe(1);
-    expect(await binStatus("B03")).toBe("OCCUPIED");
+    expect(await binStatus("B2-01")).toBe("OCCUPIED");
   });
 });
 
@@ -410,9 +411,9 @@ describe("database commit failure after the gantry succeeded", () => {
   it("does not re-run the gantry and preserves ids for reconciliation", async () => {
     // A real commit failure, not a mock: capacity 0 makes the inventory write
     // inside the commit transaction throw after the part has physically moved.
-    await prisma.bin.update({ where: { code: "B03" }, data: { capacity: 0 } });
+    await prisma.bin.update({ where: { code: "B2-01" }, data: { capacity: 0 } });
 
-    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: scanOf(), destinationBinCode: "B2-01" });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;

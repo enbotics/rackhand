@@ -14,8 +14,8 @@ import { BUTTON_VARIANTS, Field, Panel, StatusChip } from "./ui";
  *     decision to the server; the server holds the frozen tool arguments and
  *     re-validates every M7/M8 rule before anything moves. Nothing on this
  *     card can change what was approved — there is no editable field, by
- *     design, because an approval for B03 must never become an approval for
- *     A02 on its way back.
+ *     design, because an approval for B2-01 must never become an approval for
+ *     B1-02 on its way back.
  *  2. It does not declare success. Pressing Approve shows "Executing…", and
  *     what replaces it comes from the resumed server run and the Movement
  *     table. An approved action can still fail on the machine, and this card

@@ -201,8 +201,8 @@ describe("Scenario A — known-part putaway", () => {
       "m13-a1",
       null,
       scripted([
-        toolUseTurn("execute_putaway", "t1", '{"destinationBinCode":"A01"}'),
-        textTurn("Stored in A01."),
+        toolUseTurn("execute_putaway", "t1", '{"destinationBinCode":"B1-01"}'),
+        textTurn("Stored in B1-01."),
       ]),
     );
 
@@ -214,13 +214,13 @@ describe("Scenario A — known-part putaway", () => {
     expect(await simulator().getRecentOperations()).toHaveLength(0);
     expect(await stockOf("BRG-6204")).toBe(0);
     expect(await prisma.movement.count()).toBe(0);
-    expect(await binStatus("A01")).toBe("AVAILABLE");
+    expect(await binStatus("B1-01")).toBe("AVAILABLE");
 
     /* ---- operator approves ---- */
     const resumed = await resumeWarehouseAgent(
       asked.approval!.approvalId,
       "APPROVE",
-      scripted([textTurn("Stored in A01.")]),
+      scripted([textTurn("Stored in B1-01.")]),
     );
     expect(resumed.ok).toBe(true);
 
@@ -229,10 +229,10 @@ describe("Scenario A — known-part putaway", () => {
     expect(operations).toHaveLength(1);
     expect(operations[0].status).toBe("COMPLETED");
     expect(operations[0].source).toBe("INTAKE");
-    expect(operations[0].destination).toBe("A01");
+    expect(operations[0].destination).toBe("B1-01");
 
     expect(await stockOf("BRG-6204")).toBe(1);
-    expect(await binStatus("A01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-01")).toBe("OCCUPIED");
 
     const movements = await prisma.movement.findMany();
     expect(movements).toHaveLength(1);
@@ -257,17 +257,17 @@ describe("Scenario A — known-part putaway", () => {
   });
 
   it("E2E-01b — adds to existing stock without breaking the one-SKU-per-bin rule", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "A01", quantity: 3 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-01", quantity: 3 });
 
     const result = await executePutaway({ scanResult: bearingScan("scan_m13_a2") });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // A01 is OCCUPIED, so the deterministic policy picks the next free bin.
-    expect(result.destinationBinCode).toBe("A02");
+    // B1-01 is OCCUPIED, so the deterministic policy picks the next free bin.
+    expect(result.destinationBinCode).toBe("B1-02");
     expect(await stockOf("BRG-6204")).toBe(4);
-    expect(await binStatus("A01")).toBe("OCCUPIED");
-    expect(await binStatus("A02")).toBe("OCCUPIED");
+    expect(await binStatus("B1-01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-02")).toBe("OCCUPIED");
 
     await assertWarehouseInvariants();
   });
@@ -283,7 +283,7 @@ describe("Scenario B — retrieval", () => {
   });
 
   it("E2E-02 — retrieves one item, leaving a still-stocked bin OCCUPIED", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     const asked = await invokeWarehouseAgent(
       "Bring me BRG-6204.",
@@ -312,17 +312,17 @@ describe("Scenario B — retrieval", () => {
     const operations = await simulator().getRecentOperations();
     expect(operations).toHaveLength(1);
     expect(operations[0].status).toBe("COMPLETED");
-    expect(operations[0].source).toBe("B01");
+    expect(operations[0].source).toBe("B1-04");
     expect(operations[0].destination).toBe("OUTPUT");
 
     expect(await stockOf("BRG-6204")).toBe(1);
-    expect(await binStatus("B01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-04")).toBe("OCCUPIED");
 
     await assertWarehouseInvariants();
   });
 
   it("E2E-02b — frees the bin when the last item leaves", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 1 });
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "m13-b2" });
     expect(result.ok).toBe(true);
@@ -330,7 +330,7 @@ describe("Scenario B — retrieval", () => {
 
     expect(result.remainingQuantityInBin).toBe(0);
     expect(await stockOf("BRG-6204")).toBe(0);
-    expect(await binStatus("B01")).toBe("AVAILABLE");
+    expect(await binStatus("B1-04")).toBe("AVAILABLE");
 
     await assertWarehouseInvariants();
   });
@@ -525,7 +525,7 @@ describe("Scenario D — denial", () => {
     expect(await simulator().getRecentOperations()).toHaveLength(0);
     expect(await prisma.inventory.count()).toBe(0);
     expect(await prisma.movement.count()).toBe(0);
-    expect(await binStatus("A01")).toBe("AVAILABLE");
+    expect(await binStatus("B1-01")).toBe("AVAILABLE");
 
     const trace = await getTrace(asked.traceId);
     expect(trace?.status).toBe("DENIED");
@@ -538,7 +538,7 @@ describe("Scenario D — denial", () => {
   });
 
   it("D2 — a denied retrieval leaves stock where it was", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     const asked = await invokeWarehouseAgent(
       "Bring me BRG-6204.",
@@ -558,7 +558,7 @@ describe("Scenario D — denial", () => {
 
     expect(await simulator().getRecentOperations()).toHaveLength(0);
     expect(await stockOf("BRG-6204")).toBe(2);
-    expect(await binStatus("B01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-04")).toBe("OCCUPIED");
 
     await assertWarehouseInvariants();
   });
@@ -608,7 +608,7 @@ describe("Scenario D — machine failure", () => {
 
     const result = await executePutaway({
       scanResult: bearingScan("scan_m13_d4"),
-      destinationBinCode: "A01",
+      destinationBinCode: "B1-01",
     });
 
     expect(result.ok).toBe(false);
@@ -627,7 +627,7 @@ describe("Scenario D — machine failure", () => {
 
     expect(await stockOf("BRG-6204")).toBe(0);
     // The reservation is released, so the bin is usable again.
-    expect(await binStatus("A01")).toBe("AVAILABLE");
+    expect(await binStatus("B1-01")).toBe("AVAILABLE");
 
     await assertWarehouseInvariants();
   });
@@ -647,7 +647,7 @@ describe("Scenario D — machine failure", () => {
   });
 
   it("D5 — a retrieval pickup failure leaves the item on the shelf", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
     simulator().failNextOperation("pickup_failed");
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "m13-d5" });
@@ -657,13 +657,13 @@ describe("Scenario D — machine failure", () => {
     expect(result.reason).toBe("gantry_failed");
 
     expect(await stockOf("BRG-6204")).toBe(2);
-    expect(await binStatus("B01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-04")).toBe("OCCUPIED");
 
     await assertWarehouseInvariants();
   });
 
   it("D6 — a busy gantry refuses a second operation without mutating anything", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 1 });
     // A slow machine, so the second request genuinely overlaps the first.
     process.env.GANTRY_SIM_MOVE_DELAY_MS = "60";
     resetGantryController();
@@ -675,7 +675,7 @@ describe("Scenario D — machine failure", () => {
           await new Promise((resolve) => setTimeout(resolve, 15));
           return executePutaway({
             scanResult: bearingScan("scan_m13_d6"),
-            destinationBinCode: "A01",
+            destinationBinCode: "B1-01",
           });
         })(),
       ]);
@@ -687,7 +687,7 @@ describe("Scenario D — machine failure", () => {
 
       // The refused putaway stored nothing and left no reservation.
       expect(await stockOf("BRG-6204")).toBe(0);
-      expect(await binStatus("A01")).toBe("AVAILABLE");
+      expect(await binStatus("B1-01")).toBe("AVAILABLE");
     } finally {
       process.env.GANTRY_SIM_MOVE_DELAY_MS = "0";
       resetGantryController();
@@ -777,14 +777,14 @@ describe("Scenario D — machine failure", () => {
       "m13-d12",
       null,
       scripted([
-        toolUseTurn("execute_putaway", "t1", '{"destinationBinCode":"A01"}'),
+        toolUseTurn("execute_putaway", "t1", '{"destinationBinCode":"B1-01"}'),
         textTurn("Stored."),
       ]),
     );
     expect(asked.status).toBe("APPROVAL_REQUIRED");
 
     // The world changes underneath the approval card.
-    await prisma.bin.update({ where: { code: "A01" }, data: { status: "DISABLED" } });
+    await prisma.bin.update({ where: { code: "B1-01" }, data: { status: "DISABLED" } });
 
     const resumed = await resumeWarehouseAgent(
       asked.approval!.approvalId,
@@ -795,7 +795,7 @@ describe("Scenario D — machine failure", () => {
 
     // Approval authorised the ACTION, not the outcome: the service re-checked.
     expect(await stockOf("BRG-6204")).toBe(0);
-    expect(await binStatus("A01")).toBe("DISABLED");
+    expect(await binStatus("B1-01")).toBe("DISABLED");
     expect(await simulator().getRecentOperations()).toHaveLength(0);
 
     await assertWarehouseInvariants();
@@ -828,7 +828,7 @@ describe("Scenario D — idempotency and concurrency", () => {
   });
 
   it("D15 — the same retrieval request id twice removes one item", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 3 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 3 });
 
     const first = await executeRetrieval({ sku: "BRG-6204", requestId: "m13-d15" });
     const second = await executeRetrieval({ sku: "BRG-6204", requestId: "m13-d15" });
@@ -872,15 +872,15 @@ describe("Scenario D — idempotency and concurrency", () => {
   });
 
   it("D16 — two putaways racing for one bin: exactly one wins", async () => {
-    // Only A01 is available, so both requests must target it.
+    // Only B1-01 is available, so both requests must target it.
     await prisma.bin.updateMany({
-      where: { code: { not: "A01" } },
+      where: { code: { not: "B1-01" } },
       data: { status: "DISABLED" },
     });
 
     const [a, b] = await Promise.all([
-      executePutaway({ scanResult: bearingScan("scan_m13_d16a"), destinationBinCode: "A01" }),
-      executePutaway({ scanResult: bearingScan("scan_m13_d16b"), destinationBinCode: "A01" }),
+      executePutaway({ scanResult: bearingScan("scan_m13_d16a"), destinationBinCode: "B1-01" }),
+      executePutaway({ scanResult: bearingScan("scan_m13_d16b"), destinationBinCode: "B1-01" }),
     ]);
 
     const wins = [a, b].filter((r) => r.ok);
@@ -894,13 +894,13 @@ describe("Scenario D — idempotency and concurrency", () => {
     ]).toContain(loser.reason);
 
     expect(await stockOf("BRG-6204")).toBe(1);
-    expect(await binStatus("A01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-01")).toBe("OCCUPIED");
 
     await assertWarehouseInvariants();
   });
 
   it("D17 — two retrievals racing for the last item: stock never goes negative", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 1 });
 
     const [a, b] = await Promise.all([
       executeRetrieval({ sku: "BRG-6204", requestId: "m13-d17a" }),
@@ -933,7 +933,7 @@ describe("client tampering is rejected server-side", () => {
       "m13-t1",
       null,
       scripted([
-        toolUseTurn("execute_putaway", "t1", '{"destinationBinCode":"A01"}'),
+        toolUseTurn("execute_putaway", "t1", '{"destinationBinCode":"B1-01"}'),
         textTurn("Stored."),
       ]),
     );
@@ -947,9 +947,9 @@ describe("client tampering is rejected server-side", () => {
     );
 
     const operations = await simulator().getRecentOperations();
-    expect(operations[0].destination).toBe("A01");
-    expect(await binStatus("A01")).toBe("OCCUPIED");
-    expect(await binStatus("B03")).toBe("AVAILABLE");
+    expect(operations[0].destination).toBe("B1-01");
+    expect(await binStatus("B1-01")).toBe("OCCUPIED");
+    expect(await binStatus("B2-01")).toBe("AVAILABLE");
 
     await assertWarehouseInvariants();
   });
@@ -999,11 +999,11 @@ describe("client tampering is rejected server-side", () => {
   });
 
   it("T5 — an unavailable destination is refused even when explicitly requested", async () => {
-    await prisma.bin.update({ where: { code: "A01" }, data: { status: "DISABLED" } });
+    await prisma.bin.update({ where: { code: "B1-01" }, data: { status: "DISABLED" } });
 
     const result = await executePutaway({
       scanResult: bearingScan("scan_m13_t5"),
-      destinationBinCode: "A01",
+      destinationBinCode: "B1-01",
     });
 
     expect(result.ok).toBe(false);
@@ -1015,7 +1015,7 @@ describe("client tampering is rejected server-side", () => {
   });
 
   it("T6 — scan text asking for a retrieval is treated as data, not instruction", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     const hostile: ScanResult = {
       ...bearingScan("scan_m13_t6"),
@@ -1059,7 +1059,7 @@ describe("a turn is only COMPLETED when it really completed", () => {
   });
 
   it("D21 — a tool that fails outright makes the trace FAILED, not COMPLETED", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     // A malformed call: execute_retrieval requires a declared quantity, so the
     // tool fails before the service is reached and no workflow is ever
@@ -1095,7 +1095,7 @@ describe("a turn is only COMPLETED when it really completed", () => {
   });
 
   it("D21a — a read-only tool that failed and was retried does not fail the turn", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     // Observed live: Nova called match_catalog with bad arguments, corrected
     // itself, and the request went on to succeed. That run completed.
@@ -1108,7 +1108,7 @@ describe("a turn is only COMPLETED when it really completed", () => {
         // Missing the required query — the tool fails at its schema.
         toolUseTurn("search_inventory", "t1", "{}"),
         toolUseTurn("search_inventory", "t2", '{"query":"BRG-6204"}'),
-        textTurn("Two in B01."),
+        textTurn("Two in B1-04."),
       ]),
     );
 
@@ -1121,7 +1121,7 @@ describe("a turn is only COMPLETED when it really completed", () => {
   });
 
   it("D21b — a turn whose tools all succeeded is still COMPLETED", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     const reply = await invokeWarehouseAgent(
       "Where is BRG-6204?",
@@ -1130,7 +1130,7 @@ describe("a turn is only COMPLETED when it really completed", () => {
       null,
       scripted([
         toolUseTurn("search_inventory", "t1", '{"query":"BRG-6204"}'),
-        textTurn("Two in B01."),
+        textTurn("Two in B1-04."),
       ]),
     );
 
@@ -1219,7 +1219,7 @@ describe("degraded dependencies", () => {
   });
 
   it("D19 — a model failure leaves the warehouse untouched and still readable", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-04", quantity: 2 });
 
     const exploding = () => {
       const agent = createWarehouseAgent(new ScriptedModel([textTurn("never reached")]));
@@ -1236,7 +1236,7 @@ describe("degraded dependencies", () => {
     // The agent is one capability, not the application: warehouse data is
     // still exactly as it was and still readable without a model.
     expect(await stockOf("BRG-6204")).toBe(2);
-    expect(await binStatus("B01")).toBe("OCCUPIED");
+    expect(await binStatus("B1-04")).toBe("OCCUPIED");
     expect(await prisma.movement.count()).toBe(0);
     expect(await simulator().getRecentOperations()).toHaveLength(0);
 

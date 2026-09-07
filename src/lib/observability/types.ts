@@ -11,7 +11,7 @@
  * them is a bug in the trace, never a change to the warehouse.
  *
  * WHAT, NEVER WHY. A trace says "search_inventory ran and found BRG-6204 in
- * B03". It never says what the model privately deliberated. Chain-of-thought,
+ * B2-01". It never says what the model privately deliberated. Chain-of-thought,
  * scratchpads, reasoning tokens and system prompts are not stored and not
  * displayed.
  */

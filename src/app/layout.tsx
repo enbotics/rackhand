@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Sora, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { WarehouseNav } from "@/components/warehouse/nav";
+import { WarehouseSessionProvider } from "@/components/warehouse/session";
 
 const sora = Sora({
   variable: "--font-sora",
@@ -28,7 +30,18 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col relative bg-bg text-ink">
         <div className="atmosphere" aria-hidden="true" />
-        <div className="relative z-10 flex flex-1 flex-col">{children}</div>
+        {/*
+          The session lives ABOVE the router outlet so a half-finished scan or
+          a pending approval survives moving between pages. Losing an approval
+          card by clicking a menu item would leave the operator unable to
+          answer a question the server is still holding open.
+        */}
+        <WarehouseSessionProvider>
+          <div className="relative z-10 flex flex-1 flex-col">
+            <WarehouseNav />
+            <main className="flex flex-1 flex-col">{children}</main>
+          </div>
+        </WarehouseSessionProvider>
       </body>
     </html>
   );

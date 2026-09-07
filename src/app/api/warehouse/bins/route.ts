@@ -5,7 +5,7 @@ import { WarehouseError } from "@/lib/warehouse/errors";
 
 /**
  * GET /api/warehouse/bins            — list every bin
- * GET /api/warehouse/bins?code=A01   — one bin
+ * GET /api/warehouse/bins?code=B1-01   — one bin
  * GET /api/warehouse/bins?available=1 — first AVAILABLE bin by code
  *
  * Bins carry no gantry coordinates — hardware addressing is a later milestone.

@@ -18,7 +18,7 @@ function runSeed(): void {
 describe("bin seed", () => {
   beforeAll(async () => {
     assertTestDatabase();
-    // Start from an empty bin table so the seed is what creates the six bins.
+    // Start from an empty bin table so the seed is what creates the bins.
     await prisma.movement.deleteMany();
     await prisma.inventory.deleteMany();
     await prisma.part.deleteMany();
@@ -28,7 +28,7 @@ describe("bin seed", () => {
   it("creates the six MVP bins", async () => {
     runSeed();
     const bins = await prisma.bin.findMany({ orderBy: { code: "asc" } });
-    expect(bins.map((b) => b.code)).toEqual(["A01", "A02", "A03", "B01", "B02", "B03"]);
+    expect(bins.map((b) => b.code)).toEqual([...SEED_BIN_CODES]);
     expect(bins).toHaveLength(SEED_BIN_CODES.length);
     expect(bins.every((b) => b.status === "AVAILABLE")).toBe(true);
   });
@@ -37,16 +37,16 @@ describe("bin seed", () => {
     runSeed();
     runSeed();
     const bins = await prisma.bin.findMany({ orderBy: { code: "asc" } });
-    expect(bins).toHaveLength(6);
-    expect(bins.map((b) => b.code)).toEqual(["A01", "A02", "A03", "B01", "B02", "B03"]);
+    expect(bins).toHaveLength(SEED_BIN_CODES.length);
+    expect(bins.map((b) => b.code)).toEqual([...SEED_BIN_CODES]);
   });
 
   it("does not reset a bin that is already in use", async () => {
-    await prisma.bin.update({ where: { code: "A02" }, data: { status: "DISABLED" } });
+    await prisma.bin.update({ where: { code: "B1-02" }, data: { status: "DISABLED" } });
     runSeed();
-    const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "A02" } });
+    const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "B1-02" } });
     expect(bin.status).toBe("DISABLED");
 
-    await prisma.bin.update({ where: { code: "A02" }, data: { status: "AVAILABLE" } });
+    await prisma.bin.update({ where: { code: "B1-02" }, data: { status: "AVAILABLE" } });
   });
 });

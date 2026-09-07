@@ -49,14 +49,14 @@ describe("get_gantry_status tool", () => {
   it("reflects genuine state changes rather than a fixed reading", async () => {
     const controller = getGantryController();
     await controller.home();
-    await controller.putaway({ source: "INTAKE", destination: "B03" });
+    await controller.putaway({ source: "INTAKE", destination: "B2-01" });
 
     const result = (await getGantryStatusTool.invoke({})) as {
       homed: boolean;
       currentLocation: string | null;
     };
     expect(result.homed).toBe(true);
-    expect(result.currentLocation).toBe("B03");
+    expect(result.currentLocation).toBe("B2-01");
   });
 
   it("is read-only — it creates no gantry operations", async () => {
@@ -385,14 +385,14 @@ describe("chain-of-thought suppression", () => {
     expect(stripInlineReasoning("<response>The gantry is idle.</response>")).toBe(
       "The gantry is idle.",
     );
-    expect(stripInlineReasoning("<thinking>x</thinking><response>Bin B03 holds 2.</response>")).toBe(
-      "Bin B03 holds 2.",
+    expect(stripInlineReasoning("<thinking>x</thinking><response>Bin B2-01 holds 2.</response>")).toBe(
+      "Bin B2-01 holds 2.",
     );
   });
 
   it("keeps the tail when a <response> envelope was cut short", () => {
-    expect(stripInlineReasoning("<response>Bin B03 holds 2 units of")).toBe(
-      "Bin B03 holds 2 units of",
+    expect(stripInlineReasoning("<response>Bin B2-01 holds 2 units of")).toBe(
+      "Bin B2-01 holds 2 units of",
     );
   });
 

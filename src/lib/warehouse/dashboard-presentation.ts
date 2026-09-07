@@ -232,7 +232,7 @@ export function filterInventory(rows: InventoryRowView[], query: string): Invent
   );
 }
 
-/** "B03" for one bin, "A02 (1), B03 (2)" when a part is split across several. */
+/** "B2-01" for one bin, "B1-02 (1), B2-01 (2)" when a part is split across several. */
 export function formatLocations(locations: Array<{ binCode: string; quantity: number }>): string {
   if (locations.length === 0) return "—";
   if (locations.length === 1) return locations[0].binCode;

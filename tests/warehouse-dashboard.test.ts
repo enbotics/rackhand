@@ -16,6 +16,7 @@ import {
   filterInventory,
   formatLocations,
 } from "@/lib/warehouse/dashboard-presentation";
+import { SEED_BIN_CODES } from "@/lib/warehouse/types";
 import { resetWarehouse, SAMPLE_PART } from "./helpers";
 
 /**
@@ -35,8 +36,8 @@ describe("warehouse overview (dashboard read model)", () => {
   it("reports an empty warehouse honestly rather than as missing data", async () => {
     const overview = await getWarehouseOverview();
 
-    expect(overview.bins).toHaveLength(6);
-    expect(overview.bins.map((bin) => bin.code)).toEqual(["A01", "A02", "A03", "B01", "B02", "B03"]);
+    expect(overview.bins).toHaveLength(SEED_BIN_CODES.length);
+    expect(overview.bins.map((bin) => bin.code)).toEqual([...SEED_BIN_CODES]);
     expect(overview.bins.every((bin) => bin.status === "AVAILABLE")).toBe(true);
     expect(overview.bins.every((bin) => bin.contents.length === 0)).toBe(true);
     expect(overview.inventory).toEqual([]);
@@ -44,18 +45,18 @@ describe("warehouse overview (dashboard read model)", () => {
     expect(overview.totals).toEqual({
       units: 0,
       distinctParts: 0,
-      binsAvailable: 6,
+      binsAvailable: SEED_BIN_CODES.length,
       binsOccupied: 0,
     });
   });
 
   it("shows stored stock in the bin that holds it", async () => {
     await createPart(SAMPLE_PART);
-    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B03", quantity: 2 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B2-01", quantity: 2 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const overview = await getWarehouseOverview();
-    const b03 = overview.bins.find((bin) => bin.code === "B03");
+    const b03 = overview.bins.find((bin) => bin.code === "B2-01");
 
     expect(b03?.status).toBe("OCCUPIED");
     expect(b03?.totalQuantity).toBe(2);
@@ -72,33 +73,34 @@ describe("warehouse overview (dashboard read model)", () => {
   });
 
   it("reflects every bin status from the database, not from occupancy", async () => {
-    await setBinStatus("A01", "AVAILABLE");
-    await setBinStatus("A02", "RESERVED");
-    await setBinStatus("A03", "DISABLED");
+    await setBinStatus("B1-01", "AVAILABLE");
+    await setBinStatus("B1-02", "RESERVED");
+    await setBinStatus("B1-03", "DISABLED");
     await createPart(SAMPLE_PART);
-    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B01", quantity: 1 });
-    await setBinStatus("B01", "OCCUPIED");
+    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B1-04", quantity: 1 });
+    await setBinStatus("B1-04", "OCCUPIED");
 
     const overview = await getWarehouseOverview();
     const statuses = Object.fromEntries(overview.bins.map((bin) => [bin.code, bin.status]));
 
     expect(statuses).toMatchObject({
-      A01: "AVAILABLE",
-      A02: "RESERVED",
-      A03: "DISABLED",
-      B01: "OCCUPIED",
+      "B1-01": "AVAILABLE",
+      "B1-02": "RESERVED",
+      "B1-03": "DISABLED",
+      "B1-04": "OCCUPIED",
     });
     // A RESERVED bin is empty and still not available. The two facts are
     // separate, and the view must not collapse them.
-    expect(overview.bins.find((bin) => bin.code === "A02")?.contents).toEqual([]);
-    expect(overview.totals.binsAvailable).toBe(3);
+    expect(overview.bins.find((bin) => bin.code === "B1-02")?.contents).toEqual([]);
+    // Everything except the RESERVED, DISABLED and OCCUPIED ones above.
+    expect(overview.totals.binsAvailable).toBe(SEED_BIN_CODES.length - 3);
     expect(overview.totals.binsOccupied).toBe(1);
   });
 
   it("aggregates one part held in several bins into a single inventory row", async () => {
     await createPart(SAMPLE_PART);
-    await addInventory({ sku: SAMPLE_PART.sku, binCode: "A02", quantity: 1 });
-    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B03", quantity: 2 });
+    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B1-02", quantity: 1 });
+    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B2-01", quantity: 2 });
 
     const overview = await getWarehouseOverview();
 
@@ -109,8 +111,8 @@ describe("warehouse overview (dashboard read model)", () => {
       category: "bearing",
       totalQuantity: 3,
       locations: [
-        { binCode: "A02", quantity: 1 },
-        { binCode: "B03", quantity: 2 },
+        { binCode: "B1-02", quantity: 1 },
+        { binCode: "B2-01", quantity: 2 },
       ],
     });
     expect(overview.totals).toMatchObject({ units: 3, distinctParts: 1 });
@@ -118,13 +120,13 @@ describe("warehouse overview (dashboard read model)", () => {
 
   it("does not draw a part into a bin whose stock has gone to zero", async () => {
     await createPart(SAMPLE_PART);
-    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B02", quantity: 1 });
+    await addInventory({ sku: SAMPLE_PART.sku, binCode: "B1-05", quantity: 1 });
     const { removeInventory } = await import("@/lib/warehouse/inventory-service");
-    await removeInventory({ sku: SAMPLE_PART.sku, binCode: "B02", quantity: 1 });
+    await removeInventory({ sku: SAMPLE_PART.sku, binCode: "B1-05", quantity: 1 });
 
     const overview = await getWarehouseOverview();
 
-    expect(overview.bins.find((bin) => bin.code === "B02")?.contents).toEqual([]);
+    expect(overview.bins.find((bin) => bin.code === "B1-05")?.contents).toEqual([]);
     expect(overview.inventory).toEqual([]);
     expect(overview.totals.units).toBe(0);
   });
@@ -136,7 +138,7 @@ describe("warehouse overview (dashboard read model)", () => {
       sku: SAMPLE_PART.sku,
       quantity: 1,
       sourceLocation: "INTAKE",
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
     });
     await updateMovementStatus(putaway.id, "COMPLETED");
 
@@ -144,7 +146,7 @@ describe("warehouse overview (dashboard read model)", () => {
       type: "RETRIEVAL",
       sku: SAMPLE_PART.sku,
       quantity: 1,
-      sourceBinCode: "B03",
+      sourceBinCode: "B2-01",
       destinationLocation: "OUTPUT",
     });
     await updateMovementStatus(failed.id, "FAILED");
@@ -157,7 +159,7 @@ describe("warehouse overview (dashboard read model)", () => {
       type: "RETRIEVAL",
       status: "FAILED",
       sku: "BRG-6204",
-      source: "B03",
+      source: "B2-01",
       destination: "OUTPUT",
     });
     expect(overview.movements[1]).toMatchObject({
@@ -165,7 +167,7 @@ describe("warehouse overview (dashboard read model)", () => {
       status: "COMPLETED",
       sku: "BRG-6204",
       source: "INTAKE",
-      destination: "B03",
+      destination: "B2-01",
     });
     expect(overview.movements[0].completedAt).toBeTypeOf("number");
   });
@@ -178,7 +180,7 @@ describe("warehouse overview (dashboard read model)", () => {
         sku: SAMPLE_PART.sku,
         quantity: 1,
         sourceLocation: "INTAKE",
-        destinationBinCode: "B03",
+        destinationBinCode: "B2-01",
       });
     }
 
@@ -250,7 +252,7 @@ describe("dashboard presentation", () => {
         canonicalName: "6204 Deep Groove Ball Bearing",
         category: "bearing",
         totalQuantity: 2,
-        locations: [{ binCode: "B03", quantity: 2 }],
+        locations: [{ binCode: "B2-01", quantity: 2 }],
       },
       {
         partId: "p2",
@@ -258,7 +260,7 @@ describe("dashboard presentation", () => {
         canonicalName: "M8 x 50 Hex Bolt",
         category: "fastener",
         totalQuantity: 5,
-        locations: [{ binCode: "A01", quantity: 5 }],
+        locations: [{ binCode: "B1-01", quantity: 5 }],
       },
     ];
 
@@ -270,13 +272,13 @@ describe("dashboard presentation", () => {
   });
 
   it("formats one location plainly and several with their quantities", () => {
-    expect(formatLocations([{ binCode: "B03", quantity: 2 }])).toBe("B03");
+    expect(formatLocations([{ binCode: "B2-01", quantity: 2 }])).toBe("B2-01");
     expect(
       formatLocations([
-        { binCode: "A02", quantity: 1 },
-        { binCode: "B03", quantity: 2 },
+        { binCode: "B1-02", quantity: 1 },
+        { binCode: "B2-01", quantity: 2 },
       ]),
-    ).toBe("A02 (1), B03 (2)");
+    ).toBe("B1-02 (1), B2-01 (2)");
     expect(formatLocations([])).toBe("—");
   });
 });

@@ -9,7 +9,7 @@
  * A bin knows nothing about the part inside it without joining Inventory and
  * Part; a Movement stores partId and binId, not a SKU and a bin code. Doing
  * those joins in React would put warehouse logic in the browser and let two
- * implementations of "what is in B03" drift apart. So the server composes the
+ * implementations of "what is in B2-01" drift apart. So the server composes the
  * whole view once (dashboard-service.ts) and the UI only formats it.
  *
  * Every field here is derived from the database. Nothing in this contract may
@@ -56,7 +56,7 @@ export interface InventoryRowView {
  *
  * `source`/`destination` flatten the bin-or-station split the Movement table
  * keeps (a putaway starts at the INTAKE station, not a bin), because an
- * operator reads "INTAKE → B03" as one route.
+ * operator reads "INTAKE → B2-01" as one route.
  */
 export interface MovementRowView {
   id: string;

@@ -31,6 +31,7 @@ import { requestCatalogResolution, confirmCatalogResolution } from "@/lib/wareho
 import type { ScanResult } from "@/lib/warehouse/scan-types";
 import { ScriptedModel, textTurn, toolUseTurn } from "./scripted-model";
 import { resetWarehouse } from "./helpers";
+import { SEED_BIN_CODES } from "@/lib/warehouse/types";
 
 /**
  * Milestone 11 — the two Strands graphs.
@@ -318,7 +319,7 @@ describe("putaway graph", () => {
   });
 
   it("Test 5 — no available bin blocks before execution", async () => {
-    for (const code of ["A01", "A02", "A03", "B01", "B02", "B03"]) {
+    for (const code of SEED_BIN_CODES) {
       await setBinStatus(code, "DISABLED");
     }
 
@@ -335,11 +336,11 @@ describe("putaway graph", () => {
   });
 
   it("Test 5b — an explicitly requested unavailable bin blocks at destination", async () => {
-    await setBinStatus("B03", "DISABLED");
+    await setBinStatus("B2-01", "DISABLED");
 
     const { graph } = await runPutawayGraph({
       scanResult: bearingScan(),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
     });
 
     expect(graph.status === "BLOCKED" && graph.reason).toBe("bin_unavailable");
@@ -414,7 +415,9 @@ describe("putaway graph", () => {
   });
 
   it("Test 13 — concurrent graphs contending for one bin store exactly one item", async () => {
-    for (const code of ["A02", "A03", "B01", "B02", "B03"]) {
+    // Only B1-01 is left in service, so both runs must contend for the very
+    // same bin rather than quietly taking one each.
+    for (const code of SEED_BIN_CODES.filter((code) => code !== "B1-01")) {
       await setBinStatus(code, "DISABLED");
     }
 
@@ -426,21 +429,24 @@ describe("putaway graph", () => {
     const succeeded = [a, b].filter((run) => run.result.ok);
     expect(succeeded).toHaveLength(1);
     expect(await inventoryTotal("BRG-6204")).toBe(1);
-    const a01 = await prisma.bin.findUnique({ where: { code: "A01" } });
+    const a01 = await prisma.bin.findUnique({ where: { code: "B1-01" } });
     expect(a01?.status).toBe("OCCUPIED");
   });
 
   it("Test 14 — a stale preflight is overruled by the service, not the other way round", async () => {
-    for (const code of ["A02", "A03", "B01", "B02", "B03"]) {
+    // Every bin but B1-01 is out of service, so once B1-01 is taken the
+    // service has no fallback and must fail rather than silently storing the
+    // part somewhere preflight never approved.
+    for (const code of SEED_BIN_CODES.filter((code) => code !== "B1-01")) {
       await setBinStatus(code, "DISABLED");
     }
 
-    // A hook on the SDK's own node lifecycle: A01 is taken AFTER preflight
+    // A hook on the SDK's own node lifecycle: B1-01 is taken AFTER preflight
     // approved it and BEFORE the execute node runs.
     const graphInstance = createPutawayGraph();
     graphInstance.addHook(BeforeNodeCallEvent, async (event) => {
       if (event.nodeId === PUTAWAY_NODE_IDS.execute) {
-        await setBinStatus("A01", "OCCUPIED");
+        await setBinStatus("B1-01", "OCCUPIED");
       }
     });
 
@@ -467,8 +473,8 @@ describe("putaway graph", () => {
 
 describe("retrieval graph", () => {
   it("Test 8 — completes every stage and removes exactly one item", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const { graph, result } = await runRetrievalGraph({ sku: "BRG-6204", quantity: 1 });
 
@@ -486,7 +492,7 @@ describe("retrieval graph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.inventoryQuantityRemoved).toBe(1);
-    expect(result.sourceBinCode).toBe("B03");
+    expect(result.sourceBinCode).toBe("B2-01");
     expect(await inventoryTotal("BRG-6204")).toBe(1);
     expect((await simulator().getRecentOperations()).length).toBe(1);
   });
@@ -518,12 +524,12 @@ describe("retrieval graph", () => {
   });
 
   it("Test 10 — an explicit source bin that does not hold the part blocks", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const { graph, result } = await runRetrievalGraph({
       sku: "BRG-6204",
-      sourceBinCode: "A01",
+      sourceBinCode: "B1-01",
       quantity: 1,
     });
 
@@ -538,8 +544,8 @@ describe("retrieval graph", () => {
   });
 
   it("Test 10b — refuses a multi-item request outright rather than fetching one", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 3 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 3 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const { graph } = await runRetrievalGraph({ sku: "BRG-6204", quantity: 3 });
 
@@ -549,8 +555,8 @@ describe("retrieval graph", () => {
   });
 
   it("Test 11 — a gantry failure leaves inventory untouched and is not retried", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
+    await setBinStatus("B2-01", "OCCUPIED");
     simulator().failNextOperation("drop_failed");
 
     const { graph, result } = await runRetrievalGraph({ sku: "BRG-6204", quantity: 1 });
@@ -568,8 +574,8 @@ describe("retrieval graph", () => {
   });
 
   it("Test 12 — the same request id retrieves one item, not two", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const first = await runRetrievalGraph({ sku: "BRG-6204", quantity: 1, requestId: "req-idem" });
     const second = await runRetrievalGraph({ sku: "BRG-6204", quantity: 1, requestId: "req-idem" });
@@ -582,8 +588,8 @@ describe("retrieval graph", () => {
   });
 
   it("Test 13 — concurrent graphs racing for the last item never go negative", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const [a, b] = await Promise.all([
       runRetrievalGraph({ sku: "BRG-6204", quantity: 1, requestId: "race-a" }),
@@ -597,15 +603,15 @@ describe("retrieval graph", () => {
   });
 
   it("Test 14 — a stale preflight is overruled by RetrievalService", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
+    await setBinStatus("B2-01", "OCCUPIED");
 
     const graphInstance = createRetrievalGraph();
     graphInstance.addHook(BeforeNodeCallEvent, async (event) => {
       if (event.nodeId === RETRIEVAL_NODE_IDS.execute) {
         // Someone else took the last one between preflight and execution.
         const part = await prisma.part.findUnique({ where: { sku: "BRG-6204" } });
-        const bin = await prisma.bin.findUnique({ where: { code: "B03" } });
+        const bin = await prisma.bin.findUnique({ where: { code: "B2-01" } });
         await prisma.inventory.deleteMany({ where: { partId: part!.id, binId: bin!.id } });
       }
     });
@@ -681,10 +687,10 @@ describe("graphs behind the agent and the approval gate", () => {
   });
 
   it("Test 16 — a read-only question runs no graph at all", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = [
       toolUseTurn("search_inventory", "tool-1", JSON.stringify({ query: "BRG-6204" })),
-      textTurn("BRG-6204 is in B03."),
+      textTurn("BRG-6204 is in B2-01."),
     ];
 
     const reply = await invokeWarehouseAgent(

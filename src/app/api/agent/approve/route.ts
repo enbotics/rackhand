@@ -10,7 +10,7 @@ import { AgentError, classifyAgentFailure } from "@/lib/agents/errors";
  *
  * The body carries ONLY an id and a decision. Tool arguments are deliberately
  * not accepted: they were frozen when the interrupt was parked, so an approval
- * for "B03" cannot be edited into "A02" on the way back. Changing the action
+ * for "B2-01" cannot be edited into "B1-02" on the way back. Changing the action
  * needs a new tool call and a new approval.
  *
  * A React button saying `approved = true` authorises nothing. This route is

@@ -4,7 +4,7 @@ import { assertGantryDevRoute, gantryErrorResponse, parseGantryBody } from "@/li
 import type { PutawayRequest } from "@/lib/gantry/types";
 
 /**
- * POST /api/gantry/putaway — { source: "INTAKE", destination: "B03" }
+ * POST /api/gantry/putaway — { source: "INTAKE", destination: "B2-01" }
  *
  * Runs to completion and returns the GantryOperation. A rejected *request*
  * (bad location, gantry busy) is a 4xx; an operation that ran and failed is a

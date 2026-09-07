@@ -9,7 +9,7 @@
  *     the database COMMITS only after the movement succeeded
  *
  * Nothing here trusts the caller. It does not trust that the agent already
- * called search_inventory and saw two in B03 — inventory is re-queried, and
+ * called search_inventory and saw two in B2-01 — inventory is re-queried, and
  * the decrement itself is a conditional UPDATE, so stock cannot go negative
  * even if the world changed underneath the model's recollection.
  *

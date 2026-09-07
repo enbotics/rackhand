@@ -17,7 +17,8 @@
     "db:generate": "prisma generate",
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force",
-    "demo:reset": "tsx scripts/demo-reset.ts"
+    "demo:reset": "tsx scripts/demo-reset.ts",
+    "demo:stock": "tsx scripts/demo-stock.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.10.0",

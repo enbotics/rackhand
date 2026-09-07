@@ -4,7 +4,7 @@ import { assertGantryDevRoute, gantryErrorResponse, parseGantryBody } from "@/li
 import type { RetrievalRequest } from "@/lib/gantry/types";
 
 /**
- * POST /api/gantry/retrieve — { source: "B03", destination: "OUTPUT" }
+ * POST /api/gantry/retrieve — { source: "B2-01", destination: "OUTPUT" }
  *
  * Same contract as putaway: synchronous completion, 4xx for a rejected
  * request, 200 with status "FAILED" for an operation that ran and failed.

@@ -39,8 +39,69 @@ export function isTerminalMovementStatus(status: MovementStatus): status is Term
   return (TERMINAL_MOVEMENT_STATUSES as readonly string[]).includes(status);
 }
 
-/** The six MVP bins, seeded by prisma/seed.ts. */
-export const SEED_BIN_CODES = ["A01", "A02", "A03", "B01", "B02", "B03"] as const;
+/**
+ * THE PHYSICAL SHELF, as built.
+ *
+ * The rack has two bays. One is the workstation: the camera scans a part
+ * there, and it is where every part arrives from and leaves to. That bay is
+ * NOT storage — it is the INTAKE and OUTPUT stations in src/lib/gantry/types.ts,
+ * and it is deliberately not represented here, so bin-availability logic can
+ * never treat the scan table as somewhere stock can live.
+ *
+ * The other bay is storage: six beds (shelf levels), five bin boxes across
+ * each, thirty in all. A bin box is 4" wide and 12" deep, so a slot is one
+ * box-width along a bed.
+ *
+ *      bed 6   B6-01  B6-02  B6-03  B6-04  B6-05
+ *      bed 5   B5-01  B5-02  B5-03  B5-04  B5-05
+ *      bed 4   B4-01  ...
+ *      bed 3   B3-01
+ *      bed 2   B2-01
+ *      bed 1   B1-01  B1-02  B1-03  B1-04  B1-05
+ *
+ * THE CODE IS THE POSITION. `B4-02` is bed 4, slot 2, which is what makes a
+ * gantry coordinate a parse rather than a hand-maintained lookup table — bed
+ * chooses the vertical axis, slot the horizontal one. Nothing in this
+ * milestone moves real hardware; this is the vocabulary that milestone will
+ * use. Codes sort into physical order, so the deterministic "lowest available
+ * bin" policy fills the bottom bed left-to-right before climbing.
+ */
+export const STORAGE_BEDS = 6;
+export const SLOTS_PER_BED = 5;
+
+/**
+ * A template-literal type, so the thirty codes stay a real union rather than
+ * plain `string`. Generating the array loses literal types; expressing the
+ * SHAPE in the type system keeps `destination: WarehouseBinCode` rejecting a
+ * typo at compile time, which is worth having when the value eventually names
+ * somewhere a machine will drive to.
+ */
+type BedNumber = 1 | 2 | 3 | 4 | 5 | 6;
+type SlotNumber = "01" | "02" | "03" | "04" | "05";
+export type BinCode = `B${BedNumber}-${SlotNumber}`;
+
+function buildBinCodes(): BinCode[] {
+  const codes: BinCode[] = [];
+  for (let bed = 1; bed <= STORAGE_BEDS; bed += 1) {
+    for (let slot = 1; slot <= SLOTS_PER_BED; slot += 1) {
+      codes.push(`B${bed as BedNumber}-${String(slot).padStart(2, "0") as SlotNumber}`);
+    }
+  }
+  return codes;
+}
+
+/** The thirty storage bins, seeded by prisma/seed.ts. Physical order. */
+export const SEED_BIN_CODES: readonly BinCode[] = buildBinCodes();
+
+/** `B4-02` -> `{ bed: 4, slot: 2 }`. Null for anything that is not a bin code. */
+export function parseBinCode(code: string): { bed: number; slot: number } | null {
+  const match = /^B(\d+)-(\d{2})$/.exec(code.trim().toUpperCase());
+  if (!match) return null;
+  const bed = Number(match[1]);
+  const slot = Number(match[2]);
+  if (bed < 1 || bed > STORAGE_BEDS || slot < 1 || slot > SLOTS_PER_BED) return null;
+  return { bed, slot };
+}
 
 export interface CreatePartInput {
   sku: string;

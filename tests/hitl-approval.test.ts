@@ -100,7 +100,7 @@ describe("approval policy", () => {
 
 describe("read-only tools", () => {
   it("run immediately, with no approval requested", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
 
     const reply = await invokeWarehouseAgent(
       "Where is BRG-6204?",
@@ -109,7 +109,7 @@ describe("read-only tools", () => {
       null,
       scripted([
         toolUseTurn("search_inventory", "t1", '{"query":"BRG-6204"}'),
-        textTurn("It is in B03."),
+        textTurn("It is in B2-01."),
       ]),
     );
 
@@ -129,7 +129,7 @@ describe("retrieval approval", () => {
   ];
 
   it("pauses before executing, changing nothing", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const before = await warehouseState();
 
     const reply = await invokeWarehouseAgent(
@@ -160,7 +160,7 @@ describe("retrieval approval", () => {
   });
 
   it("executes exactly once when approved", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = retrievalTurns();
     const paused = await invokeWarehouseAgent(
       "Bring me BRG-6204.", undefined, "req-ret-ok", null, scripted(turns),
@@ -186,7 +186,7 @@ describe("retrieval approval", () => {
   });
 
   it("executes nothing when denied", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = retrievalTurns();
     const before = await warehouseState();
 
@@ -204,7 +204,7 @@ describe("retrieval approval", () => {
   });
 
   it("reports a denial in fixed words, never the model's", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     // The scripted model would say "Retrieved." — which must not be shown.
     const turns = retrievalTurns();
     const paused = await invokeWarehouseAgent(
@@ -227,7 +227,7 @@ describe("retrieval approval", () => {
   });
 
   it("refuses to approve something already denied", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = retrievalTurns();
     const paused = await invokeWarehouseAgent(
       "Bring me BRG-6204.", undefined, "req-ret-flip", null, scripted(turns),
@@ -245,7 +245,7 @@ describe("retrieval approval", () => {
   });
 
   it("is idempotent when approved twice", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = retrievalTurns();
     const paused = await invokeWarehouseAgent(
       "Bring me BRG-6204.", undefined, "req-ret-twice", null, scripted(turns),
@@ -261,7 +261,7 @@ describe("retrieval approval", () => {
   });
 
   it("never executes an expired approval", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = retrievalTurns();
     const before = await warehouseState();
     const paused = await invokeWarehouseAgent(
@@ -299,7 +299,7 @@ describe("retrieval approval", () => {
 
 describe("putaway approval", () => {
   const putawayTurns = () => [
-    toolUseTurn("execute_putaway", "t-put", '{"destinationBinCode":"B03"}'),
+    toolUseTurn("execute_putaway", "t-put", '{"destinationBinCode":"B2-01"}'),
     textTurn("Stored."),
   ];
 
@@ -314,7 +314,7 @@ describe("putaway approval", () => {
       action: "PUTAWAY",
       sku: "BRG-6204",
       source: "INTAKE",
-      destination: "B03",
+      destination: "B2-01",
     });
     expect(await warehouseState()).toEqual(before);
     expect(await getGantryController().getRecentOperations()).toEqual([]);
@@ -329,20 +329,20 @@ describe("putaway approval", () => {
 
     const inventory = await prisma.inventory.findMany({ include: { bin: true } });
     expect(inventory).toHaveLength(1);
-    expect(inventory[0].bin.code).toBe("B03");
+    expect(inventory[0].bin.code).toBe("B2-01");
     expect(inventory[0].quantity).toBe(1);
     expect(await getGantryController().getRecentOperations()).toHaveLength(1);
   });
 
   it("revalidates the world after approval — a stale card cannot force a putaway", async () => {
-    // The approval card says B03. Between the card and the decision, B03 fills.
+    // The approval card says B2-01. Between the card and the decision, B2-01 fills.
     const turns = putawayTurns();
     const paused = await invokeWarehouseAgent(
       "Store this scanned part.", scanOf(), "req-put-stale", null, scripted(turns),
     );
-    expect(paused.approval?.summary.destination).toBe("B03");
+    expect(paused.approval?.summary.destination).toBe("B2-01");
 
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 }); // B03 -> OCCUPIED
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 }); // B2-01 -> OCCUPIED
 
     const resumed = await resumeWarehouseAgent(
       paused.approval!.approvalId, "APPROVE", scripted(turns),
@@ -377,7 +377,7 @@ describe("putaway approval", () => {
 });
 
 async function setBinStatusUnchanged(): Promise<boolean> {
-  const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "B03" } });
+  const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "B2-01" } });
   return bin.status === "AVAILABLE";
 }
 
@@ -386,22 +386,22 @@ async function setBinStatusUnchanged(): Promise<boolean> {
 describe("approval binding", () => {
   it("cannot be redirected to a different bin", async () => {
     // The approval API takes only an id and a decision — there is no argument
-    // channel to change B03 into A02. This asserts the frozen arguments are
+    // channel to change B2-01 into B1-02. This asserts the frozen arguments are
     // what actually execute.
     const turns = [
-      toolUseTurn("execute_putaway", "t-bind", '{"destinationBinCode":"B03"}'),
+      toolUseTurn("execute_putaway", "t-bind", '{"destinationBinCode":"B2-01"}'),
       textTurn("Stored."),
     ];
     const paused = await invokeWarehouseAgent(
       "Store this scanned part.", scanOf(), "req-bind", null, scripted(turns),
     );
-    expect(paused.approval?.summary.destination).toBe("B03");
+    expect(paused.approval?.summary.destination).toBe("B2-01");
 
     await resumeWarehouseAgent(paused.approval!.approvalId, "APPROVE", scripted(turns));
 
     const inventory = await prisma.inventory.findMany({ include: { bin: true } });
-    expect(inventory[0].bin.code).toBe("B03");
-    expect(await prisma.bin.findUniqueOrThrow({ where: { code: "A02" } })).toMatchObject({
+    expect(inventory[0].bin.code).toBe("B2-01");
+    expect(await prisma.bin.findUniqueOrThrow({ where: { code: "B1-02" } })).toMatchObject({
       status: "AVAILABLE",
     });
   });
@@ -465,7 +465,7 @@ describe("ambiguous scan through both gates", () => {
     await createPart(BOLT_HEX);
     await createPart(BOLT_FLANGE);
     const turns = [
-      toolUseTurn("execute_putaway", "t-e2e", '{"destinationBinCode":"B03"}'),
+      toolUseTurn("execute_putaway", "t-e2e", '{"destinationBinCode":"B2-01"}'),
       textTurn("Stored."),
     ];
 
@@ -508,7 +508,7 @@ describe("ambiguous scan through both gates", () => {
     const inventory = await prisma.inventory.findMany({ include: { bin: true, part: true } });
     expect(inventory).toHaveLength(1);
     expect(inventory[0].part.sku).toBe("BOLT-M8-50");
-    expect(inventory[0].bin.code).toBe("B03");
+    expect(inventory[0].bin.code).toBe("B2-01");
     expect(inventory[0].quantity).toBe(1);
 
     const operations = await getGantryController().getRecentOperations();

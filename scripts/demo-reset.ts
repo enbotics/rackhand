@@ -62,8 +62,17 @@ async function main(): Promise<void> {
       console.log(`  cleared ${String(count).padStart(4)} ${what}`);
     }
 
-    // Bins are reset rather than deleted, so their ids stay stable across a
-    // demo and nothing that references one is orphaned.
+    // Bins whose code is no longer part of the physical shelf are removed.
+    // Safe here and only here: inventory and movements were cleared above, so
+    // nothing references them, and leaving a retired code behind would offer
+    // the gantry somewhere that does not exist.
+    const retired = await prisma.bin.deleteMany({
+      where: { code: { notIn: [...SEED_BIN_CODES] } },
+    });
+    if (retired.count > 0) console.log(`  removed  ${retired.count} bins no longer on the shelf`);
+
+    // The current bins are reset rather than deleted, so their ids stay stable
+    // across a demo and nothing that references one is orphaned.
     for (const code of SEED_BIN_CODES) {
       await prisma.bin.upsert({
         where: { code },
@@ -100,6 +109,10 @@ async function main(): Promise<void> {
       "\nGantry: SIMULATION. Its operation history and any parked approval are\n" +
         "process-local — restart `npm run dev` to return the machine to IDLE with\n" +
         "an empty history.",
+    );
+    console.log(
+      "\nThe warehouse is empty. Run `npm run demo:stock` to place the sample\n" +
+        "layout (some bins filled, two left free, two catalog parts with no stock).",
     );
     console.log("\ndemo:reset complete.");
   } finally {

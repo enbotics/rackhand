@@ -72,23 +72,23 @@ describe("home", () => {
 });
 
 describe("putaway", () => {
-  it("completes INTAKE -> B03 and leaves the head at the bin", async () => {
-    const operation = await gantry.putaway({ source: "INTAKE", destination: "B03" });
+  it("completes INTAKE -> B2-01 and leaves the head at the bin", async () => {
+    const operation = await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
 
     expect(operation.type).toBe("PUTAWAY");
     expect(operation.status).toBe("COMPLETED");
     expect(operation.source).toBe("INTAKE");
-    expect(operation.destination).toBe("B03");
+    expect(operation.destination).toBe("B2-01");
     expect(operation.error).toBeNull();
 
     const status = await gantry.getStatus();
     expect(status.state).toBe("IDLE");
-    expect(status.currentLocation).toBe("B03");
+    expect(status.currentLocation).toBe("B2-01");
   });
 
   it("passes through MOVING, PICKING and DROPPING in order", async () => {
     const seen: string[] = [];
-    const pending = gantry.putaway({ source: "INTAKE", destination: "A02" });
+    const pending = gantry.putaway({ source: "INTAKE", destination: "B1-02" });
     for (let i = 0; i < 40; i++) {
       const { state } = await gantry.getStatus();
       if (seen[seen.length - 1] !== state) seen.push(state);
@@ -102,7 +102,7 @@ describe("putaway", () => {
 
   it("rejects a source that is not INTAKE", async () => {
     const error = await expectGantryError(
-      gantry.putaway({ source: "A01", destination: "B03" } as unknown as PutawayRequest),
+      gantry.putaway({ source: "B1-01", destination: "B2-01" } as unknown as PutawayRequest),
       "invalid_location",
     );
     expect(error.status).toBe(422);
@@ -132,7 +132,7 @@ describe("putaway", () => {
 
   it("records nothing when the request is rejected", async () => {
     await expectGantryError(
-      gantry.putaway({ source: "OUTPUT", destination: "B03" } as unknown as PutawayRequest),
+      gantry.putaway({ source: "OUTPUT", destination: "B2-01" } as unknown as PutawayRequest),
       "invalid_location",
     );
     expect(await gantry.getRecentOperations()).toEqual([]);
@@ -141,19 +141,19 @@ describe("putaway", () => {
 });
 
 describe("retrieval", () => {
-  it("completes B03 -> OUTPUT and leaves the head at the station", async () => {
-    const operation = await gantry.retrieve({ source: "B03", destination: "OUTPUT" });
+  it("completes B2-01 -> OUTPUT and leaves the head at the station", async () => {
+    const operation = await gantry.retrieve({ source: "B2-01", destination: "OUTPUT" });
 
     expect(operation.type).toBe("RETRIEVAL");
     expect(operation.status).toBe("COMPLETED");
-    expect(operation.source).toBe("B03");
+    expect(operation.source).toBe("B2-01");
     expect(operation.destination).toBe("OUTPUT");
     expect((await gantry.getStatus()).currentLocation).toBe("OUTPUT");
   });
 
   it("rejects a destination that is not OUTPUT", async () => {
     const error = await expectGantryError(
-      gantry.retrieve({ source: "B03", destination: "A01" } as unknown as RetrievalRequest),
+      gantry.retrieve({ source: "B2-01", destination: "B1-01" } as unknown as RetrievalRequest),
       "invalid_location",
     );
     expect(error.message).toMatch(/must end at OUTPUT/);
@@ -176,10 +176,10 @@ describe("retrieval", () => {
 
 describe("concurrency", () => {
   it("rejects a second operation while one is running", async () => {
-    const running = gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const running = gantry.putaway({ source: "INTAKE", destination: "B2-01" });
 
     const error = await expectGantryError(
-      gantry.retrieve({ source: "A01", destination: "OUTPUT" }),
+      gantry.retrieve({ source: "B1-01", destination: "OUTPUT" }),
       "gantry_busy",
     );
     expect(error.status).toBe(409);
@@ -190,7 +190,7 @@ describe("concurrency", () => {
   });
 
   it("exposes the active operation id while busy", async () => {
-    const running = gantry.putaway({ source: "INTAKE", destination: "B01" });
+    const running = gantry.putaway({ source: "INTAKE", destination: "B1-04" });
     const status = await gantry.getStatus();
 
     expect(status.activeOperationId).toBeTruthy();
@@ -202,13 +202,13 @@ describe("concurrency", () => {
   });
 
   it("accepts the next operation once the first finishes", async () => {
-    await gantry.putaway({ source: "INTAKE", destination: "B03" });
-    const second = await gantry.retrieve({ source: "B03", destination: "OUTPUT" });
+    await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
+    const second = await gantry.retrieve({ source: "B2-01", destination: "OUTPUT" });
     expect(second.status).toBe("COMPLETED");
   });
 
   it("only records one operation for a rejected concurrent request", async () => {
-    const running = gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const running = gantry.putaway({ source: "INTAKE", destination: "B2-01" });
     await expectGantryError(gantry.home(), "gantry_busy");
     await running;
 
@@ -219,7 +219,7 @@ describe("concurrency", () => {
 describe("deterministic failure injection", () => {
   it("fails the pick, keeping the head at the source", async () => {
     gantry.failNextOperation("pickup_failed");
-    const operation = await gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const operation = await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
 
     expect(operation.status).toBe("FAILED");
     expect(operation.error).toBe("pickup_failed");
@@ -234,7 +234,7 @@ describe("deterministic failure injection", () => {
 
   it("fails the drop after reaching the destination", async () => {
     gantry.failNextOperation("drop_failed");
-    const operation = await gantry.retrieve({ source: "B03", destination: "OUTPUT" });
+    const operation = await gantry.retrieve({ source: "B2-01", destination: "OUTPUT" });
 
     expect(operation.status).toBe("FAILED");
     expect(operation.error).toBe("drop_failed");
@@ -243,7 +243,7 @@ describe("deterministic failure injection", () => {
 
   it("fails a movement without arriving", async () => {
     gantry.failNextOperation("movement_timeout");
-    const operation = await gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const operation = await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
 
     expect(operation.status).toBe("FAILED");
     expect(operation.error).toBe("movement_timeout");
@@ -252,7 +252,7 @@ describe("deterministic failure injection", () => {
 
   it("fails at the start for an error with no matching phase", async () => {
     gantry.failNextOperation("controller_error");
-    const operation = await gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const operation = await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
 
     expect(operation.status).toBe("FAILED");
     expect(operation.error).toBe("controller_error");
@@ -278,23 +278,23 @@ describe("deterministic failure injection", () => {
   it("fires exactly once, then normal behaviour resumes", async () => {
     gantry.failNextOperation("pickup_failed");
 
-    const failed = await gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const failed = await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
     expect(failed.status).toBe("FAILED");
 
-    const recovered = await gantry.putaway({ source: "INTAKE", destination: "B03" });
+    const recovered = await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
     expect(recovered.status).toBe("COMPLETED");
     expect(recovered.error).toBeNull();
 
     const status = await gantry.getStatus();
     expect(status.state).toBe("IDLE");
-    expect(status.currentLocation).toBe("B03");
+    expect(status.currentLocation).toBe("B2-01");
     // A later success clears the stale failure.
     expect(status.lastError).toBeNull();
   });
 
   it("recovers well enough to run a different operation type next", async () => {
     gantry.failNextOperation("controller_error");
-    expect((await gantry.retrieve({ source: "A01", destination: "OUTPUT" })).status).toBe("FAILED");
+    expect((await gantry.retrieve({ source: "B1-01", destination: "OUTPUT" })).status).toBe("FAILED");
 
     const homed = await gantry.home();
     expect(homed.status).toBe("COMPLETED");
@@ -304,12 +304,12 @@ describe("deterministic failure injection", () => {
   it("can be disarmed before it fires", async () => {
     gantry.failNextOperation("pickup_failed");
     gantry.clearFailureInjection();
-    expect((await gantry.putaway({ source: "INTAKE", destination: "B03" })).status).toBe("COMPLETED");
+    expect((await gantry.putaway({ source: "INTAKE", destination: "B2-01" })).status).toBe("COMPLETED");
   });
 
   it("is never triggered without injection", async () => {
     for (let i = 0; i < 5; i++) {
-      expect((await gantry.putaway({ source: "INTAKE", destination: "A01" })).status).toBe("COMPLETED");
+      expect((await gantry.putaway({ source: "INTAKE", destination: "B1-01" })).status).toBe("COMPLETED");
     }
   });
 });
@@ -317,9 +317,9 @@ describe("deterministic failure injection", () => {
 describe("operation history", () => {
   it("lists completed and failed operations, newest first", async () => {
     await gantry.home();
-    await gantry.putaway({ source: "INTAKE", destination: "B03" });
+    await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
     gantry.failNextOperation("pickup_failed");
-    await gantry.retrieve({ source: "B03", destination: "OUTPUT" });
+    await gantry.retrieve({ source: "B2-01", destination: "OUTPUT" });
 
     const history = await gantry.getRecentOperations();
     expect(history.map((o) => `${o.type}:${o.status}`)).toEqual([
@@ -332,7 +332,7 @@ describe("operation history", () => {
 
   it("honours the limit and caps total retained history", async () => {
     for (let i = 0; i < 7; i++) {
-      await gantry.putaway({ source: "INTAKE", destination: "A01" });
+      await gantry.putaway({ source: "INTAKE", destination: "B1-01" });
     }
     expect(await gantry.getRecentOperations(2)).toHaveLength(2);
     // historyLimit is 5 for this simulator.
@@ -387,10 +387,10 @@ describe("warehouse independence", () => {
     };
 
     await gantry.home();
-    await gantry.putaway({ source: "INTAKE", destination: "B03" });
-    await gantry.retrieve({ source: "B03", destination: "OUTPUT" });
+    await gantry.putaway({ source: "INTAKE", destination: "B2-01" });
+    await gantry.retrieve({ source: "B2-01", destination: "OUTPUT" });
     gantry.failNextOperation("drop_failed");
-    await gantry.putaway({ source: "INTAKE", destination: "A01" });
+    await gantry.putaway({ source: "INTAKE", destination: "B1-01" });
 
     expect(await prisma.part.count()).toBe(before.parts);
     expect(await prisma.inventory.findMany()).toEqual(before.inventory);

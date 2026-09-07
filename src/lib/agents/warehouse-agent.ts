@@ -652,7 +652,7 @@ export type ResumeResult =
  *
  * The client supplies only an approval id and APPROVE/DENY. It cannot restate
  * the tool arguments: those were frozen when the interrupt was parked, so an
- * approval for "B03" can never be turned into "A02" on the way back. Changing
+ * approval for "B2-01" can never be turned into "B1-02" on the way back. Changing
  * the action requires a new tool call and a new approval.
  *
  * The original requestId is restored with the scan, so approving twice cannot

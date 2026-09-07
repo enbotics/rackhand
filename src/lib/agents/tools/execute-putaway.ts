@@ -39,7 +39,7 @@ export const executePutawayInputSchema = z.object({
     .max(20)
     .optional()
     .describe(
-      "Optional bin code such as \"B03\". Omit it to let the warehouse choose the first available bin. Whatever is supplied is revalidated before anything moves.",
+      "Optional bin code such as \"B2-01\". Omit it to let the warehouse choose the first available bin. Whatever is supplied is revalidated before anything moves.",
     ),
 });
 

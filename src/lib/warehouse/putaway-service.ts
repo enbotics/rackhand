@@ -11,7 +11,7 @@
  *
  * Nothing here trusts the caller. In particular it does not trust that the
  * agent already called match_catalog and saw MATCHED, or already called
- * list_available_bins and saw B03 free. Conversational memory is not
+ * list_available_bins and saw B2-01 free. Conversational memory is not
  * authorization: the catalog match is re-run and the bin is re-checked inside
  * the reserving transaction, because warehouse state may have changed in
  * between and a language model's recollection is not evidence.

@@ -1,8 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { CameraStage } from "@/components/camera-stage";
-import { Gallery } from "@/components/gallery";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   addShot,
   deleteShot,
@@ -18,6 +24,7 @@ import type { CatalogResolutionRequestResult } from "@/lib/warehouse/catalog-res
 import {
   deriveScanIdentity,
   describeMeasureFailure,
+  type ScanIdentityStatus,
 } from "@/lib/warehouse/dashboard-presentation";
 import {
   useAgentTrace,
@@ -26,17 +33,6 @@ import {
   useWarehouseOverview,
 } from "@/lib/use-warehouse-data";
 import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
-import { AgentPanel } from "./agent-panel";
-import { ApprovalCard } from "./approval-card";
-import { CatalogResolutionCard } from "./catalog-resolution-card";
-import { CurrentScanPanel } from "./current-scan-panel";
-import { GantryStatusPanel } from "./gantry-status";
-import { InventoryPanel } from "./inventory-panel";
-import { MovementHistory } from "./movement-history";
-import { WorkflowPanel } from "./workflow-panel";
-import { AgentActivityPanel } from "./agent-activity";
-import { EmptyState, Panel } from "./ui";
-import { WarehouseMap } from "./warehouse-map";
 import type {
   AgentTurn,
   ApprovalOutcome,
@@ -46,27 +42,34 @@ import type {
   PendingIdentification,
   ScanState,
 } from "./state";
+import type { BinView, InventoryRowView, MovementRowView } from "@/lib/warehouse/dashboard-types";
 
 /**
- * The Warehouse Command Center — the one operator screen (Milestone 10).
+ * One operator session, shared by every page (Milestone 10, split in 13).
  *
- * WHAT THIS COMPONENT IS: a coordinator. It sequences existing server calls,
- * holds the operator's session state, and re-reads the authoritative warehouse
- * snapshot after anything changes.
+ * WHY THIS EXISTS. The command centre used to be one component on one route,
+ * so its state and its markup could live together. Splitting the screen into
+ * Operate / Warehouse / History / Activity moved the markup apart, and a
+ * half-finished scan or a pending approval must NOT be destroyed by clicking
+ * a menu item — losing an approval card mid-decision would leave the operator
+ * unable to answer a question the server is still holding open. So the state
+ * moved up to the layout, where it outlives navigation, and the pages became
+ * views of it.
+ *
+ * WHAT THIS IS: a coordinator. It sequences existing server calls, holds the
+ * operator's session state, and re-reads the authoritative warehouse snapshot
+ * after anything changes.
  *
  * WHAT IT IS NOT: an owner of warehouse rules. There is no matching, no
  * availability check, no quantity arithmetic and no approval decision here.
  * Every one of those already exists behind an API from Milestones 1-9, and a
  * second copy in the browser would eventually disagree with the first. In
- * particular this component NEVER writes to bins, inventory or movements: the
- * only state-changing calls it can make are /api/agent (which stops for
- * approval) and /api/agent/approve (which sends an id and a decision, nothing
- * else).
+ * particular this NEVER writes to bins, inventory or movements: the only
+ * state-changing calls it can make are /api/agent (which stops for approval)
+ * and /api/agent/approve (which sends an id and a decision, nothing else).
  *
- * The scanning pipeline is unchanged: capture -> /api/measure ->
- * measurementToScanResult -> /api/warehouse/catalog/match. Scanning never
- * triggers a physical action; a putaway still has to be asked for and then
- * approved.
+ * The polling hooks run once here rather than once per page, so four routes
+ * do not become four pollers against the same endpoints.
  */
 
 async function postJson(url: string, body: unknown) {
@@ -76,7 +79,11 @@ async function postJson(url: string, body: unknown) {
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  return { ok: response.ok, status: response.status, data: data as Record<string, unknown> };
+  return {
+    ok: response.ok,
+    status: response.status,
+    data: data as Record<string, unknown>,
+  };
 }
 
 let turnCounter = 0;
@@ -87,7 +94,76 @@ function nextTurnId(): string {
 
 const EMPTY_SCAN: ScanState = { phase: "EMPTY", scan: null, failure: null };
 
-export function CommandCenter() {
+export interface WarehouseSession {
+  /* ---- authoritative warehouse state (server, re-read on every change) ---- */
+  bins: BinView[];
+  inventory: InventoryRowView[];
+  movements: MovementRowView[];
+  activeMovement: MovementRowView | null;
+  totals: {
+    units: number;
+    distinctParts: number;
+    binsAvailable: number;
+  } | null;
+  loading: boolean;
+  overviewError: string | null;
+  refresh: () => void;
+
+  gantry: ReturnType<typeof useGantryStatus>["status"];
+  gantryError: string | null;
+
+  /* ---- scan session ---- */
+  shots: Shot[];
+  scanState: ScanState;
+  scanning: boolean;
+  identity: ScanIdentityStatus | null;
+  onCapture: (shot: Shot) => void;
+  onDeleteShot: (id: string) => void;
+  onMeasured: (id: string, measurement: Measurement, scanResult?: ScanResult) => void;
+
+  /* ---- human decisions ---- */
+  identification: PendingIdentification | null;
+  confirmed: ConfirmedIdentity | null;
+  identityRejected: boolean;
+  identityBusy: boolean;
+  identityError: string | null;
+  selectCandidate: (partId: string) => void;
+  rejectIdentification: () => void;
+
+  approval: PendingApprovalView | null;
+  outcome: ApprovalOutcome | null;
+  decide: (decision: "APPROVE" | "DENY") => void;
+  /** True when anything is waiting on, or has just been answered by, a person. */
+  hasDecision: boolean;
+
+  /* ---- agent ---- */
+  turns: AgentTurn[];
+  agentBusy: boolean;
+  agentError: string | null;
+  agentUnavailable: boolean;
+  send: (message: string) => void;
+  retryLast: () => void;
+
+  /* ---- workflow and observability ---- */
+  workflow: WarehouseGraphResult | null;
+  trace: ReturnType<typeof useAgentTrace>["trace"];
+  traceError: string | null;
+  recentTraces: ReturnType<typeof useRecentTraces>["traces"];
+  selectTrace: (traceId: string) => void;
+}
+
+const SessionContext = createContext<WarehouseSession | null>(null);
+
+/** The session for the current operator. Throws outside the provider, on purpose. */
+export function useWarehouseSession(): WarehouseSession {
+  const session = useContext(SessionContext);
+  if (!session) {
+    throw new Error("useWarehouseSession must be used inside <WarehouseSessionProvider>.");
+  }
+  return session;
+}
+
+export function WarehouseSessionProvider({ children }: { children: React.ReactNode }) {
   // Local scan history (IndexedDB). Never warehouse authority.
   const [shots, setShots] = useState<Shot[]>([]);
 
@@ -153,7 +229,9 @@ export function CommandCenter() {
     setIdentityBusy(true);
     setIdentityError(null);
     try {
-      const { data } = await postJson("/api/warehouse/catalog/resolutions", { scanResult });
+      const { data } = await postJson("/api/warehouse/catalog/resolutions", {
+        scanResult,
+      });
       const result = data as unknown as CatalogResolutionRequestResult;
       if (result.status === "HUMAN_DECISION_REQUIRED") {
         setIdentification({
@@ -221,7 +299,10 @@ export function CommandCenter() {
       }
 
       if (!ok) {
-        const failure = (body.error ?? {}) as { code?: unknown; message?: unknown };
+        const failure = (body.error ?? {}) as {
+          code?: unknown;
+          message?: unknown;
+        };
         setScanState({
           phase: "FAILED",
           scan: null,
@@ -244,7 +325,9 @@ export function CommandCenter() {
 
       // The same conversion the lightbox uses. A measurement that fails it is
       // still shown, but it is not warehouse evidence and cannot be put away.
-      const conversion = measurementToScanResult(measurement, { capturedAt: shot.createdAt });
+      const conversion = measurementToScanResult(measurement, {
+        capturedAt: shot.createdAt,
+      });
       const scanResult = conversion.ok ? conversion.scanResult : null;
 
       setShotMeasurement(shot.id, measurement, scanResult ?? undefined).catch(() => {});
@@ -274,10 +357,16 @@ export function CommandCenter() {
       setScanState({ phase: "MATCHING", scan, failure: null });
 
       try {
-        const { ok: matchOk, data } = await postJson("/api/warehouse/catalog/match", { scanResult });
+        const { ok: matchOk, data } = await postJson("/api/warehouse/catalog/match", {
+          scanResult,
+        });
         if (!matchOk) throw new Error("match failed");
         const match = data as unknown as CatalogMatchResult;
-        setScanState({ phase: "READY", scan: { ...scan, match }, failure: null });
+        setScanState({
+          phase: "READY",
+          scan: { ...scan, match },
+          failure: null,
+        });
         if (match.status === "AMBIGUOUS") {
           await requestIdentification(scanResult);
         }
@@ -292,29 +381,26 @@ export function CommandCenter() {
     [requestIdentification],
   );
 
-  const applyAgentReply = useCallback(
-    (data: Record<string, unknown>) => {
-      const workflows = (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
-      if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
-      if (typeof data.traceId === "string") setTraceId(data.traceId);
-      setTurns((previous) => [
-        ...previous,
-        {
-          id: nextTurnId(),
-          role: "agent",
-          text: (data.message as string) ?? "",
-          tools: (data.toolCalls as string[]) ?? [],
-        },
-      ]);
-      if (data.status === "APPROVAL_REQUIRED") {
-        setApproval(data.approval as PendingApprovalView);
-        setOutcome(null);
-      } else {
-        setApproval(null);
-      }
-    },
-    [],
-  );
+  const applyAgentReply = useCallback((data: Record<string, unknown>) => {
+    const workflows = (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
+    if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
+    if (typeof data.traceId === "string") setTraceId(data.traceId);
+    setTurns((previous) => [
+      ...previous,
+      {
+        id: nextTurnId(),
+        role: "agent",
+        text: (data.message as string) ?? "",
+        tools: (data.toolCalls as string[]) ?? [],
+      },
+    ]);
+    if (data.status === "APPROVAL_REQUIRED") {
+      setApproval(data.approval as PendingApprovalView);
+      setOutcome(null);
+    } else {
+      setApproval(null);
+    }
+  }, []);
 
   const send = useCallback(
     async (message: string) => {
@@ -336,7 +422,10 @@ export function CommandCenter() {
         });
 
         if (!ok) {
-          const failure = (data.error ?? {}) as { code?: string; message?: string };
+          const failure = (data.error ?? {}) as {
+            code?: string;
+            message?: string;
+          };
           if (failure.code === "agent_model_unavailable") {
             setAgentUnavailable(true);
           } else {
@@ -367,11 +456,7 @@ export function CommandCenter() {
       setApproval(null);
       setAgentBusy(true);
       setActionInFlight(true);
-      setOutcome({
-        kind: "EXECUTING",
-        summary,
-        message: "Executing…",
-      });
+      setOutcome({ kind: "EXECUTING", summary, message: "Executing…" });
 
       try {
         const { ok, data } = await postJson("/api/agent/approve", {
@@ -508,143 +593,100 @@ export function CommandCenter() {
       })
     : null;
 
-  const bins = overview?.bins ?? [];
-  const inventory = overview?.inventory ?? [];
-  const movements = overview?.movements ?? [];
-  const activeMovement = movements.find((movement) => movement.status === "RUNNING") ?? null;
-  const scanning = scanState.phase === "MEASURING" || scanState.phase === "MATCHING";
-  const hasDecision = approval !== null || outcome !== null || identification !== null ||
-    confirmed !== null || identityRejected;
+  const value = useMemo<WarehouseSession>(() => {
+    // Derived INSIDE the memo: `overview?.bins ?? []` builds a fresh array on
+    // every render, so reading them outside would defeat the memo entirely.
+    const bins = overview?.bins ?? [];
+    const inventory = overview?.inventory ?? [];
+    const movements = overview?.movements ?? [];
 
-  return (
-    <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 lg:px-6">
-      <header className="flex flex-wrap items-end justify-between gap-4 border-b border-line pb-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-ink">
-            Agentic Spare Parts Warehouse
-          </h1>
-          <p className="mt-1 text-xs text-ink-muted">
-            AI-assisted inventory, putaway and retrieval
-          </p>
-        </div>
+    return {
+      bins,
+      inventory,
+      movements,
+      activeMovement: movements.find((movement) => movement.status === "RUNNING") ?? null,
+      totals: overview?.totals ?? null,
+      loading,
+      overviewError,
+      refresh,
 
-        <div className="flex flex-wrap items-center gap-4 font-mono text-[11px]">
-          <span className="text-ink-faint">
-            Stock <span className="text-ink-muted">{overview?.totals.units ?? "—"}</span> units ·{" "}
-            <span className="text-ink-muted">{overview?.totals.distinctParts ?? "—"}</span> parts
-          </span>
-          <span className="text-ink-faint">
-            Bins{" "}
-            <span className="text-ink-muted">
-              {overview ? `${overview.totals.binsAvailable} available` : "—"}
-            </span>
-          </span>
-          <span className="inline-flex items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-2.5 py-1 font-medium tracking-[0.1em] text-warn">
-            <span aria-hidden="true">●</span>
-            GANTRY MODE: {gantry?.mode ?? "SIMULATION"}
-          </span>
-        </div>
-      </header>
+      gantry,
+      gantryError,
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        <div className="flex flex-col gap-4 xl:col-span-7">
-          <Panel title="Live camera">
-            <CameraStage onCapture={handleCapture} scanning={scanning} />
-          </Panel>
+      shots,
+      scanState,
+      scanning: scanState.phase === "MEASURING" || scanState.phase === "MATCHING",
+      identity,
+      onCapture: (shot) => void handleCapture(shot),
+      onDeleteShot: handleDelete,
+      onMeasured: handleMeasured,
 
-          <CurrentScanPanel state={scanState} identity={identity} confirmed={confirmed} />
+      identification,
+      confirmed,
+      identityRejected,
+      identityBusy,
+      identityError,
+      selectCandidate: (partId) => void selectCandidate(partId),
+      rejectIdentification: () => void rejectIdentification(),
 
-          <WarehouseMap
-            bins={bins}
-            loading={loading}
-            error={overviewError}
-            onRetry={() => void refresh()}
-            activeLocation={gantry?.state !== "IDLE" ? gantry?.currentLocation : null}
-          />
-        </div>
+      approval,
+      outcome,
+      decide: (decision) => void decide(decision),
+      hasDecision:
+        approval !== null ||
+        outcome !== null ||
+        identification !== null ||
+        confirmed !== null ||
+        identityRejected,
 
-        <div className="flex flex-col gap-4 xl:col-span-5">
-          <AgentPanel
-            turns={turns}
-            busy={agentBusy}
-            unavailable={agentUnavailable}
-            error={agentError}
-            scanAttached={scanState.scan?.scanResult != null}
-            identityAttached={confirmed !== null}
-            onSend={send}
-            onRetry={() => {
-              if (lastOperatorMessage.current) void send(lastOperatorMessage.current);
-            }}
-          />
+      turns,
+      agentBusy,
+      agentError,
+      agentUnavailable,
+      send: (message) => void send(message),
+      retryLast: () => {
+        if (lastOperatorMessage.current) void send(lastOperatorMessage.current);
+      },
 
-          {hasDecision ? (
-            <>
-              <ApprovalCard
-                approval={approval}
-                outcome={outcome}
-                busy={agentBusy}
-                latestMovement={movements[0] ?? null}
-                onDecide={(decision) => void decide(decision)}
-              />
-              <CatalogResolutionCard
-                identification={identification}
-                confirmed={confirmed}
-                rejected={identityRejected}
-                busy={identityBusy}
-                error={identityError}
-                onSelect={(partId) => void selectCandidate(partId)}
-                onReject={() => void rejectIdentification()}
-              />
-            </>
-          ) : (
-            <Panel title="Human decisions">
-              <EmptyState>
-                Nothing is waiting on you.
-                <br />
-                Approvals and identity decisions appear here.
-              </EmptyState>
-            </Panel>
-          )}
+      workflow,
+      trace,
+      traceError,
+      recentTraces,
+      selectTrace: setTraceId,
+    };
+  }, [
+    overview,
+    loading,
+    overviewError,
+    refresh,
+    gantry,
+    gantryError,
+    shots,
+    scanState,
+    identity,
+    handleCapture,
+    handleDelete,
+    handleMeasured,
+    identification,
+    confirmed,
+    identityRejected,
+    identityBusy,
+    identityError,
+    selectCandidate,
+    rejectIdentification,
+    approval,
+    outcome,
+    decide,
+    turns,
+    agentBusy,
+    agentError,
+    agentUnavailable,
+    send,
+    workflow,
+    trace,
+    traceError,
+    recentTraces,
+  ]);
 
-          <WorkflowPanel workflow={workflow} />
-
-          <AgentActivityPanel
-            trace={trace}
-            error={traceError}
-            recent={recentTraces}
-            onSelectTrace={setTraceId}
-          />
-
-          <InventoryPanel
-            inventory={inventory}
-            loading={loading}
-            error={overviewError}
-            onRetry={() => void refresh()}
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-4">
-          <GantryStatusPanel status={gantry} error={gantryError} activeMovement={activeMovement} />
-        </div>
-        <div className="lg:col-span-8">
-          <MovementHistory
-            movements={movements}
-            loading={loading}
-            error={overviewError}
-            onRetry={() => void refresh()}
-          />
-        </div>
-      </div>
-
-      <Gallery shots={shots} onDelete={handleDelete} onMeasured={handleMeasured} />
-
-      <footer className="border-t border-line-soft pt-4 text-[11px] leading-relaxed text-ink-faint">
-        Warehouse state — bins, inventory and movements — is read from the warehouse database on
-        every refresh. Captured frames stay in this browser (IndexedDB) as local scan history and
-        are never treated as inventory.
-      </footer>
-    </div>
-  );
+  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

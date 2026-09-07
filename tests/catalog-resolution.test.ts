@@ -228,7 +228,7 @@ describe("putaway with a human-resolved identity", () => {
     await createPart(BOLT_HEX);
     await createPart(BOLT_FLANGE);
 
-    const result = await executePutaway({ scanResult: ambiguousScan(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: ambiguousScan(), destinationBinCode: "B2-01" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("catalog_match_ambiguous");
     expect(await getGantryController().getRecentOperations()).toEqual([]);
@@ -239,7 +239,7 @@ describe("putaway with a human-resolved identity", () => {
 
     const result = await executePutaway({
       scanResult: ambiguousScan(scanId),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
       catalogResolutionId: resolutionId,
     });
 
@@ -255,12 +255,12 @@ describe("putaway with a human-resolved identity", () => {
     const inventory = await prisma.inventory.findMany({ include: { bin: true, part: true } });
     expect(inventory).toHaveLength(1);
     expect(inventory[0].part.sku).toBe("BOLT-M8-50");
-    expect(inventory[0].bin.code).toBe("B03");
+    expect(inventory[0].bin.code).toBe("B2-01");
   });
 
   it("records deterministic provenance when the matcher was confident", async () => {
     await createPart(BEARING_6204);
-    const result = await executePutaway({ scanResult: bearingScan(), destinationBinCode: "B03" });
+    const result = await executePutaway({ scanResult: bearingScan(), destinationBinCode: "B2-01" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.identity.source).toBe("DETERMINISTIC_MATCH");
   });
@@ -270,7 +270,7 @@ describe("putaway with a human-resolved identity", () => {
 
     const result = await executePutaway({
       scanResult: ambiguousScan("scan_1788574299999_other"),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
       catalogResolutionId: resolutionId,
     });
 
@@ -287,7 +287,7 @@ describe("putaway with a human-resolved identity", () => {
 
     const result = await executePutaway({
       scanResult: ambiguousScan(),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
       catalogResolutionId: request.resolutionId,
     });
     expect(result.ok).toBe(false);
@@ -303,7 +303,7 @@ describe("putaway with a human-resolved identity", () => {
 
     const result = await executePutaway({
       scanResult: ambiguousScan(),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
       catalogResolutionId: request.resolutionId,
     });
     expect(result.ok).toBe(false);
@@ -312,16 +312,16 @@ describe("putaway with a human-resolved identity", () => {
 
   it("does not let a confirmed identity bypass bin validation", async () => {
     const { resolutionId, scanId } = await confirmed();
-    // B03 is occupied by something else before the putaway runs.
+    // B2-01 is occupied by something else before the putaway runs.
     await createPart(BEARING_6204);
     const bearing = await prisma.part.findUniqueOrThrow({ where: { sku: "BRG-6204" } });
-    const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "B03" } });
+    const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "B2-01" } });
     await prisma.inventory.create({ data: { partId: bearing.id, binId: bin.id, quantity: 1 } });
     await prisma.bin.update({ where: { id: bin.id }, data: { status: "OCCUPIED" } });
 
     const result = await executePutaway({
       scanResult: ambiguousScan(scanId),
-      destinationBinCode: "B03",
+      destinationBinCode: "B2-01",
       catalogResolutionId: resolutionId,
     });
 
@@ -334,8 +334,8 @@ describe("putaway with a human-resolved identity", () => {
     const { resolutionId, scanId } = await confirmed();
     const request = { scanResult: ambiguousScan(scanId), catalogResolutionId: resolutionId };
 
-    const first = await executePutaway({ ...request, destinationBinCode: "B03" });
-    const second = await executePutaway({ ...request, destinationBinCode: "B02" });
+    const first = await executePutaway({ ...request, destinationBinCode: "B2-01" });
+    const second = await executePutaway({ ...request, destinationBinCode: "B1-05" });
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);

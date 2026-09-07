@@ -102,7 +102,7 @@ export interface GantryStatus {
  * One machine execution record.
  *
  * NOT a warehouse `Movement`. A Movement is the warehouse's intent ("we mean
- * to move BRG-6204 from INTAKE to B03"); a GantryOperation is the machine's
+ * to move BRG-6204 from INTAKE to B2-01"); a GantryOperation is the machine's
  * account of doing it. Linking the two is a later milestone's job.
  */
 export interface GantryOperation {

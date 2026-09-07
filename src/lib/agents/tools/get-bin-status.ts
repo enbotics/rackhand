@@ -21,7 +21,7 @@ export const getBinStatusInputSchema = z.object({
     .trim()
     .min(1)
     .max(20)
-    .describe("Bin code, e.g. \"A01\" or \"B03\"."),
+    .describe("Bin code, e.g. \"B1-01\" or \"B2-01\"."),
 });
 
 export const getBinStatusTool = tool({

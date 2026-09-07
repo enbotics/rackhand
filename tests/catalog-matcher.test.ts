@@ -436,7 +436,7 @@ describe("matchScanToCatalog (against the real catalog)", () => {
   });
 
   it("mutates nothing — no catalog, inventory or movement writes", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "A01", quantity: 3 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-01", quantity: 3 });
 
     const before = {
       parts: await prisma.part.findMany({ orderBy: { sku: "asc" } }),

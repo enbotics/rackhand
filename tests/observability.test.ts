@@ -182,10 +182,10 @@ describe("trace lifecycle", () => {
   });
 
   it("Test 15 — concurrent requests get separate traces that do not mix", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const turns = () => [
       toolUseTurn("search_inventory", "tool-x", JSON.stringify({ query: "BRG-6204" })),
-      textTurn("In B03."),
+      textTurn("In B2-01."),
     ];
 
     const [a, b] = await Promise.all([
@@ -279,9 +279,9 @@ describe("sanitization", () => {
     const sanitized = sanitizeMetadata({
       sku: "BRG-6204",
       nested: { secret: "value", deeper: { credential: "x" } },
-      list: ["A01", "B03"],
+      list: ["B1-01", "B2-01"],
     });
-    expect(sanitized).toEqual({ sku: "BRG-6204", list: "A01, B03" });
+    expect(sanitized).toEqual({ sku: "BRG-6204", list: "B1-01, B2-01" });
   });
 
   it("bounds the stored request to a documented length", () => {
@@ -307,7 +307,7 @@ describe("sanitization", () => {
 
 describe("tool tracing through Strands hooks", () => {
   it("Test 2 and 6 — a read-only request traces the tool and nothing else", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const reply = await invokeWarehouseAgent(
       "Where is BRG-6204?",
       undefined,
@@ -315,7 +315,7 @@ describe("tool tracing through Strands hooks", () => {
       null,
       scripted([
         toolUseTurn("search_inventory", "tool-1", JSON.stringify({ query: "BRG-6204" })),
-        textTurn("BRG-6204 is in B03."),
+        textTurn("BRG-6204 is in B2-01."),
       ]),
     );
 
@@ -509,8 +509,8 @@ describe("approval and workflow traces", () => {
   });
 
   it("Test 8 — an approved retrieval traces the decrement once", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
-    await setBinStatus("B03", "OCCUPIED");
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
+    await setBinStatus("B2-01", "OCCUPIED");
     const turns = [
       toolUseTurn(
         "execute_retrieval",
@@ -727,7 +727,7 @@ describe("observability never breaks the warehouse", () => {
   });
 
   it("a read-only request still answers when tracing is broken", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const restore = breakPrismaMethod(
       prisma.agentTrace,
       "create",
@@ -741,7 +741,7 @@ describe("observability never breaks the warehouse", () => {
         null,
         scripted([
           toolUseTurn("search_inventory", "tool-1", JSON.stringify({ query: "BRG-6204" })),
-          textTurn("BRG-6204 is in B03."),
+          textTurn("BRG-6204 is in B2-01."),
         ]),
       );
       expect(reply.status).toBe("COMPLETED");
@@ -777,7 +777,7 @@ describe("observability API", () => {
       type: "TOOL_COMPLETED",
       status: "COMPLETED",
       name: "search_inventory",
-      summary: "BRG-6204 — 2 in stock, B03 (2)",
+      summary: "BRG-6204 — 2 in stock, B2-01 (2)",
       durationMs: 84,
       metadata: { toolUseId: "t1", sku: "BRG-6204" },
     });

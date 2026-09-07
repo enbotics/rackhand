@@ -48,7 +48,7 @@ export const executeRetrievalInputSchema = z
       .max(20)
       .optional()
       .describe(
-        "Optional bin to take it from, e.g. \"B03\". Omit it unless the operator named a bin; the warehouse otherwise picks deterministically.",
+        "Optional bin to take it from, e.g. \"B2-01\". Omit it unless the operator named a bin; the warehouse otherwise picks deterministically.",
       ),
     quantity: z
       .number()

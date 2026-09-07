@@ -67,20 +67,20 @@ afterEach(() => {
 
 describe("successful retrieval", () => {
   it("decrements by one and leaves a still-stocked bin OCCUPIED", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "r-happy" });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.part.sku).toBe("BRG-6204");
-    expect(result.sourceBinCode).toBe("B03");
+    expect(result.sourceBinCode).toBe("B2-01");
     expect(result.destination).toBe("OUTPUT");
     expect(result.inventoryQuantityRemoved).toBe(1);
     expect(result.remainingQuantityInBin).toBe(1);
 
-    expect(await stockOf("BRG-6204", "B03")).toBe(1);
-    expect(await binStatus("B03")).toBe("OCCUPIED");
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(1);
+    expect(await binStatus("B2-01")).toBe("OCCUPIED");
 
     const movement = await prisma.movement.findUniqueOrThrow({ where: { id: result.movementId } });
     expect(movement.type).toBe("RETRIEVAL");
@@ -94,26 +94,26 @@ describe("successful retrieval", () => {
     expect(operations).toHaveLength(1);
     expect(operations[0].type).toBe("RETRIEVAL");
     expect(operations[0].status).toBe("COMPLETED");
-    expect(operations[0].source).toBe("B03");
+    expect(operations[0].source).toBe("B2-01");
     expect(operations[0].destination).toBe("OUTPUT");
   });
 
   it("frees the bin when the last item leaves", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "r-last" });
 
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.remainingQuantityInBin).toBe(0);
 
-    expect(await stockOf("BRG-6204", "B03")).toBe(0);
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(0);
     expect(await prisma.inventory.count()).toBe(0);
-    expect(await binStatus("B03")).toBe("AVAILABLE");
+    expect(await binStatus("B2-01")).toBe("AVAILABLE");
   });
 
   it("resolves the part by internal id as well as SKU", async () => {
     const part = await prisma.part.findUniqueOrThrow({ where: { sku: "BRG-6204" } });
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
 
     const result = await executeRetrieval({ partId: part.id, requestId: "r-byid" });
     expect(result.ok).toBe(true);
@@ -125,41 +125,41 @@ describe("successful retrieval", () => {
 
 describe("source bin selection", () => {
   it("takes from the lowest bin code holding stock", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
-    await addInventory({ sku: "BRG-6204", binCode: "A02", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-02", quantity: 1 });
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "r-policy" });
 
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.sourceBinCode).toBe("A02");
-    expect(await stockOf("BRG-6204", "A02")).toBe(0);
-    expect(await stockOf("BRG-6204", "B03")).toBe(2);
-    expect(await binStatus("A02")).toBe("AVAILABLE");
+    if (result.ok) expect(result.sourceBinCode).toBe("B1-02");
+    expect(await stockOf("BRG-6204", "B1-02")).toBe(0);
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(2);
+    expect(await binStatus("B1-02")).toBe("AVAILABLE");
   });
 
   it("honours an explicit source bin that really holds the part", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "A02", quantity: 1 });
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B1-02", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
 
     const result = await executeRetrieval({
       sku: "BRG-6204",
-      sourceBinCode: "B03",
+      sourceBinCode: "B2-01",
       requestId: "r-explicit",
     });
 
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.sourceBinCode).toBe("B03");
-    expect(await stockOf("BRG-6204", "B03")).toBe(1);
-    expect(await stockOf("BRG-6204", "A02")).toBe(1);
+    if (result.ok) expect(result.sourceBinCode).toBe("B2-01");
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(1);
+    expect(await stockOf("BRG-6204", "B1-02")).toBe(1);
   });
 
   it("rejects an explicit bin that does not hold the part", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const before = await warehouseState();
 
     const result = await executeRetrieval({
       sku: "BRG-6204",
-      sourceBinCode: "A01",
+      sourceBinCode: "B1-01",
       requestId: "r-mismatch",
     });
 
@@ -170,7 +170,7 @@ describe("source bin selection", () => {
   });
 
   it("rejects an unknown bin code", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
     const result = await executeRetrieval({
       sku: "BRG-6204",
       sourceBinCode: "Z99",
@@ -199,7 +199,7 @@ describe("request validation", () => {
   });
 
   it("refuses a bulk request outright rather than partly fulfilling it", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 3 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 3 });
     const before = await warehouseState();
 
     const result = await executeRetrieval({ sku: "BRG-6204", quantity: 3, requestId: "r-bulk" });
@@ -213,7 +213,7 @@ describe("request validation", () => {
   });
 
   it("treats an omitted quantity as one", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "r-implicit" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.inventoryQuantityRemoved).toBe(1);
@@ -233,7 +233,7 @@ describe("request validation", () => {
 
 describe("gantry failures", () => {
   it("reports gantry_busy without touching inventory", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     process.env.GANTRY_SIM_HOME_DELAY_MS = "300";
     resetGantryController();
     const homing = getGantryController().home();
@@ -242,14 +242,14 @@ describe("gantry failures", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("gantry_busy");
-    expect(await stockOf("BRG-6204", "B03")).toBe(2);
-    expect(await binStatus("B03")).toBe("OCCUPIED");
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(2);
+    expect(await binStatus("B2-01")).toBe("OCCUPIED");
 
     await homing;
   });
 
   it("leaves the item where it was when pickup fails", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
     simulator().failNextOperation("pickup_failed");
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "r-pickup" });
@@ -258,10 +258,10 @@ describe("gantry failures", () => {
     if (result.ok) return;
     expect(result.reason).toBe("gantry_failed");
     expect(result.error).toBe("pickup_failed");
-    expect(result.sourceBinCode).toBe("B03");
+    expect(result.sourceBinCode).toBe("B2-01");
 
-    expect(await stockOf("BRG-6204", "B03")).toBe(2);
-    expect(await binStatus("B03")).toBe("OCCUPIED");
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(2);
+    expect(await binStatus("B2-01")).toBe("OCCUPIED");
 
     const movement = await prisma.movement.findUniqueOrThrow({ where: { id: result.movementId! } });
     expect(movement.status).toBe("FAILED");
@@ -270,15 +270,15 @@ describe("gantry failures", () => {
   });
 
   it("treats a movement timeout as a failure, leaving stock alone", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
     simulator().failNextOperation("movement_timeout");
 
     const result = await executeRetrieval({ sku: "BRG-6204", requestId: "r-timeout" });
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("movement_timeout");
-    expect(await stockOf("BRG-6204", "B03")).toBe(1);
-    expect(await binStatus("B03")).toBe("OCCUPIED");
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(1);
+    expect(await binStatus("B2-01")).toBe("OCCUPIED");
   });
 });
 
@@ -286,7 +286,7 @@ describe("gantry failures", () => {
 
 describe("idempotency", () => {
   it("does not retrieve twice for one request id", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
 
     const first = await executeRetrieval({ sku: "BRG-6204", requestId: "r-dup" });
     const second = await executeRetrieval({ sku: "BRG-6204", requestId: "r-dup" });
@@ -300,13 +300,13 @@ describe("idempotency", () => {
     expect(second.movementId).toBe(first.movementId);
     expect(second.gantryOperationId).toBe(first.gantryOperationId);
 
-    expect(await stockOf("BRG-6204", "B03")).toBe(1); // never 0
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(1); // never 0
     expect(await prisma.movement.count()).toBe(1);
     expect(await getGantryController().getRecentOperations()).toHaveLength(1);
   });
 
   it("runs the gantry once for concurrent duplicates of one request id", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 2 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
 
     const results = await Promise.all([
       executeRetrieval({ sku: "BRG-6204", requestId: "r-race-dup" }),
@@ -314,12 +314,12 @@ describe("idempotency", () => {
     ]);
 
     expect(results.filter((r) => r.ok && !r.duplicate)).toHaveLength(1);
-    expect(await stockOf("BRG-6204", "B03")).toBe(1);
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(1);
     expect(await getGantryController().getRecentOperations()).toHaveLength(1);
   });
 
   it("allows a retry after a failure", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
     simulator().failNextOperation("drop_failed");
 
     const first = await executeRetrieval({ sku: "BRG-6204", requestId: "r-retry" });
@@ -327,7 +327,7 @@ describe("idempotency", () => {
 
     const second = await executeRetrieval({ sku: "BRG-6204", requestId: "r-retry" });
     expect(second.ok).toBe(true);
-    expect(await stockOf("BRG-6204", "B03")).toBe(0);
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(0);
     expect(await prisma.movement.count()).toBe(2); // failed attempt kept
   });
 });
@@ -336,7 +336,7 @@ describe("idempotency", () => {
 
 describe("concurrent retrieval of the last item", () => {
   it("cannot drive stock negative", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
 
     const [a, b] = await Promise.all([
       executeRetrieval({ sku: "BRG-6204", requestId: "r-conc-a" }),
@@ -354,7 +354,7 @@ describe("concurrent retrieval of the last item", () => {
       "retrieval_commit_failed",
     ]).toContain(failed.reason);
 
-    expect(await stockOf("BRG-6204", "B03")).toBe(0);
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(0);
     const quantities = (await prisma.inventory.findMany()).map((r) => r.quantity);
     expect(quantities.every((q) => q >= 0)).toBe(true);
   });
@@ -364,7 +364,7 @@ describe("concurrent retrieval of the last item", () => {
 
 describe("database commit failure after the gantry succeeded", () => {
   it("does not re-run the gantry and preserves ids for reconciliation", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
 
     // A real commit failure: the stock is removed by another path while the
     // gantry is mid-operation, so the conditional decrement finds nothing.
@@ -373,7 +373,7 @@ describe("database commit failure after the gantry succeeded", () => {
 
     const pending = executeRetrieval({ sku: "BRG-6204", requestId: "r-commit" });
     await new Promise((resolve) => setTimeout(resolve, 120));
-    await removeInventory({ sku: "BRG-6204", binCode: "B03", quantity: 1 });
+    await removeInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 1 });
 
     const result = await pending;
 
@@ -382,7 +382,7 @@ describe("database commit failure after the gantry succeeded", () => {
     expect(result.reason).toBe("retrieval_commit_failed");
     expect(result.movementId).toBeDefined();
     expect(result.gantryOperationId).toBeDefined();
-    expect(result.sourceBinCode).toBe("B03");
+    expect(result.sourceBinCode).toBe("B2-01");
     expect(result.partId).toBeDefined();
 
     // The gantry ran exactly once and reported success.
@@ -394,6 +394,6 @@ describe("database commit failure after the gantry succeeded", () => {
     const movement = await prisma.movement.findUniqueOrThrow({ where: { id: result.movementId! } });
     expect(movement.status).toBe("RUNNING");
     expect(movement.completedAt).toBeNull();
-    expect(await stockOf("BRG-6204", "B03")).toBe(0);
+    expect(await stockOf("BRG-6204", "B2-01")).toBe(0);
   });
 });

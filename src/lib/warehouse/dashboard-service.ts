@@ -72,7 +72,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
   });
 
   // Grouped by part so one SKU spread over several bins reads as one line
-  // ("Qty 3 — A02 (1), B03 (2)") rather than as several unrelated rows.
+  // ("Qty 3 — B1-02 (1), B2-01 (2)") rather than as several unrelated rows.
   const byPart = new Map<string, InventoryRowView>();
   for (const row of inventoryRows) {
     if (row.quantity <= 0) continue;

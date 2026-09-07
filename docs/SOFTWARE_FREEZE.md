@@ -44,7 +44,30 @@ the freeze.
 
 ---
 
-## 2. Architecture (frozen)
+## 2. Pages
+
+Four routes, grouped by what the operator is doing. The menu is in the shared
+layout, so `GANTRY MODE: SIMULATION` is pinned on every page.
+
+| Route | Page | Panels |
+|-------|------|--------|
+| `/` | **Operate** | Live camera · Current scan · Human decisions (approval + identity) · Warehouse agent · Workflow |
+| `/warehouse` | **Warehouse** | Digital warehouse · Inventory · Gantry |
+| `/history` | **History** | Recent movements (authoritative) · Recent scans (local IndexedDB) |
+| `/activity` | **Activity** | Agent activity trace timeline · Recent runs |
+
+The **live loop stays on `/`** — scan, identify, ask, approve — because
+Milestone 13 validated that sequence without navigation. The bin map is on
+Warehouse only; what Operate needs after an action is whether it happened, and
+the approval outcome (read back from the Movement row) and the Workflow panel
+both name the destination bin.
+
+Session state (current scan, pending approval, agent turns, followed trace)
+lives in `WarehouseSessionProvider` **above** the router outlet, so moving
+between pages never destroys a decision the server is still holding open. The
+polling hooks run once there rather than once per page.
+
+## 3. Architecture (frozen)
 
 ```
 UGREEN CAMERA → Gemini → ScanResult → Catalog Matcher
@@ -70,7 +93,7 @@ Observability wraps this flow and never controls it.
 
 ---
 
-## 3. GantryController contract (the M15 hardware boundary)
+## 4. GantryController contract (the M15 hardware boundary)
 
 `src/lib/gantry/controller.ts`. Warehouse-level intent only — never axes,
 steps or motor positions.
@@ -108,9 +131,31 @@ interface GantryOperation {
 }
 ```
 
-**Locations.** Bins are `A01 A02 A03 B01 B02 B03`. `INTAKE` and `OUTPUT` are
-logical stations, deliberately **not** `Bin` rows — bin-availability logic must
-never see a conveyor as somewhere stock can live.
+**Locations — the physical shelf.** The rack has two bays. One is the
+**workstation**: the camera scans a part there, and it is where every part
+arrives from and leaves to. That bay is `INTAKE` and `OUTPUT`, deliberately
+**not** `Bin` rows — bin-availability logic must never see the scan table as
+somewhere stock can live.
+
+The other bay is **storage**: six beds (shelf levels), five bin-box slots
+across each, thirty in all. A bin box is 4" wide × 12" deep, so one slot is one
+box-width along a bed.
+
+```
+bed 6   B6-01  B6-02  B6-03  B6-04  B6-05
+bed 5   B5-01  B5-02  B5-03  B5-04  B5-05
+bed 4   B4-01  B4-02  B4-03  B4-04  B4-05
+bed 3   B3-01  B3-02  B3-03  B3-04  B3-05
+bed 2   B2-01  B2-02  B2-03  B2-04  B2-05
+bed 1   B1-01  B1-02  B1-03  B1-04  B1-05     <- bottom of the rack
+```
+
+**The code is the position.** `B4-02` is bed 4, slot 2, so an M15 coordinate is
+a parse (`parseBinCode`) rather than a hand-maintained lookup: bed selects the
+vertical axis, slot the horizontal one. Codes sort into physical order, so the
+deterministic "lowest available bin" policy fills bed 1 left-to-right before
+climbing. `STORAGE_BEDS` and `SLOTS_PER_BED` in `src/lib/warehouse/types.ts`
+are the only two numbers to change if the shelf grows.
 
 **Error semantics — the rule a hardware adapter must follow.**
 
@@ -130,7 +175,7 @@ No raw motor positions may surface in the agent or domain layers.
 
 ---
 
-## 4. Strands tool allowlist (frozen)
+## 5. Strands tool allowlist (frozen)
 
 Seven read-only tools, approval-free:
 
@@ -152,7 +197,7 @@ it requires approval, so a tool added later is gated by default. An approval
 binds to one interrupt with frozen arguments — the client sends only an id and
 APPROVE/DENY, and can never restate the call.
 
-## 5. Graphs (frozen)
+## 6. Graphs (frozen)
 
 | Graph | Nodes | Config |
 |-------|-------|--------|
@@ -163,7 +208,7 @@ Linear and acyclic, so a physical action can never be repeated by a loop. Every
 node is deterministic code — no agent or model node. Only the execute node
 calls a service.
 
-## 6. Source-of-truth rules (frozen)
+## 7. Source-of-truth rules (frozen)
 
 | Concern | Authority |
 |---------|-----------|
@@ -178,7 +223,7 @@ calls a service.
 Browser IndexedDB holds local scan history only; the warehouse database is
 authoritative for inventory.
 
-## 7. Error codes (frozen — do not rename)
+## 8. Error codes (frozen — do not rename)
 
 **Scan / measurement:** `mat_not_detected` · `calibration_failed` ·
 `no_object_detected` · `multiple_objects`
@@ -210,7 +255,7 @@ authoritative for inventory.
 `bin_unavailable` · `bin_capacity_exceeded` · `inventory_conflict` ·
 `insufficient_inventory` · `invalid_status_transition` · `internal_error`
 
-## 8. Recovery behaviour
+## 9. Recovery behaviour
 
 | Failure | Can the operator retry? | How |
 |---------|------------------------|-----|
@@ -227,7 +272,7 @@ authoritative for inventory.
 There is no `catch → execute again` anywhere, and no graph edge loops back to
 an execute node.
 
-## 9. Environment
+## 10. Environment
 
 See `.env.example`. `.env` is committed and holds non-secret configuration
 only; `.env.local` is git-ignored and holds every credential.
@@ -247,10 +292,11 @@ history. `.env.local` is ignored; the only key-shaped strings in the repo are
 AWS's published documentation example (`AKIAIOSFODNN7EXAMPLE`) used as a
 redaction-test fixture.
 
-## 10. Commands
+## 11. Commands
 
 ```bash
-npm run demo:reset    # deterministic demo state (development only, never an API)
+npm run demo:reset    # empty the warehouse (development only, never an API)
+npm run demo:stock    # place the deterministic sample stock layout
 npm run db:seed       # idempotent catalog + bins
 npm run test:smoke    # offline stack check, no model calls
 npm test              # full suite — no Bedrock or Gemini required
@@ -261,15 +307,33 @@ npx prisma validate
 ```
 
 **Demo reset state:** catalog `BRG-6204 · BRG-6205 · BOLT-M8-50 ·
-BOLT-M8-50-FLG · BOLT-M10-60`; bins `A01–A03, B01–B03` all `AVAILABLE`;
+BOLT-M8-50-FLG · BOLT-M10-60`; all thirty bins `B1-01`–`B6-05` `AVAILABLE`;
 inventory empty; no approvals, resolutions or traces; gantry `SIMULATION`,
 `IDLE` after a dev-server restart.
+
+**Sample stock (`demo:stock`)** places a starting position in which every demo
+path is reachable. Stock goes in through the inventory SERVICE, so it obeys
+one-SKU-per-bin, capacity and bin-status rules; no gantry runs and no Movements
+are created, because this is a starting position and not a history.
+
+| Bin | Holds | Why |
+|-----|-------|-----|
+| B1-01 | `BRG-6204` × 2 | retrieval leaves the bin `OCCUPIED` |
+| B1-02 | `BOLT-M8-50` × 1 | retrieval empties it, so the bin frees itself |
+| B2-03 | `BRG-6204` × 1 | same part on a **different bed**, so Inventory shows `B1-01 (2), B2-03 (1)` and the gantry has to change height |
+| B3-05 | `BOLT-M10-60` × 4 | a larger holding, far corner of the shelf |
+| the other 26 slots | — | `AVAILABLE`, so a putaway always has somewhere to go |
+
+`BRG-6205` and `BOLT-M8-50-FLG` stay in the catalog with no stock, which is
+what makes `out_of_stock` demonstrable and distinguishable from
+`part_not_found` for a SKU like `BRG-9999`. Re-running `demo:stock` refuses
+bins that already hold stock rather than doubling a holding.
 
 `demo:reset` refuses to run with `NODE_ENV=production` or against a
 non-`file:` database. The test suite refuses any `DATABASE_URL` whose path
 does not contain `test-warehouse`.
 
-## 11. Restart behaviour
+## 12. Restart behaviour
 
 **Persists** (SQLite): catalog, inventory, bin state, Movements, approval
 audit rows, catalog resolutions, traces.
@@ -283,7 +347,7 @@ next attempt — the audit row is marked `EXPIRED` and nothing executes. A
 snapshot that outlived its process could otherwise run a stale plan against a
 warehouse that has moved on.
 
-## 12. Known limitations (accepted for the MVP)
+## 13. Known limitations (accepted for the MVP)
 
 * SQLite, local only. No distributed locking; concurrency safety comes from
   single-writer SQLite plus conditional updates and unique constraints.
@@ -297,7 +361,7 @@ warehouse that has moved on.
 * The observability APIs are read-only and offer no replay control by design.
 * Running Nova rather than Claude, pending the Marketplace subscription.
 
-## 13. Freeze checklist
+## 14. Freeze checklist
 
 | # | Gate | Result |
 |---|------|--------|
