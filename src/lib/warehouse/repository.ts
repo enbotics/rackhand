@@ -7,7 +7,12 @@
  * inventory-service.ts because they need transactions.
  */
 import { prisma } from "./db";
+import { compareBinsInShelfOrder } from "./bin-layout";
 import { WarehouseError, isUniqueConstraintError } from "./errors";
+import {
+  evaluatePutawayDestination,
+  type PutawayDestinationEvaluation,
+} from "./putaway-destination";
 import {
   isTerminalMovementStatus,
   parseBinCode,
@@ -149,6 +154,50 @@ export async function listAvailableBins(db: Db = prisma): Promise<Bin[]> {
     where: AVAILABLE_BIN_WHERE,
     orderBy: { code: "asc" },
   });
+}
+
+export interface PutawayDestinationPreview extends PutawayDestinationEvaluation {
+  id: string;
+  code: string;
+  status: BinStatus;
+  capacity: number;
+}
+
+/**
+ * Capacity-aware destinations for one identified part, including why a bin
+ * cannot be used. Unlike listAvailableBins, an OCCUPIED bin is compatible
+ * when it already holds this exact part and one more unit still fits.
+ */
+export async function listPutawayDestinations(
+  partId: string,
+  quantity = 1,
+  db: Db = prisma,
+): Promise<PutawayDestinationPreview[]> {
+  const bins = await db.bin.findMany({
+    include: {
+      inventory: {
+        where: { quantity: { gt: 0 } },
+        select: { partId: true, quantity: true },
+      },
+    },
+  });
+
+  return bins.sort(compareBinsInShelfOrder).map((bin) => ({
+    id: bin.id,
+    code: bin.code,
+    status: bin.status as BinStatus,
+    capacity: bin.capacity,
+    ...evaluatePutawayDestination(
+      {
+        code: bin.code,
+        status: bin.status as BinStatus,
+        capacity: bin.capacity,
+        contents: bin.inventory,
+      },
+      partId,
+      quantity,
+    ),
+  }));
 }
 
 export async function setBinStatus(code: string, status: BinStatus): Promise<Bin> {

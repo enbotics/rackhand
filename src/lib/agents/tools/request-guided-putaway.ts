@@ -3,7 +3,7 @@
  *
  * READ-ONLY. This tool revalidates the server-attached scan, resolves only an
  * identity the deterministic matcher (or a recorded human decision) permits,
- * and reports the currently available slots. It does not reserve a bin, move
+ * and reports capacity-compatible destinations. It does not reserve a bin, move
  * the gantry, or write inventory. The browser treats the tool call as a signal
  * to open the guided putaway dialog; that deterministic workflow owns every
  * later state change.
@@ -12,7 +12,7 @@ import { tool } from "@strands-agents/sdk";
 import { z } from "zod";
 import { matchScanToCatalog } from "@/lib/warehouse/catalog-matcher";
 import { resolveCatalogIdentity } from "@/lib/warehouse/catalog-identity";
-import { getPartById, listAvailableBins } from "@/lib/warehouse/repository";
+import { getPartById, listPutawayDestinations } from "@/lib/warehouse/repository";
 import {
   getContextCatalogResolutionId,
   getContextScanResult,
@@ -26,7 +26,7 @@ export const requestGuidedPutawayInputSchema = z.object({});
 export const requestGuidedPutawayTool = tool({
   name: REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
   description:
-    "Open and prepare the operator-guided putaway experience for the scan attached to this request. READ-ONLY: it checks catalog identity and lists currently available slots, but it never reserves a bin, moves the gantry, or changes inventory. Use it only when the operator explicitly asks to store or put away the scanned item. The operator will choose the slot and confirm physical placement in the guided dialog.",
+    "Open and prepare the operator-guided putaway experience for the scan attached to this request. READ-ONLY: it checks catalog identity and evaluates bin compatibility and remaining capacity, but it never reserves a bin, moves the gantry, or changes inventory. An existing bin holding the same item is recommended when it has room; the operator may choose another compatible bin and must confirm physical placement in the guided dialog.",
   inputSchema: requestGuidedPutawayInputSchema,
   callback: async () => {
     const scanResult = getContextScanResult();
@@ -58,10 +58,7 @@ export const requestGuidedPutawayTool = tool({
         };
       }
 
-      const [part, bins] = await Promise.all([
-        getPartById(resolved.identity.partId),
-        listAvailableBins(),
-      ]);
+      const part = await getPartById(resolved.identity.partId);
       if (!part) {
         return {
           ok: false as const,
@@ -70,29 +67,37 @@ export const requestGuidedPutawayTool = tool({
           message: "The identified part is no longer present in the catalog.",
         };
       }
-      if (bins.length === 0) {
+      const destinations = await listPutawayDestinations(part.id);
+      const compatible = destinations.filter((bin) => bin.eligible);
+      const recommended =
+        compatible.find((bin) => bin.alreadyStoresPart) ?? compatible[0] ?? null;
+      const fullExisting = destinations.find(
+        (bin) => bin.alreadyStoresPart && bin.reason === "FULL",
+      );
+      if (compatible.length === 0) {
         logTool(
           REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
           `scanId="${scanResult.scanId}"`,
-          "no_available_bin",
+          "no_compatible_bin",
         );
         return {
           ok: false as const,
           status: "BLOCKED" as const,
-          reason: "no_available_bin" as const,
+          reason: "no_compatible_bin" as const,
           part: {
             partId: part.id,
             sku: part.sku,
             canonicalName: part.canonicalName,
           },
-          message: "No storage slot is currently AVAILABLE for guided putaway.",
+          message:
+            "No bin can accept this item: matching bins are full and no compatible empty bin is available.",
         };
       }
 
       logTool(
         REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
         `scanId="${scanResult.scanId}"`,
-        `AWAITING_SLOT available=${bins.length}`,
+        `AWAITING_SLOT compatible=${compatible.length} recommended=${recommended?.code ?? "none"}`,
       );
       return {
         ok: true as const,
@@ -103,12 +108,21 @@ export const requestGuidedPutawayTool = tool({
           sku: part.sku,
           canonicalName: part.canonicalName,
         },
-        availableBins: bins.map((bin) => ({
+        compatibleBins: compatible.map((bin) => ({
           code: bin.code,
+          status: bin.status,
           capacity: bin.capacity,
+          currentQuantity: bin.currentQuantity,
+          afterQuantity: bin.afterQuantity,
+          remainingAfter: bin.remainingAfter,
+          alreadyStoresPart: bin.alreadyStoresPart,
+          recommended: bin.code === recommended?.code,
         })),
-        message:
-          "The guided putaway dialog is ready. The operator must choose an available slot before the gantry moves.",
+        message: recommended?.alreadyStoresPart
+          ? `${recommended.code} is suggested because it already stores this item and has capacity (${recommended.currentQuantity} + 1 = ${recommended.afterQuantity}/${recommended.capacity}). The operator may choose another compatible bin before the gantry moves.`
+          : fullExisting
+            ? `${fullExisting.code} already stores this item but is full (${fullExisting.currentQuantity}/${fullExisting.capacity}); ${recommended?.code} is the suggested compatible empty bin. The operator may choose another compatible bin before the gantry moves.`
+            : `${recommended?.code} is the suggested compatible empty bin (${recommended?.currentQuantity} + 1 = ${recommended?.afterQuantity}/${recommended?.capacity}). The operator may choose another compatible bin before the gantry moves.`,
       };
     } catch (error) {
       return toolFailure(REQUEST_GUIDED_PUTAWAY_TOOL_NAME, error);

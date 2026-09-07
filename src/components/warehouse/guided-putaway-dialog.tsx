@@ -5,6 +5,7 @@ import type { GantryStatus } from "@/lib/gantry/types";
 import type { Shot } from "@/lib/shots-db";
 import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { groupBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
+import { evaluatePutawayDestination } from "@/lib/warehouse/putaway-destination";
 import type {
   GuidedGantryStatus,
   GuidedPutawayResult,
@@ -67,6 +68,25 @@ function toneForStatus(status: GuidedGantryStatus) {
     return "border-warn/40 bg-warn-soft text-warn";
   }
   return "border-accent-soft/60 bg-accent-tint text-accent";
+}
+
+function destinationReasonLabel(
+  reason: ReturnType<typeof evaluatePutawayDestination>["reason"],
+): string {
+  switch (reason) {
+    case "FULL":
+      return "Full";
+    case "RESERVED":
+      return "Reserved";
+    case "DISABLED":
+      return "Disabled";
+    case "DIFFERENT_PART":
+      return "Different item";
+    case "INCONSISTENT":
+      return "Needs review";
+    default:
+      return "Compatible";
+  }
 }
 
 function LiveStatus({
@@ -217,12 +237,43 @@ export function GuidedPutawayDialog({
   const seenOpenRequest = useRef(0);
   const [lastSeenPhase, setLastSeenPhase] = useState(scanState.phase);
 
-  const availableBins = useMemo(
-    () => bins.filter((bin) => bin.status === "AVAILABLE"),
-    [bins],
-  );
   const shelfRows = useMemo(() => groupBinsInShelfOrder(bins), [bins]);
   const identityReady = identity === "MATCHED" || identity === "HUMAN_CONFIRMED";
+  const identifiedPartId =
+    confirmed?.partId ??
+    (scanState.scan?.match?.status === "MATCHED"
+      ? scanState.scan.match.matchedPart.id
+      : null);
+  const destinationChoices = useMemo(
+    () =>
+      shelfRows.flatMap((row) =>
+        row.bins.map((bin) => ({
+          bin,
+          evaluation: identifiedPartId
+            ? evaluatePutawayDestination(bin, identifiedPartId)
+            : null,
+        })),
+      ),
+    [identifiedPartId, shelfRows],
+  );
+  const choiceByBinId = useMemo(
+    () => new Map(destinationChoices.map((choice) => [choice.bin.binId, choice])),
+    [destinationChoices],
+  );
+  const compatibleChoices = destinationChoices.filter(
+    (choice) => choice.evaluation?.eligible,
+  );
+  const recommendedChoice =
+    compatibleChoices.find((choice) => choice.evaluation?.alreadyStoresPart) ??
+    compatibleChoices[0] ??
+    null;
+  const selectedChoice =
+    compatibleChoices.find((choice) => choice.bin.code === selectedBin) ??
+    recommendedChoice;
+  const fullExistingChoice = destinationChoices.find(
+    (choice) =>
+      choice.evaluation?.alreadyStoresPart && choice.evaluation.reason === "FULL",
+  );
   const blockedReason = putawayBlockedReason(
     identity,
     scanState.scan?.matchError != null,
@@ -442,7 +493,7 @@ export function GuidedPutawayDialog({
   const locked = ["RESERVING", "FETCHING", "AWAITING_PLACEMENT", "RETURNING", "SAVING"].includes(
     phase,
   );
-  const destination = operation?.destinationBinCode ?? selectedBin;
+  const destination = operation?.destinationBinCode ?? selectedChoice?.bin.code ?? null;
   const destinationBin = bins.find((bin) => bin.code === destination) ?? null;
 
   return (
@@ -551,7 +602,10 @@ export function GuidedPutawayDialog({
             {confirmed && (
               <button
                 type="button"
-                onClick={onReconsiderIdentity}
+                onClick={() => {
+                  setSelectedBin(null);
+                  onReconsiderIdentity();
+                }}
                 disabled={identityBusy}
                 className={`${BUTTON_VARIANTS.secondary} mb-4`}
               >
@@ -561,74 +615,126 @@ export function GuidedPutawayDialog({
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
-                  Step 2 · Available slots
+                  Step 2 · Choose destination
                 </p>
                 <p className="mt-1 text-xs text-ink-muted">
-                  Choose where this identified item will be stored.
+                  The suggested bin keeps identical items together when capacity allows. You may
+                  select any other compatible bin before continuing.
                 </p>
               </div>
               <span className="font-mono text-xs text-success">
-                {availableBins.length} available
+                {compatibleChoices.length} compatible
               </span>
             </div>
-            {availableBins.length > 0 ? (
-              <div
-                className="mt-4 flex flex-col gap-2"
-                role="group"
-                aria-label="Available slots in physical shelf order"
-              >
-                {shelfRows.map((row) => (
-                  <div
-                    key={row.bed ?? "unplaced"}
-                    className="flex items-stretch gap-2"
-                    data-shelf-bed={row.bed ?? "unplaced"}
-                  >
-                    <span className="flex w-10 shrink-0 items-center justify-end pr-1 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
-                      {row.bed === null ? "—" : `bed ${row.bed}`}
-                    </span>
-                    <div
-                      className="grid flex-1 gap-2"
-                      style={{
-                        gridTemplateColumns: `repeat(${row.bins.length}, minmax(0, 1fr))`,
-                      }}
-                    >
-                      {row.bins.map((bin) =>
-                        bin.status === "AVAILABLE" ? (
-                          <button
-                            key={bin.binId}
-                            type="button"
-                            onClick={() => void start(bin.code)}
-                            aria-pressed={selectedBin === bin.code}
-                            className={`min-h-12 rounded-lg border px-2 py-2 font-mono text-xs transition-all ${
-                              selectedBin === bin.code
-                                ? "border-accent bg-accent-tint text-accent shadow-[0_0_0_1px_rgba(91,157,217,0.25)]"
-                                : "border-line bg-bg-elevated text-ink-muted hover:border-accent-soft hover:text-ink"
-                            }`}
-                          >
-                            {bin.code}
-                          </button>
-                        ) : (
-                          <button
-                            key={bin.binId}
-                            type="button"
-                            disabled
-                            aria-label={`${bin.code}, ${bin.status.toLowerCase()}`}
-                            className="flex min-h-12 flex-col items-center justify-center rounded-lg border border-line/60 bg-bg-elevated/40 px-2 py-1 font-mono text-[10px] text-ink-faint opacity-55"
-                          >
-                            <span>{bin.code}</span>
-                            <span className="mt-0.5 text-[8px] uppercase tracking-[0.08em]">
-                              {bin.status.toLowerCase()}
-                            </span>
-                          </button>
-                        ),
-                      )}
-                    </div>
-                  </div>
-                ))}
+            {recommendedChoice && (
+              <div className="mt-4 rounded-lg border border-accent-soft/60 bg-accent-tint px-3 py-2.5">
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-accent">
+                  Default destination · {recommendedChoice.bin.code}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                  {recommendedChoice.evaluation?.alreadyStoresPart
+                    ? `This bin already stores the identified item. Adding it here keeps matching stock together: ${recommendedChoice.evaluation.currentQuantity} + 1 = ${recommendedChoice.evaluation.afterQuantity} of ${recommendedChoice.bin.capacity}.`
+                    : fullExistingChoice?.evaluation
+                      ? `Its existing bin ${fullExistingChoice.bin.code} is full (${fullExistingChoice.evaluation.currentQuantity}/${fullExistingChoice.bin.capacity}), so ${recommendedChoice.bin.code} is the first compatible empty bin: ${recommendedChoice.evaluation?.currentQuantity} + 1 = ${recommendedChoice.evaluation?.afterQuantity}/${recommendedChoice.bin.capacity}.`
+                      : `No existing bin currently stores this item with free capacity, so ${recommendedChoice.bin.code} is the first compatible empty bin: ${recommendedChoice.evaluation?.currentQuantity} + 1 = ${recommendedChoice.evaluation?.afterQuantity}/${recommendedChoice.bin.capacity}.`}
+                </p>
               </div>
+            )}
+            {compatibleChoices.length > 0 ? (
+              <>
+                <div
+                  className="mt-4 flex flex-col gap-2 overflow-x-auto pb-1"
+                  role="group"
+                  aria-label="Putaway destinations in physical shelf order"
+                >
+                  {shelfRows.map((row) => (
+                    <div
+                      key={row.bed ?? "unplaced"}
+                      className="flex min-w-max items-stretch gap-2"
+                      data-shelf-bed={row.bed ?? "unplaced"}
+                    >
+                      <span className="flex w-10 shrink-0 items-center justify-end pr-1 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
+                        {row.bed === null ? "—" : `bed ${row.bed}`}
+                      </span>
+                      <div
+                        className="grid flex-1 gap-2"
+                        style={{
+                          gridTemplateColumns: `repeat(${row.bins.length}, minmax(7.5rem, 1fr))`,
+                        }}
+                      >
+                        {row.bins.map((bin) => {
+                          const choice = choiceByBinId.get(bin.binId);
+                          const evaluation = choice?.evaluation;
+                          const eligible = evaluation?.eligible === true;
+                          const chosen = selectedChoice?.bin.binId === bin.binId;
+                          const isDefault = recommendedChoice?.bin.binId === bin.binId;
+                          return (
+                            <button
+                              key={bin.binId}
+                              type="button"
+                              disabled={!eligible}
+                              onClick={() => setSelectedBin(bin.code)}
+                              aria-pressed={chosen}
+                              aria-label={`${bin.code}, ${
+                                evaluation ? destinationReasonLabel(evaluation.reason) : bin.status
+                              }, capacity ${evaluation?.currentQuantity ?? bin.totalQuantity} of ${bin.capacity}`}
+                              className={`flex min-h-[4.75rem] flex-col items-start justify-center rounded-lg border px-2.5 py-2 text-left transition-all ${
+                                chosen
+                                  ? "border-accent bg-accent-tint text-accent shadow-[0_0_0_1px_rgba(91,157,217,0.25)]"
+                                  : eligible
+                                    ? "border-line bg-bg-elevated text-ink-muted hover:border-accent-soft hover:text-ink"
+                                    : "border-line/60 bg-bg-elevated/40 text-ink-faint opacity-55"
+                              }`}
+                            >
+                              <span className="flex w-full items-center justify-between gap-1 font-mono text-[11px]">
+                                {bin.code}
+                                {isDefault && (
+                                  <span className="rounded bg-accent/15 px-1 py-0.5 text-[7px] uppercase tracking-[0.08em] text-accent">
+                                    Default
+                                  </span>
+                                )}
+                              </span>
+                              <span className="mt-1 text-[9px]">
+                                {evaluation?.alreadyStoresPart && eligible
+                                  ? "Same item"
+                                  : evaluation
+                                    ? destinationReasonLabel(evaluation.reason)
+                                    : bin.status.toLowerCase()}
+                              </span>
+                              <span className="mt-0.5 font-mono text-[9px]">
+                                {eligible && evaluation
+                                  ? `${evaluation.currentQuantity} + 1 = ${evaluation.afterQuantity}/${bin.capacity}`
+                                  : `${evaluation?.currentQuantity ?? bin.totalQuantity}/${bin.capacity} used`}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
+                  <p className="text-xs text-ink-muted">
+                    Selected: <strong className="text-ink">{selectedChoice?.bin.code}</strong>
+                    {selectedChoice?.evaluation &&
+                      ` · ${selectedChoice.evaluation.currentQuantity} + 1 = ${selectedChoice.evaluation.afterQuantity}/${selectedChoice.bin.capacity}`}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => selectedChoice && void start(selectedChoice.bin.code)}
+                    disabled={!selectedChoice}
+                    className={BUTTON_VARIANTS.primary}
+                  >
+                    Continue with {selectedChoice?.bin.code ?? "selected bin"} →
+                  </button>
+                </div>
+              </>
             ) : (
               <div className="mt-4">
-                <ErrorNote>No slots are currently available for putaway.</ErrorNote>
+                <ErrorNote>
+                  No bin can accept this item. Existing matching bins are full, and no compatible
+                  empty bin is currently available.
+                </ErrorNote>
               </div>
             )}
           </section>
@@ -707,7 +813,7 @@ export function GuidedPutawayDialog({
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
               <button type="button" onClick={() => void settle(false)} className={BUTTON_VARIANTS.secondary}>
-                No, return empty bin
+                No item placed · return bin
               </button>
               <div className="flex flex-wrap justify-end gap-2">
                 <button
@@ -742,7 +848,7 @@ export function GuidedPutawayDialog({
 
         {phase === "CANCELLED" && (
           <div className="rounded-xl border border-line bg-bg-elevated p-4 text-ink-muted">
-            The empty bin was returned and its reservation was released. No inventory was saved.
+            The bin was returned and its reservation was released. No inventory was changed.
           </div>
         )}
 
