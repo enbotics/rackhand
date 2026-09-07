@@ -13,7 +13,14 @@
  *    that means for stock, in a later milestone.
  *  - It validates machine inputs (is this a location I can reach, am I
  *    already busy) and nothing about business state. Whether a bin actually
- *    holds the part being retrieved is not its question.
+ *    holds the part being retrieved is not its question. "Is this a location
+ *    I can reach" is a SHAPE check only (looksLikeBinCode, below) — bins are
+ *    created/deleted at runtime now, so this file can no longer enumerate the
+ *    real set without querying the database, and it deliberately doesn't:
+ *    every caller (putaway-service.ts, retrieval-service.ts, the workflow
+ *    graph nodes) already loads the real Bin row before ever reaching the
+ *    gantry, so a *real* unknown-bin case is rejected one layer up, before
+ *    this validation ever runs.
  *
  * STATE LIFETIME — simulation state is process-local and intended for the
  * local hackathon MVP. It lives in this object's fields, is lost when the
@@ -23,7 +30,6 @@
 import type { GantryController } from "./controller";
 import { GantryError } from "./errors";
 import {
-  isWarehouseBinCode,
   type GantryFailureKind,
   type GantryLocation,
   type GantryOperation,
@@ -33,7 +39,6 @@ import {
   type PutawayRequest,
   type RetrievalRequest,
   type WarehouseBinCode,
-  GANTRY_BIN_CODES,
 } from "./types";
 
 /** Short by design — long enough for a dashboard to show progress, short enough for a synchronous API. */
@@ -279,7 +284,16 @@ export class SimulatedGantryController implements GantryController {
 
 /* -------------------------------------------------------------- validation */
 
-const BIN_LIST = GANTRY_BIN_CODES.join(", ");
+/**
+ * Shape only — "looks like a bin code" (`B<digits>-<2 digits>`), not "exists
+ * right now." The gantry has no database access (see the SCOPE note above),
+ * so it cannot tell a stale/typo'd code from a real one; every caller already
+ * loads the actual Bin row before reaching the gantry, and that's where a
+ * genuinely unknown bin gets rejected.
+ */
+function looksLikeBinCode(value: unknown): value is WarehouseBinCode {
+  return typeof value === "string" && /^B\d+-\d{2}$/.test(value);
+}
 
 /**
  * Machine-input validation only — never inventory state.
@@ -303,10 +317,10 @@ export function validatePutaway(input: PutawayRequest): {
   if (destination === source) {
     throw new GantryError("invalid_location", "A putaway's source and destination must differ.");
   }
-  if (!isWarehouseBinCode(destination)) {
+  if (!looksLikeBinCode(destination)) {
     throw new GantryError(
       "invalid_location",
-      `A putaway must end at a known bin (${BIN_LIST}), not "${String(destination)}".`,
+      `A putaway must end at a known bin, not "${String(destination)}".`,
     );
   }
 
@@ -328,10 +342,10 @@ export function validateRetrieval(input: RetrievalRequest): {
   if (source === destination) {
     throw new GantryError("invalid_location", "A retrieval's source and destination must differ.");
   }
-  if (!isWarehouseBinCode(source)) {
+  if (!looksLikeBinCode(source)) {
     throw new GantryError(
       "invalid_location",
-      `A retrieval must start at a known bin (${BIN_LIST}), not "${String(source)}".`,
+      `A retrieval must start at a known bin, not "${String(source)}".`,
     );
   }
 

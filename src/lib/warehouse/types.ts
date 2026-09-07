@@ -66,40 +66,51 @@ export function isTerminalMovementStatus(status: MovementStatus): status is Term
  * use. Codes sort into physical order, so the deterministic "lowest available
  * bin" policy fills the bottom bed left-to-right before climbing.
  */
+/**
+ * The SEED layout only — how many beds/slots `prisma/seed.ts` creates on a
+ * fresh database, and the UI's default slot count when creating a new bed.
+ * NOT a validation ceiling: the warehouse now grows bins/beds at runtime (bin
+ * management CRUD), so a bed number or slot count beyond these is legitimate.
+ * Whether a given bed/slot actually exists is a database question, not a
+ * question this constant can answer.
+ */
 export const STORAGE_BEDS = 6;
 export const SLOTS_PER_BED = 5;
 
 /**
- * A template-literal type, so the thirty codes stay a real union rather than
- * plain `string`. Generating the array loses literal types; expressing the
- * SHAPE in the type system keeps `destination: WarehouseBinCode` rejecting a
- * typo at compile time, which is worth having when the value eventually names
- * somewhere a machine will drive to.
+ * Was a closed template-literal union (`B${1-6}-${01-05}`), which caught a
+ * typo'd bin code at compile time. That guarantee only holds for a fixed
+ * layout — now that beds/bins are created and deleted at runtime, the set of
+ * valid codes is a database fact, not something the type system can enumerate
+ * in advance. A bin code is validated at runtime instead (parseBinCode below,
+ * plus a real lookup wherever "does this bin exist" matters).
  */
-type BedNumber = 1 | 2 | 3 | 4 | 5 | 6;
-type SlotNumber = "01" | "02" | "03" | "04" | "05";
-export type BinCode = `B${BedNumber}-${SlotNumber}`;
+export type BinCode = string;
 
 function buildBinCodes(): BinCode[] {
   const codes: BinCode[] = [];
   for (let bed = 1; bed <= STORAGE_BEDS; bed += 1) {
     for (let slot = 1; slot <= SLOTS_PER_BED; slot += 1) {
-      codes.push(`B${bed as BedNumber}-${String(slot).padStart(2, "0") as SlotNumber}`);
+      codes.push(`B${bed}-${String(slot).padStart(2, "0")}`);
     }
   }
   return codes;
 }
 
-/** The thirty storage bins, seeded by prisma/seed.ts. Physical order. */
+/** The seed layout's bins (see STORAGE_BEDS/SLOTS_PER_BED above). Physical order. */
 export const SEED_BIN_CODES: readonly BinCode[] = buildBinCodes();
 
-/** `B4-02` -> `{ bed: 4, slot: 2 }`. Null for anything that is not a bin code. */
+/**
+ * `B4-02` -> `{ bed: 4, slot: 2 }`. Null for anything that isn't SHAPED like a
+ * bin code. Does not check the bed/slot actually exists — that's a database
+ * lookup, not a parsing concern (see repository.ts's bed/bin functions).
+ */
 export function parseBinCode(code: string): { bed: number; slot: number } | null {
   const match = /^B(\d+)-(\d{2})$/.exec(code.trim().toUpperCase());
   if (!match) return null;
   const bed = Number(match[1]);
   const slot = Number(match[2]);
-  if (bed < 1 || bed > STORAGE_BEDS || slot < 1 || slot > SLOTS_PER_BED) return null;
+  if (bed < 1 || slot < 1) return null;
   return { bed, slot };
 }
 
@@ -122,6 +133,24 @@ export interface CreateBinInput {
   code: string;
   status?: BinStatus;
   capacity?: number;
+}
+
+/** At least one field must be present — enforced by validateUpdateBin, not by this type. */
+export interface UpdateBinInput {
+  status?: BinStatus;
+  capacity?: number;
+}
+
+/** Creates a brand-new bed: slots 01..slotCount, all AVAILABLE. Fails if the bed already has bins. */
+export interface CreateBedInput {
+  bed: number;
+  slotCount: number;
+}
+
+/** Appends slotCount more bins after the bed's current highest slot. Fails if the bed has none yet. */
+export interface AddBinsToBedInput {
+  bed: number;
+  slotCount: number;
 }
 
 /** A part/bin pair addressed by human-facing keys (sku + bin code) or by id. */

@@ -15,6 +15,7 @@ export const WAREHOUSE_ERROR_STATUS = {
   duplicate_bin_code: 409,
   bin_unavailable: 409,
   bin_capacity_exceeded: 409,
+  bin_has_inventory: 409,
   inventory_conflict: 409,
   insufficient_inventory: 409,
   invalid_status_transition: 409,
@@ -25,7 +26,10 @@ export type WarehouseErrorCode = keyof typeof WAREHOUSE_ERROR_STATUS;
 
 export class WarehouseError extends Error {
   readonly code: WarehouseErrorCode;
-  /** Field-level detail for validation_failed; empty for the rest. */
+  /**
+   * Field-level detail for validation_failed; for bin_has_inventory, the
+   * deduped bin codes blocking a delete. Empty for every other code.
+   */
   readonly issues: string[];
 
   constructor(code: WarehouseErrorCode, message: string, issues: string[] = []) {

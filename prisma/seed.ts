@@ -14,14 +14,21 @@
  * Uses a relative import for the generated client because this runs under
  * tsx via the Prisma CLI, outside Next.js's module resolution.
  */
-import "dotenv/config";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { config } from "dotenv";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { SEED_BIN_CODES } from "../src/lib/warehouse/types";
 
-const adapter = new PrismaBetterSqlite3({
-  url: process.env.DATABASE_URL ?? "file:./prisma/dev.db",
-});
+// Same precedence as scripts/load-env.ts / prisma.config.ts: .env.local
+// (secrets, including DATABASE_URL) takes priority over .env.
+config({ path: ".env.local" });
+config();
+
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL is not set — see .env.local (Supabase pooled connection string).");
+}
+const adapter = new PrismaPg(databaseUrl);
 const prisma = new PrismaClient({ adapter });
 
 /**

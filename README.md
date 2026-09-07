@@ -7,10 +7,13 @@ Just a demo project for testing webcam accuracy
 A single Strands agent, `warehouse-agent`, runs server-side and answers
 operator questions about the warehouse.
 
-- **Model provider:** Amazon Bedrock via `@strands-agents/sdk`, model
-  `global.anthropic.claude-sonnet-4-6` (override with `BEDROCK_MODEL_ID`).
-  Credentials come from the standard AWS chain — nothing is hard-coded, and no
-  AWS secret belongs in the committed `.env`.
+- **Model provider:** Amazon Bedrock via `@strands-agents/sdk`. The model id
+  is set by `BEDROCK_MODEL_ID` in `.env` (code default if unset:
+  `global.anthropic.claude-sonnet-5`) — check `.env` for what's actually
+  configured today, since it's sometimes pinned to a different model when an
+  account's Bedrock access to the default changes. Credentials come from the
+  standard AWS chain — nothing is hard-coded, and no AWS secret belongs in the
+  committed `.env`.
 - **Separate from vision:** Gemini (`GEMINI_API_KEY`) still does all scanning
   and measurement. The agent never sees an image and never reads that key.
 
