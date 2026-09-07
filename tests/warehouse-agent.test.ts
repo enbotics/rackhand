@@ -464,7 +464,7 @@ describe("client-supplied ScanResult", () => {
   it("tells the agent an identity was confirmed, without quoting catalog text", () => {
     // Without this the agent re-runs match_catalog, sees AMBIGUOUS and asks the
     // operator to identify a part they have already identified.
-    expect(IDENTITY_RESOLVED_NOTICE).toMatch(/execute_putaway/);
+    expect(IDENTITY_RESOLVED_NOTICE).toMatch(/request_guided_putaway/);
     expect(IDENTITY_RESOLVED_NOTICE).toMatch(/do not ask them to identify it again/i);
     expect(IDENTITY_RESOLVED_NOTICE).not.toMatch(/BOLT|BRG|bearing|bolt/);
   });
@@ -484,8 +484,8 @@ describe("client-supplied ScanResult", () => {
 
 describe("system prompt, write rules", () => {
   it("separates asking where a part could go from storing it", () => {
-    expect(WAREHOUSE_AGENT_PROMPT).toMatch(/only when the operator explicitly asks/i);
-    expect(WAREHOUSE_AGENT_PROMPT).toMatch(/never call either to answer an informational question/i);
+    expect(WAREHOUSE_AGENT_PROMPT).toMatch(/operator explicitly asks/i);
+    expect(WAREHOUSE_AGENT_PROMPT).toMatch(/never call it to answer an informational question/i);
     // A scan existing is not a request to store anything.
     expect(WAREHOUSE_AGENT_PROMPT).toMatch(/not, by itself, a request to store/i);
   });
@@ -497,10 +497,12 @@ describe("system prompt, write rules", () => {
     expect(WAREHOUSE_AGENT_PROMPT).toMatch(/never state or infer an inventory quantity yourself/i);
   });
 
-  it("names both write capabilities and keeps them behind explicit intent", () => {
+  it("keeps putaway guided and the one agent write behind explicit intent", () => {
     expect(WAREHOUSE_AGENT_PROMPT).toMatch(
-      /exactly two state-changing capabilities: execute_putaway.*execute_retrieval/i,
+      /exactly one agent-executed state-changing capability: execute_retrieval/i,
     );
+    expect(WAREHOUSE_AGENT_PROMPT).toMatch(/request_guided_putaway/);
+    expect(WAREHOUSE_AGENT_PROMPT).toMatch(/dialog—not you—reserves the slot/i);
     expect(WAREHOUSE_AGENT_PROMPT).toMatch(/only when the operator explicitly asks to bring/i);
     expect(WAREHOUSE_AGENT_PROMPT).toMatch(/never invent an SKU/i);
     expect(WAREHOUSE_AGENT_PROMPT).toMatch(/one item at a time/i);

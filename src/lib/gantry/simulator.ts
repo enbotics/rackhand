@@ -30,6 +30,8 @@
 import type { GantryController } from "./controller";
 import { GantryError } from "./errors";
 import {
+  type BinPresentationRequest,
+  type BinReturnRequest,
   type GantryFailureKind,
   type GantryLocation,
   type GantryOperation,
@@ -46,6 +48,8 @@ export const DEFAULT_SIM_MOVE_DELAY_MS = 300;
 export const DEFAULT_SIM_PICK_DELAY_MS = 200;
 export const DEFAULT_SIM_DROP_DELAY_MS = 200;
 export const DEFAULT_SIM_HOME_DELAY_MS = 400;
+/** Each guided bin transfer is intentionally visible in the operator UI. */
+export const DEFAULT_SIM_BIN_TRANSFER_DELAY_MS = 5_000;
 const DEFAULT_HISTORY_LIMIT = 50;
 
 export interface SimulatorOptions {
@@ -53,6 +57,7 @@ export interface SimulatorOptions {
   pickDelayMs?: number;
   dropDelayMs?: number;
   homeDelayMs?: number;
+  binTransferDelayMs?: number;
   historyLimit?: number;
 }
 
@@ -95,6 +100,7 @@ export class SimulatedGantryController implements GantryController {
   private readonly pickDelayMs: number;
   private readonly dropDelayMs: number;
   private readonly homeDelayMs: number;
+  private readonly binTransferDelayMs: number;
   private readonly historyLimit: number;
 
   constructor(options: SimulatorOptions = {}) {
@@ -102,6 +108,8 @@ export class SimulatedGantryController implements GantryController {
     this.pickDelayMs = options.pickDelayMs ?? DEFAULT_SIM_PICK_DELAY_MS;
     this.dropDelayMs = options.dropDelayMs ?? DEFAULT_SIM_DROP_DELAY_MS;
     this.homeDelayMs = options.homeDelayMs ?? DEFAULT_SIM_HOME_DELAY_MS;
+    this.binTransferDelayMs =
+      options.binTransferDelayMs ?? DEFAULT_SIM_BIN_TRANSFER_DELAY_MS;
     this.historyLimit = options.historyLimit ?? DEFAULT_HISTORY_LIMIT;
   }
 
@@ -158,6 +166,18 @@ export class SimulatedGantryController implements GantryController {
       { state: "MOVING", delayMs: this.moveDelayMs, failOn: null, arriveAt: destination },
       { state: "DROPPING", delayMs: this.dropDelayMs, failOn: "drop_failed" },
     ]);
+  }
+
+  async presentBin(input: BinPresentationRequest): Promise<GantryOperation> {
+    const { source, destination } = validateBinPresentation(input);
+    const operation = this.claim("BIN_PRESENTATION", source, destination);
+    return this.execute(operation, this.binTransferPhases(source, destination));
+  }
+
+  async returnBin(input: BinReturnRequest): Promise<GantryOperation> {
+    const { source, destination } = validateBinReturn(input);
+    const operation = this.claim("BIN_RETURN", source, destination);
+    return this.execute(operation, this.binTransferPhases(source, destination));
   }
 
   /* ---------------------------------------------------- failure injection */
@@ -249,6 +269,20 @@ export class SimulatedGantryController implements GantryController {
     }
 
     return this.finish(operation, null);
+  }
+
+  /** Four visible phases whose total duration is exactly the configured transfer delay. */
+  private binTransferPhases(source: GantryLocation, destination: GantryLocation): Phase[] {
+    const firstMove = Math.round(this.binTransferDelayMs * 0.35);
+    const pick = Math.round(this.binTransferDelayMs * 0.15);
+    const secondMove = Math.round(this.binTransferDelayMs * 0.35);
+    const drop = Math.max(0, this.binTransferDelayMs - firstMove - pick - secondMove);
+    return [
+      { state: "MOVING", delayMs: firstMove, failOn: "movement_timeout", arriveAt: source },
+      { state: "PICKING", delayMs: pick, failOn: "pickup_failed" },
+      { state: "MOVING", delayMs: secondMove, failOn: null, arriveAt: destination },
+      { state: "DROPPING", delayMs: drop, failOn: "drop_failed" },
+    ];
   }
 
   /**
@@ -349,5 +383,39 @@ export function validateRetrieval(input: RetrievalRequest): {
     );
   }
 
+  return { source, destination };
+}
+
+export function validateBinPresentation(input: BinPresentationRequest): {
+  source: WarehouseBinCode;
+  destination: "INTAKE";
+} {
+  const { source, destination } = (input ?? {}) as {
+    source?: unknown;
+    destination?: unknown;
+  };
+  if (!looksLikeBinCode(source) || destination !== "INTAKE") {
+    throw new GantryError(
+      "invalid_location",
+      `A bin presentation must move a storage bin to INTAKE.`,
+    );
+  }
+  return { source, destination };
+}
+
+export function validateBinReturn(input: BinReturnRequest): {
+  source: "INTAKE";
+  destination: WarehouseBinCode;
+} {
+  const { source, destination } = (input ?? {}) as {
+    source?: unknown;
+    destination?: unknown;
+  };
+  if (source !== "INTAKE" || !looksLikeBinCode(destination)) {
+    throw new GantryError(
+      "invalid_location",
+      `A bin return must move the presented bin from INTAKE to a storage slot.`,
+    );
+  }
   return { source, destination };
 }

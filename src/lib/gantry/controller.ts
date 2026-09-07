@@ -12,6 +12,8 @@
  * stock is the warehouse service layer's decision, in a later milestone.
  */
 import type {
+  BinPresentationRequest,
+  BinReturnRequest,
   GantryOperation,
   GantryStatus,
   PutawayRequest,
@@ -30,6 +32,12 @@ export interface GantryController {
 
   /** Move a part from a storage bin to the output station. */
   retrieve(input: RetrievalRequest): Promise<GantryOperation>;
+
+  /** Bring a selected storage bin to the operator for loading. */
+  presentBin(input: BinPresentationRequest): Promise<GantryOperation>;
+
+  /** Return a presented bin to its reserved storage slot. */
+  returnBin(input: BinReturnRequest): Promise<GantryOperation>;
 
   /** Most recent operations, newest first. */
   getRecentOperations(limit?: number): Promise<GantryOperation[]>;

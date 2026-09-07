@@ -40,6 +40,7 @@ export function WarehouseMap({
   /** Highlighted while the machine is somewhere other than idle. */
   activeLocation,
   onManageBins,
+  onSelectBin,
 }: {
   bins: BinView[];
   loading: boolean;
@@ -48,6 +49,8 @@ export function WarehouseMap({
   activeLocation?: string | null;
   /** Presentational callback — the actual CRUD UI/state lives in the composing view. */
   onManageBins?: () => void;
+  /** Opens the bin-detail modal for a click on a card. */
+  onSelectBin?: (bin: BinView) => void;
 }) {
   return (
     <Panel
@@ -92,11 +95,14 @@ export function WarehouseMap({
                   const status = BIN_STATUS_PRESENTATION[bin.status];
                   const active = activeLocation === bin.code;
                   return (
-                    <div
+                    <button
                       key={bin.binId}
-                      className={`flex min-h-[74px] flex-col gap-1 rounded-lg border bg-bg-elevated p-2 transition-colors ${
+                      type="button"
+                      onClick={() => onSelectBin?.(bin)}
+                      disabled={!onSelectBin}
+                      className={`flex min-h-[84px] flex-col gap-1 rounded-lg border bg-bg-elevated p-2 text-left transition-colors ${
                         active ? "border-accent" : "border-line"
-                      }`}
+                      } ${onSelectBin ? "cursor-pointer hover:border-accent-soft" : ""}`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-mono text-[11px] font-semibold tracking-wider text-ink">
@@ -114,18 +120,30 @@ export function WarehouseMap({
                       {bin.contents.length === 0 ? (
                         <p className="mt-auto text-[11px] text-ink-faint">Empty</p>
                       ) : (
-                        <ul className="mt-auto space-y-0.5">
+                        <ul className="mt-auto space-y-1">
                           {bin.contents.map((item) => (
-                            <li key={item.partId} className="min-w-0">
-                              <p className="truncate font-mono text-[11px] text-ink">{item.sku}</p>
-                              <p className="font-mono text-[10px] text-ink-muted">
-                                Qty: {item.quantity}
-                              </p>
+                            <li key={item.partId} className="flex min-w-0 items-center gap-1.5">
+                              {item.imageUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={item.imageUrl}
+                                  alt={item.canonicalName}
+                                  className="h-8 w-8 shrink-0 rounded-md border border-line object-cover"
+                                />
+                              ) : (
+                                <div className="h-8 w-8 shrink-0 rounded-md border border-dashed border-line" />
+                              )}
+                              <div className="min-w-0">
+                                <p className="truncate font-mono text-[11px] text-ink">{item.sku}</p>
+                                <p className="font-mono text-[10px] text-ink-muted">
+                                  Qty: {item.quantity}
+                                </p>
+                              </div>
                             </li>
                           ))}
                         </ul>
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>

@@ -76,6 +76,15 @@ class IssueCollector {
     return value;
   }
 
+  /** Like positiveInteger, but 0 is allowed — for a target quantity, not a delta. */
+  nonNegativeInteger(field: string, value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      this.add(`${field} must be an integer >= 0`);
+      return 0;
+    }
+    return value;
+  }
+
   positiveInteger(field: string, value: unknown): number {
     if (typeof value !== "number" || !Number.isInteger(value)) {
       this.add(`${field} must be an integer`);
@@ -94,6 +103,16 @@ class IssueCollector {
     if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
       this.add(`${field} must be a positive integer when present`);
       return null;
+    }
+    return value;
+  }
+
+  /** Absent (undefined) falls back to `fallback`; a present value must be a real boolean. */
+  optionalBoolean(field: string, value: unknown, fallback: boolean): boolean {
+    if (value === undefined) return fallback;
+    if (typeof value !== "boolean") {
+      this.add(`${field} must be a boolean when present`);
+      return fallback;
     }
     return value;
   }
@@ -122,6 +141,7 @@ export interface ValidatedPart {
   lengthMM: number | null;
   widthMM: number | null;
   heightMM: number | null;
+  returnable: boolean;
 }
 
 export function validateCreatePart(input: CreatePartInput): ValidatedPart {
@@ -135,6 +155,7 @@ export function validateCreatePart(input: CreatePartInput): ValidatedPart {
     lengthMM: c.optionalDimension("lengthMM", input?.lengthMM),
     widthMM: c.optionalDimension("widthMM", input?.widthMM),
     heightMM: c.optionalDimension("heightMM", input?.heightMM),
+    returnable: c.optionalBoolean("returnable", input?.returnable, false),
   };
   c.throwIfInvalid("part");
   return part;
@@ -231,6 +252,20 @@ export function validateInventoryMutation(
     quantity: c.positiveInteger("quantity", input?.quantity),
   };
   c.throwIfInvalid("inventory mutation");
+  return mutation;
+}
+
+/** Like validateInventoryMutation, but quantity is a TARGET (0 allowed), not a delta. */
+export function validateSetInventoryQuantity(
+  input: InventoryMutationInput,
+): ValidatedInventoryMutation {
+  const c = new IssueCollector();
+  const mutation: ValidatedInventoryMutation = {
+    sku: c.requireText("sku", input?.sku, 64).toUpperCase(),
+    binCode: c.requireText("binCode", input?.binCode, 32).toUpperCase(),
+    quantity: c.nonNegativeInteger("quantity", input?.quantity),
+  };
+  c.throwIfInvalid("inventory adjustment");
   return mutation;
 }
 

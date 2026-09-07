@@ -127,8 +127,14 @@ export interface WarehouseSession {
   identityRejected: boolean;
   identityBusy: boolean;
   identityError: string | null;
+  /** Increments when the agent asks the operator to continue in the guided dialog. */
+  guidedPutawayRequestVersion: number;
   selectCandidate: (partId: string) => void;
   rejectIdentification: () => void;
+  /** Registers a NO_MATCH scan as a brand-new catalog part, then re-checks the match. */
+  registerNewPart: () => void;
+  registeringPart: boolean;
+  registerError: string | null;
 
   approval: PendingApprovalView | null;
   outcome: ApprovalOutcome | null;
@@ -174,6 +180,9 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
   const [identityRejected, setIdentityRejected] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
+  const [registeringPart, setRegisteringPart] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+  const [guidedPutawayRequestVersion, setGuidedPutawayRequestVersion] = useState(0);
 
   // Agent conversation.
   const [turns, setTurns] = useState<AgentTurn[]>([]);
@@ -383,15 +392,19 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
 
   const applyAgentReply = useCallback((data: Record<string, unknown>) => {
     const workflows = (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
+    const toolCalls = (data.toolCalls as string[] | undefined) ?? [];
     if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
     if (typeof data.traceId === "string") setTraceId(data.traceId);
+    if (toolCalls.includes("request_guided_putaway")) {
+      setGuidedPutawayRequestVersion((version) => version + 1);
+    }
     setTurns((previous) => [
       ...previous,
       {
         id: nextTurnId(),
         role: "agent",
         text: (data.message as string) ?? "",
-        tools: (data.toolCalls as string[]) ?? [],
+        tools: toolCalls,
       },
     ]);
     if (data.status === "APPROVAL_REQUIRED") {
@@ -584,6 +597,43 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     }
   }, [identification]);
 
+  /**
+   * Registers the current NO_MATCH scan as a brand-new catalog Part, then
+   * re-runs the SAME /catalog/match call handleCapture uses — the new part
+   * was built from this scan's own name/dimensions, so the standard matcher
+   * is what turns this scan's identity into MATCHED, not this function.
+   */
+  const registerNewPart = useCallback(async () => {
+    const scanResult = scanState.scan?.scanResult;
+    if (!scanResult) return;
+    setRegisteringPart(true);
+    setRegisterError(null);
+    try {
+      const { ok, data } = await postJson("/api/warehouse/catalog/register", { scanResult });
+      if (!ok) {
+        setRegisterError((data.error as { message?: string } | undefined)?.message ?? "Registration failed.");
+        return;
+      }
+      const { ok: matchOk, data: matchData } = await postJson("/api/warehouse/catalog/match", {
+        scanResult,
+      });
+      if (!matchOk) {
+        setRegisterError("The part was registered, but the catalog could not be re-checked. Scan again to continue.");
+        return;
+      }
+      const match = matchData as unknown as CatalogMatchResult;
+      setScanState((previous) =>
+        previous.scan?.shotId === scanState.scan?.shotId
+          ? { ...previous, scan: { ...previous.scan!, match } }
+          : previous,
+      );
+    } catch {
+      setRegisterError("The warehouse could not be reached. Try again.");
+    } finally {
+      setRegisteringPart(false);
+    }
+  }, [scanState.scan]);
+
   const identity = scanState.scan
     ? deriveScanIdentity({
         hasValidScan: scanState.scan.scanResult !== null,
@@ -604,7 +654,17 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       bins,
       inventory,
       movements,
-      activeMovement: movements.find((movement) => movement.status === "RUNNING") ?? null,
+      activeMovement:
+        movements.find((movement) =>
+          [
+            "RUNNING",
+            "PRESENTING",
+            "AWAITING_PLACEMENT",
+            "RETURNING",
+            "READY_TO_COMMIT",
+            "READY_TO_CANCEL",
+          ].includes(movement.status),
+        ) ?? null,
       totals: overview?.totals ?? null,
       loading,
       overviewError,
@@ -626,8 +686,12 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       identityRejected,
       identityBusy,
       identityError,
+      guidedPutawayRequestVersion,
       selectCandidate: (partId) => void selectCandidate(partId),
       rejectIdentification: () => void rejectIdentification(),
+      registerNewPart: () => void registerNewPart(),
+      registeringPart,
+      registerError,
 
       approval,
       outcome,
@@ -672,8 +736,12 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     identityRejected,
     identityBusy,
     identityError,
+    guidedPutawayRequestVersion,
     selectCandidate,
     rejectIdentification,
+    registerNewPart,
+    registeringPart,
+    registerError,
     approval,
     outcome,
     decide,

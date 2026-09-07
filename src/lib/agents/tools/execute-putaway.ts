@@ -1,5 +1,10 @@
 /**
- * execute_putaway — the agent's ONLY state-changing capability.
+ * Legacy direct putaway adapter.
+ *
+ * Retained for compatibility with older direct callers and tests, but it is
+ * deliberately absent from WAREHOUSE_AGENT_TOOLS. Interactive agent putaway
+ * now uses the operator-guided request_guided_putaway handoff, so there is no
+ * second agent-controlled path that can skip slot selection or placement HITL.
  *
  * It is a three-line adapter on purpose. Every decision that matters — is the
  * scan valid, does it match exactly one catalog part, is that bin still free,

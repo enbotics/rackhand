@@ -24,6 +24,12 @@ export interface BinContentView {
   sku: string;
   canonicalName: string;
   quantity: number;
+  /**
+   * The photo from the most recent COMPLETED putaway of this part into this
+   * bin, if one was captured. Null for stock that predates the photo feature,
+   * or if the upload failed at the time (never blocks the physical putaway).
+   */
+  imageUrl: string | null;
 }
 
 /**

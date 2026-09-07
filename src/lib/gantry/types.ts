@@ -53,7 +53,13 @@ export const GANTRY_STATES = [
 ] as const;
 export type GantryState = (typeof GANTRY_STATES)[number];
 
-export const GANTRY_OPERATION_TYPES = ["HOME", "PUTAWAY", "RETRIEVAL"] as const;
+export const GANTRY_OPERATION_TYPES = [
+  "HOME",
+  "PUTAWAY",
+  "RETRIEVAL",
+  "BIN_PRESENTATION",
+  "BIN_RETURN",
+] as const;
 export type GantryOperationType = (typeof GANTRY_OPERATION_TYPES)[number];
 
 /** `CANCELLED` is part of the contract but nothing cancels an operation in this milestone. */
@@ -118,4 +124,16 @@ export interface PutawayRequest {
 export interface RetrievalRequest {
   source: WarehouseBinCode;
   destination: GantryStation;
+}
+
+/** Bring an empty storage bin to the operator's intake/loading station. */
+export interface BinPresentationRequest {
+  source: WarehouseBinCode;
+  destination: "INTAKE";
+}
+
+/** Return the presented bin to the exact storage slot that reserved it. */
+export interface BinReturnRequest {
+  source: "INTAKE";
+  destination: WarehouseBinCode;
 }

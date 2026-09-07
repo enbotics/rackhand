@@ -18,7 +18,7 @@ import { prisma } from "./db";
 import { WarehouseError } from "./errors";
 import { requireBinByCode, requirePartBySku } from "./repository";
 import type { BinStatus, InventoryMutationInput, PartInventorySummary } from "./types";
-import { validateInventoryMutation } from "./validation";
+import { validateInventoryMutation, validateSetInventoryQuantity } from "./validation";
 import type { Inventory, Prisma } from "@/generated/prisma/client";
 
 type Db = Prisma.TransactionClient;
@@ -213,6 +213,57 @@ export async function applyInventoryRemoval(
 
     return result;
   }
+}
+
+/**
+ * Direct operator override from the bin-detail modal: "this bin actually has
+ * N units," not "add/remove N." Reuses applyInventoryAddition/Removal for the
+ * actual write — every capacity/negative/one-SKU-per-bin guard those already
+ * enforce applies here too, unchanged — and additionally records an
+ * ADJUSTMENT Movement with the exact before/after for an honest audit trail,
+ * in the same transaction as the quantity change itself.
+ */
+export async function setInventoryQuantity(
+  input: InventoryMutationInput,
+): Promise<InventoryRecord> {
+  const { sku, binCode, quantity: newQuantity } = validateSetInventoryQuantity(input);
+
+  return prisma.$transaction(async (tx) => {
+    const part = await requirePartBySku(sku, tx);
+    const bin = await requireBinByCode(binCode, tx);
+    const existing = await tx.inventory.findUnique({
+      where: { partId_binId: { partId: part.id, binId: bin.id } },
+    });
+    const previousQuantity = existing?.quantity ?? 0;
+    const delta = newQuantity - previousQuantity;
+
+    if (delta === 0) {
+      throw new WarehouseError(
+        "validation_failed",
+        `Bin "${bin.code}" already holds ${previousQuantity} of "${part.sku}" — nothing to adjust.`,
+      );
+    }
+
+    const record =
+      delta > 0
+        ? await applyInventoryAddition(tx, part, bin, delta)
+        : await applyInventoryRemoval(tx, part, bin, Math.abs(delta));
+
+    await tx.movement.create({
+      data: {
+        type: "ADJUSTMENT",
+        partId: part.id,
+        quantity: Math.abs(delta),
+        status: "COMPLETED",
+        destinationBinId: bin.id,
+        previousQuantity,
+        newQuantity,
+        completedAt: new Date(),
+      },
+    });
+
+    return record;
+  });
 }
 
 /** Aggregated stock for one SKU across every bin holding it. */

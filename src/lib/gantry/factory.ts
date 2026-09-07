@@ -16,6 +16,7 @@ import type { GantryController } from "./controller";
 import { GantryError } from "./errors";
 import {
   DEFAULT_SIM_HOME_DELAY_MS,
+  DEFAULT_SIM_BIN_TRANSFER_DELAY_MS,
   DEFAULT_SIM_MOVE_DELAY_MS,
   DEFAULT_SIM_PICK_DELAY_MS,
   DEFAULT_SIM_DROP_DELAY_MS,
@@ -43,6 +44,10 @@ function readSimulatorOptions(): SimulatorOptions {
     pickDelayMs: readDelay("GANTRY_SIM_PICK_DELAY_MS", DEFAULT_SIM_PICK_DELAY_MS),
     dropDelayMs: readDelay("GANTRY_SIM_DROP_DELAY_MS", DEFAULT_SIM_DROP_DELAY_MS),
     homeDelayMs: readDelay("GANTRY_SIM_HOME_DELAY_MS", DEFAULT_SIM_HOME_DELAY_MS),
+    binTransferDelayMs: readDelay(
+      "GANTRY_SIM_BIN_TRANSFER_DELAY_MS",
+      DEFAULT_SIM_BIN_TRANSFER_DELAY_MS,
+    ),
   };
 }
 

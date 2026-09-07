@@ -40,6 +40,15 @@ model Part {
   category      String?
   description   String?
 
+  /// Whether this kind of part is typically checked out and returned (a
+  /// shared tool like a screwdriver) rather than consumed/installed by
+  /// whoever takes it (small hardware, single-use items). Classified once by
+  /// an LLM when the part is first created (see
+  /// src/lib/agents/returnability-classifier.ts) — never inferred from
+  /// stock levels or movement history. Defaults false: an unclassified or
+  /// misclassified part is safer treated as "not shared" than the reverse.
+  returnable Boolean @default(false)
+
   /// Nullable throughout: the catalog may know a part before it knows its
   /// size. Never negative — enforced by the validation layer.
   lengthMM Float?
@@ -102,11 +111,26 @@ model Inventory {
 /// gantry moved anything — the physical lifecycle is a later milestone.
 model Movement {
   id       String @id @default(cuid())
-  /// MovementType: PUTAWAY | RETRIEVAL | TRANSFER
+  /// MovementType: PUTAWAY | RETRIEVAL | TRANSFER | ADJUSTMENT
   type     String
   partId   String
   quantity Int
-  /// MovementStatus: PENDING | VALIDATED | RUNNING | COMPLETED | FAILED | CANCELLED
+
+  /// The photo captured for this scan, uploaded to Supabase Storage. Only
+  /// ever set for PUTAWAY movements. Historical — kept even if the movement
+  /// later CANCELLED/FAILED, since the upload happens before the outcome is
+  /// known and there is nothing to gain from deleting it after the fact.
+  imageUrl String?
+
+  /// Set only for type ADJUSTMENT — a direct operator override of a bin's
+  /// quantity, from the bin-detail modal. The precise before/after, since
+  /// `quantity` above holds the size of the change (always positive) to stay
+  /// consistent with what every other movement type means by that field.
+  previousQuantity Int?
+  newQuantity      Int?
+  /// MovementStatus: PENDING | VALIDATED | RUNNING | PRESENTING |
+  /// AWAITING_PLACEMENT | RETURNING | READY_TO_COMMIT | READY_TO_CANCEL |
+  /// COMPLETED | FAILED | CANCELLED
   status   String @default("PENDING")
 
   /// Nullable: a putaway starts at an intake station, a retrieval ends at an

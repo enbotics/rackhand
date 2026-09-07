@@ -31,8 +31,29 @@ function clampMovementLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_MOVEMENT_LIMIT);
 }
 
+/**
+ * Most-recent-first per (partId, binId) pair, from COMPLETED putaways that
+ * actually captured a photo. One extra query, done once for the whole
+ * overview rather than per bin — the alternative is an N+1 lookup.
+ */
+async function loadPutawayImages(): Promise<Map<string, string>> {
+  const rows = await prisma.movement.findMany({
+    where: { type: "PUTAWAY", status: "COMPLETED", imageUrl: { not: null } },
+    orderBy: { completedAt: "desc" },
+    select: { partId: true, destinationBinId: true, imageUrl: true },
+  });
+  const byPartBin = new Map<string, string>();
+  for (const row of rows) {
+    if (!row.destinationBinId || !row.imageUrl) continue;
+    const key = `${row.partId}:${row.destinationBinId}`;
+    // Ordered by completedAt desc, so the first write for a key IS the latest.
+    if (!byPartBin.has(key)) byPartBin.set(key, row.imageUrl);
+  }
+  return byPartBin;
+}
+
 export async function getWarehouseOverview(movementLimit?: number): Promise<WarehouseOverview> {
-  const [bins, inventoryRows, movements] = await Promise.all([
+  const [bins, inventoryRows, movements, putawayImages] = await Promise.all([
     prisma.bin.findMany({
       orderBy: { code: "asc" },
       include: { inventory: { include: { part: true }, orderBy: { part: { sku: "asc" } } } },
@@ -46,6 +67,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       take: clampMovementLimit(movementLimit),
       include: { part: true, sourceBin: true, destinationBin: true },
     }),
+    loadPutawayImages(),
   ]);
 
   const binViews: BinView[] = bins.map((bin) => {
@@ -58,6 +80,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
         sku: row.part.sku,
         canonicalName: row.part.canonicalName,
         quantity: row.quantity,
+        imageUrl: putawayImages.get(`${row.partId}:${bin.id}`) ?? null,
       }));
 
     return {
