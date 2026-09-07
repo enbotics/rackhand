@@ -2,8 +2,8 @@
 
 import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { BIN_STATUS_PRESENTATION } from "@/lib/warehouse/dashboard-presentation";
-import { parseBinCode, SLOTS_PER_BED } from "@/lib/warehouse/types";
-import { EmptyState, ErrorNote, Panel, StatusChip } from "./ui";
+import { parseBinCode } from "@/lib/warehouse/types";
+import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel, StatusChip } from "./ui";
 
 /**
  * The digital warehouse — the storage bay as it actually is.
@@ -39,12 +39,15 @@ export function WarehouseMap({
   onRetry,
   /** Highlighted while the machine is somewhere other than idle. */
   activeLocation,
+  onManageBins,
 }: {
   bins: BinView[];
   loading: boolean;
   error: string | null;
   onRetry: () => void;
   activeLocation?: string | null;
+  /** Presentational callback — the actual CRUD UI/state lives in the composing view. */
+  onManageBins?: () => void;
 }) {
   return (
     <Panel
@@ -53,6 +56,13 @@ export function WarehouseMap({
         <span className="font-mono text-[10px] text-ink-faint">
           {bins.length > 0 ? `${bins.length} bins` : ""}
         </span>
+      }
+      actions={
+        onManageBins && (
+          <button type="button" onClick={onManageBins} className={BUTTON_VARIANTS.secondary}>
+            Manage bins
+          </button>
+        )
       }
     >
       {error && (
@@ -76,7 +86,7 @@ export function WarehouseMap({
               </span>
               <div
                 className="grid flex-1 gap-2"
-                style={{ gridTemplateColumns: `repeat(${SLOTS_PER_BED}, minmax(0, 1fr))` }}
+                style={{ gridTemplateColumns: `repeat(${row.bins.length}, minmax(0, 1fr))` }}
               >
                 {row.bins.map((bin) => {
                   const status = BIN_STATUS_PRESENTATION[bin.status];

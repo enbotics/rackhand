@@ -10,10 +10,13 @@
 // authoritative catalog identity. Nothing here references a scanId — mapping
 // a scan onto a catalog part is Milestone 3's job.
 //
-// NOTE ON ENUMS: SQLite has no native enum type and Prisma does not emulate
-// one for this provider, so status/type columns are String. The allowed
-// values live in src/lib/warehouse/types.ts and are enforced by the
-// validation layer, which every service function runs input through.
+// NOTE ON ENUMS: status/type columns are plain String, not native Postgres
+// enums. Kept that way on the move off SQLite (which has no enum type) to
+// keep this migration low-risk — Postgres enums are a real option later, but
+// changing column types is a separate, deliberate migration, not a side
+// effect of switching providers. The allowed values live in
+// src/lib/warehouse/types.ts and are enforced by the validation layer, which
+// every service function runs input through.
 
 generator client {
   provider = "prisma-client"
@@ -21,9 +24,12 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   // Connection URL lives in prisma.config.ts (Prisma 7 moved it out of the
-  // schema); the app reads the same DATABASE_URL via the driver adapter.
+  // schema). The CLI (migrate/introspect) uses the DIRECT (non-pooled)
+  // connection there; the running app uses the POOLED connection, wired up
+  // separately in src/lib/warehouse/db.ts — see that file's comment for why
+  // the two are deliberately different URLs.
 }
 
 /// A canonical warehouse catalog item. Authoritative identity.

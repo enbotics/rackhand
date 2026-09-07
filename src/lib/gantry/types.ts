@@ -10,16 +10,17 @@
  * Types only, no runtime dependency on the database, so a dev panel in the
  * browser can render gantry state without pulling in Prisma.
  */
-import { SEED_BIN_CODES } from "@/lib/warehouse/types";
-
 /**
- * The bins the gantry can reach — the same six the warehouse seeds, reused
- * rather than redeclared so there is exactly one bin-code list in the repo.
- * If the warehouse ever gains bins beyond the seeded set, this must become a
- * lookup against the Bin table instead of a static list.
+ * The bins the gantry can reach.
+ *
+ * Was a static alias for the warehouse's fixed seed list. The warehouse now
+ * creates and deletes bins at runtime (bin management CRUD), so "is this
+ * bin reachable" is a database fact, not something a fixed type can enumerate
+ * — see reachability.ts, a separate runtime module, for the actual check.
+ * Kept as a plain string here so this file stays what its own design says it
+ * should be: types only, no runtime dependency on the database.
  */
-export const GANTRY_BIN_CODES = SEED_BIN_CODES;
-export type WarehouseBinCode = (typeof GANTRY_BIN_CODES)[number];
+export type WarehouseBinCode = string;
 
 /**
  * Logical end points that are not storage. Deliberately NOT Bin rows: the
@@ -31,16 +32,8 @@ export type GantryStation = (typeof GANTRY_STATIONS)[number];
 
 export type GantryLocation = WarehouseBinCode | GantryStation;
 
-export function isWarehouseBinCode(value: unknown): value is WarehouseBinCode {
-  return typeof value === "string" && (GANTRY_BIN_CODES as readonly string[]).includes(value);
-}
-
 export function isGantryStation(value: unknown): value is GantryStation {
   return typeof value === "string" && (GANTRY_STATIONS as readonly string[]).includes(value);
-}
-
-export function isGantryLocation(value: unknown): value is GantryLocation {
-  return isWarehouseBinCode(value) || isGantryStation(value);
 }
 
 /**

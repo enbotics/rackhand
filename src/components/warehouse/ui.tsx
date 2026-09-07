@@ -174,3 +174,115 @@ export function Field({ label, children }: { label: string; children: ReactNode 
     </div>
   );
 }
+
+const INPUT_BASE =
+  "w-full rounded-lg border border-line bg-bg-elevated px-3 py-2 font-mono text-xs text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent-soft disabled:opacity-40";
+
+/** Label + input, matching Field's label styling. The three below share this shell. */
+function FormRow({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label
+        htmlFor={htmlFor}
+        className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-faint"
+      >
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+export function TextField({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <FormRow label={label} htmlFor={id}>
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={INPUT_BASE}
+      />
+    </FormRow>
+  );
+}
+
+export function NumberField({
+  id,
+  label,
+  value,
+  onChange,
+  min = 1,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  disabled?: boolean;
+}) {
+  return (
+    <FormRow label={label} htmlFor={id}>
+      <input
+        id={id}
+        type="number"
+        min={min}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        disabled={disabled}
+        className={INPUT_BASE}
+      />
+    </FormRow>
+  );
+}
+
+export function SelectField<T extends string>({
+  id,
+  label,
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  value: T;
+  options: readonly T[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <FormRow label={label} htmlFor={id}>
+      <select
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        disabled={disabled}
+        className={`${INPUT_BASE} appearance-none`}
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </FormRow>
+  );
+}

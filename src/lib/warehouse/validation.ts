@@ -10,14 +10,20 @@ import {
   BIN_STATUSES,
   MOVEMENT_STATUSES,
   MOVEMENT_TYPES,
+  type AddBinsToBedInput,
   type BinStatus,
+  type CreateBedInput,
   type CreateBinInput,
   type CreateMovementInput,
   type CreatePartInput,
   type InventoryMutationInput,
   type MovementStatus,
   type MovementType,
+  type UpdateBinInput,
 } from "./types";
+
+/** Sanity ceiling on a single create-bed/add-to-bed request — not a domain limit, just a fat-finger guard. */
+const MAX_SLOTS_PER_REQUEST = 100;
 
 class IssueCollector {
   readonly issues: string[] = [];
@@ -78,6 +84,16 @@ class IssueCollector {
     if (value <= 0) {
       this.add(`${field} must be greater than 0`);
       return 0;
+    }
+    return value;
+  }
+
+  /** Absent (null/undefined) is fine; a present value must be a positive integer. */
+  optionalPositiveInteger(field: string, value: unknown): number | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+      this.add(`${field} must be a positive integer when present`);
+      return null;
     }
     return value;
   }
@@ -148,6 +164,55 @@ export function validateBinStatus(value: unknown): BinStatus {
   const status = c.oneOf("status", value, BIN_STATUSES, "AVAILABLE");
   c.throwIfInvalid("bin status");
   return status;
+}
+
+export interface ValidatedBinUpdate {
+  status?: BinStatus;
+  capacity?: number;
+}
+
+/** At least one of status/capacity must be present — an empty patch is a caller mistake, not a no-op. */
+export function validateUpdateBin(input: UpdateBinInput): ValidatedBinUpdate {
+  const c = new IssueCollector();
+  const patch: ValidatedBinUpdate = {};
+
+  if (input?.status !== undefined) {
+    patch.status = c.oneOf("status", input.status, BIN_STATUSES, "AVAILABLE");
+  }
+  if (input?.capacity !== undefined) {
+    const capacity = c.optionalPositiveInteger("capacity", input.capacity);
+    if (capacity !== null) patch.capacity = capacity;
+  }
+  if (input?.status === undefined && input?.capacity === undefined) {
+    c.add("at least one of status or capacity must be present");
+  }
+
+  c.throwIfInvalid("bin update");
+  return patch;
+}
+
+export interface ValidatedBed {
+  bed: number;
+  slotCount: number;
+}
+
+function validateBedAndSlotCount(input: { bed?: unknown; slotCount?: unknown }, what: string): ValidatedBed {
+  const c = new IssueCollector();
+  const bed = c.positiveInteger("bed", input?.bed);
+  const slotCount = c.positiveInteger("slotCount", input?.slotCount);
+  if (slotCount > MAX_SLOTS_PER_REQUEST) {
+    c.add(`slotCount must be at most ${MAX_SLOTS_PER_REQUEST}`);
+  }
+  c.throwIfInvalid(what);
+  return { bed, slotCount };
+}
+
+export function validateCreateBed(input: CreateBedInput): ValidatedBed {
+  return validateBedAndSlotCount(input, "bed");
+}
+
+export function validateAddBinsToBed(input: AddBinsToBedInput): ValidatedBed {
+  return validateBedAndSlotCount(input, "add-bins-to-bed request");
 }
 
 export interface ValidatedInventoryMutation {

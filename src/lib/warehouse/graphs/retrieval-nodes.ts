@@ -28,7 +28,6 @@ import {
   type RetrievalResult,
 } from "../retrieval-types";
 import { getGantryController } from "@/lib/gantry/factory";
-import { isWarehouseBinCode } from "@/lib/gantry/types";
 import { RETRIEVAL_NODE_IDS } from "./workflow-types";
 import {
   createWorkflowRun,
@@ -265,13 +264,8 @@ export class RetrievalSourceNode extends WorkflowNode<RetrievalGraphRequest, Ret
         message: `${data.sku} is in the catalog but no bin currently holds any stock of it.`,
       };
     }
-    if (!isWarehouseBinCode(chosen)) {
-      return {
-        kind: "BLOCKED",
-        reason: "source_bin_not_found",
-        message: `Bin ${chosen} is not reachable by the gantry.`,
-      };
-    }
+    // No separate "is this reachable" check: chosen always comes from a Bin
+    // row (or a stocked location derived from one) resolved just above.
 
     data.sourceBinCode = chosen;
     data.sourceQuantityBefore =

@@ -35,7 +35,7 @@ import {
 } from "./retrieval-types";
 import { getGantryController } from "@/lib/gantry/factory";
 import { isGantryError } from "@/lib/gantry/errors";
-import { isWarehouseBinCode, type GantryOperation, type WarehouseBinCode } from "@/lib/gantry/types";
+import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Movement } from "@/generated/prisma/client";
 
 /**
@@ -175,13 +175,8 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     sourceBinCode = chosen;
   }
 
-  if (!isWarehouseBinCode(sourceBinCode)) {
-    return fail(
-      requestId,
-      "source_bin_not_found",
-      `Bin ${sourceBinCode} is not reachable by the gantry.`,
-    );
-  }
+  // No separate "is this reachable" check: sourceBinCode always comes from a
+  // Bin row (or a stocked location derived from one) just read above.
   const source: WarehouseBinCode = sourceBinCode;
 
   const sourceBin = await getBinByCode(source);

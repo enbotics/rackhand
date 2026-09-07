@@ -10,18 +10,25 @@ import { prisma } from "./db";
 import { WarehouseError, isUniqueConstraintError } from "./errors";
 import {
   isTerminalMovementStatus,
+  parseBinCode,
+  type AddBinsToBedInput,
   type BinStatus,
+  type CreateBedInput,
   type CreateBinInput,
   type CreateMovementInput,
   type CreatePartInput,
   type ListPartsOptions,
   type MovementStatus,
+  type UpdateBinInput,
 } from "./types";
 import {
+  validateAddBinsToBed,
+  validateCreateBed,
   validateCreateBin,
   validateCreateMovement,
   validateCreatePart,
   validateMovementStatus,
+  validateUpdateBin,
 } from "./validation";
 import type { Bin, Movement, Part, Prisma } from "@/generated/prisma/client";
 
@@ -147,6 +154,122 @@ export async function listAvailableBins(db: Db = prisma): Promise<Bin[]> {
 export async function setBinStatus(code: string, status: BinStatus): Promise<Bin> {
   const bin = await requireBinByCode(code);
   return prisma.bin.update({ where: { id: bin.id }, data: { status } });
+}
+
+export async function updateBin(code: string, input: UpdateBinInput): Promise<Bin> {
+  const patch = validateUpdateBin(input);
+  const bin = await requireBinByCode(code);
+  return prisma.bin.update({ where: { id: bin.id }, data: patch });
+}
+
+/**
+ * Every bin code, among the given bins, that a live Inventory row still
+ * points at — deduped, sorted. Empty when none are occupied.
+ */
+async function inventoriedBinCodes(db: Db, bins: Bin[]): Promise<string[]> {
+  if (bins.length === 0) return [];
+  const rows = await db.inventory.findMany({
+    where: { binId: { in: bins.map((bin) => bin.id) } },
+    select: { bin: { select: { code: true } } },
+  });
+  return Array.from(new Set(rows.map((row) => row.bin.code))).sort();
+}
+
+/**
+ * The delete-safety gate for both deleteBin and deleteBed. Must run inside
+ * the SAME transaction as the delete that follows it — checking, then
+ * deleting, in two separate calls would leave a window for inventory to be
+ * added in between. `Inventory.bin` is `onDelete: Restrict` at the schema
+ * level too, but that only produces a raw Prisma error; this is what turns
+ * it into a clean, actionable WarehouseError naming the blocking bins.
+ */
+async function assertBinsHaveNoInventory(db: Db, bins: Bin[]): Promise<void> {
+  const blocking = await inventoriedBinCodes(db, bins);
+  if (blocking.length > 0) {
+    throw new WarehouseError(
+      "bin_has_inventory",
+      `Bin(s) ${blocking.join(", ")} still hold inventory and cannot be deleted.`,
+      blocking,
+    );
+  }
+}
+
+export async function deleteBin(code: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const bin = await requireBinByCode(code, tx);
+    await assertBinsHaveNoInventory(tx, [bin]);
+    await tx.bin.delete({ where: { id: bin.id } });
+  });
+}
+
+/**
+ * Every bin in bed N, by slot. `B1-` vs `B10-` never collide on this prefix
+ * check — the dash after the bed number makes each prefix exact.
+ */
+export async function listBinsInBed(bed: number, db: Db = prisma): Promise<Bin[]> {
+  return db.bin.findMany({
+    where: { code: { startsWith: `B${bed}-` } },
+    orderBy: { code: "asc" },
+  });
+}
+
+export async function createBed(input: CreateBedInput): Promise<Bin[]> {
+  const { bed, slotCount } = validateCreateBed(input);
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.bin.count({ where: { code: { startsWith: `B${bed}-` } } });
+    if (existing > 0) {
+      throw new WarehouseError(
+        "duplicate_bin_code",
+        `Bed ${bed} already has bins — use "add bins to bed" instead.`,
+      );
+    }
+    const data = Array.from({ length: slotCount }, (_, i) => ({
+      code: `B${bed}-${String(i + 1).padStart(2, "0")}`,
+      status: "AVAILABLE" as const,
+      capacity: 100,
+    }));
+    await tx.bin.createMany({ data });
+    return tx.bin.findMany({
+      where: { code: { startsWith: `B${bed}-` } },
+      orderBy: { code: "asc" },
+    });
+  });
+}
+
+export async function addBinsToBed(input: AddBinsToBedInput): Promise<Bin[]> {
+  const { bed, slotCount } = validateAddBinsToBed(input);
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.bin.findMany({ where: { code: { startsWith: `B${bed}-` } } });
+    if (existing.length === 0) {
+      throw new WarehouseError(
+        "bin_not_found",
+        `Bed ${bed} has no bins yet — use "create bed" instead.`,
+      );
+    }
+    const maxSlot = Math.max(...existing.map((bin) => parseBinCode(bin.code)?.slot ?? 0));
+    const data = Array.from({ length: slotCount }, (_, i) => ({
+      code: `B${bed}-${String(maxSlot + i + 1).padStart(2, "0")}`,
+      status: "AVAILABLE" as const,
+      capacity: 100,
+    }));
+    await tx.bin.createMany({ data });
+    return tx.bin.findMany({
+      where: { code: { startsWith: `B${bed}-` } },
+      orderBy: { code: "asc" },
+    });
+  });
+}
+
+export async function deleteBed(bed: number): Promise<{ deleted: number }> {
+  return prisma.$transaction(async (tx) => {
+    const bins = await tx.bin.findMany({ where: { code: { startsWith: `B${bed}-` } } });
+    if (bins.length === 0) {
+      throw new WarehouseError("bin_not_found", `No bins exist in bed ${bed}.`);
+    }
+    await assertBinsHaveNoInventory(tx, bins);
+    const result = await tx.bin.deleteMany({ where: { id: { in: bins.map((bin) => bin.id) } } });
+    return { deleted: result.count };
+  });
 }
 
 /* ---------------------------------------------------------------- movements */

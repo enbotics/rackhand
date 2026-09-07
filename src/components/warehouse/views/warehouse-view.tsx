@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { GantryStatusPanel } from "../gantry-status";
 import { InventoryPanel } from "../inventory-panel";
 import { WarehouseMap } from "../warehouse-map";
+import { ManageBinsModal } from "../admin/manage-bins-modal";
 import { useWarehouseSession } from "../session";
 import { PageShell } from "./shell";
 
@@ -15,6 +17,7 @@ import { PageShell } from "./shell";
  */
 export function WarehouseView() {
   const session = useWarehouseSession();
+  const [managingBins, setManagingBins] = useState(false);
 
   return (
     <PageShell
@@ -32,6 +35,7 @@ export function WarehouseView() {
             activeLocation={
               session.gantry?.state !== "IDLE" ? session.gantry?.currentLocation : null
             }
+            onManageBins={() => setManagingBins(true)}
           />
           <InventoryPanel
             inventory={session.inventory}
@@ -49,6 +53,14 @@ export function WarehouseView() {
           />
         </div>
       </div>
+
+      {managingBins && (
+        <ManageBinsModal
+          bins={session.bins}
+          onClose={() => setManagingBins(false)}
+          onChanged={session.refresh}
+        />
+      )}
     </PageShell>
   );
 }

@@ -41,7 +41,7 @@ import {
 } from "./putaway-types";
 import { getGantryController } from "@/lib/gantry/factory";
 import { isGantryError } from "@/lib/gantry/errors";
-import { isWarehouseBinCode, type GantryOperation, type WarehouseBinCode } from "@/lib/gantry/types";
+import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Bin, Movement, Part } from "@/generated/prisma/client";
 
 /** One line per state transition. Never logs credentials, images or reasoning. */
@@ -164,9 +164,9 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     }
   }
 
-  if (!isWarehouseBinCode(bin.code)) {
-    return fail(scanId, "bin_unavailable", `Bin ${bin.code} is not reachable by the gantry.`);
-  }
+  // No separate "is this reachable" check: `bin` was just loaded from the Bin
+  // table by getBinByCode/findAvailableBin above, so bin.code is by
+  // definition a real, current bin code.
   const destination: WarehouseBinCode = bin.code;
 
   /* 7 — gantry pre-check. Advisory: the authoritative guard is the controller's

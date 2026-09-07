@@ -27,7 +27,6 @@ import { collectScanResultIssues } from "../scan-result";
 import { executePutaway } from "../putaway-service";
 import { PUTAWAY_SOURCE, type PutawayResult } from "../putaway-types";
 import { getGantryController } from "@/lib/gantry/factory";
-import { isWarehouseBinCode } from "@/lib/gantry/types";
 import type { ScanResult } from "../scan-types";
 import { PUTAWAY_NODE_IDS } from "./workflow-types";
 import {
@@ -225,13 +224,8 @@ export class PutawayDestinationNode extends WorkflowNode<PutawayGraphRequest, Pu
           message: `Bin ${bin.code} is ${bin.status}; a putaway target must be AVAILABLE.`,
         };
       }
-      if (!isWarehouseBinCode(bin.code)) {
-        return {
-          kind: "BLOCKED",
-          reason: "bin_unavailable",
-          message: `Bin ${bin.code} is not reachable by the gantry.`,
-        };
-      }
+      // No separate "is this reachable" check: bin was just loaded from the
+      // Bin table above, so bin.code is by definition a real, current code.
       data.destinationBinCode = bin.code;
       return { kind: "PROCEED", summary: `${bin.code} requested and currently AVAILABLE.` };
     }
@@ -246,13 +240,7 @@ export class PutawayDestinationNode extends WorkflowNode<PutawayGraphRequest, Pu
         message: "No bin is currently AVAILABLE for putaway.",
       };
     }
-    if (!isWarehouseBinCode(chosen.code)) {
-      return {
-        kind: "BLOCKED",
-        reason: "bin_unavailable",
-        message: `Bin ${chosen.code} is not reachable by the gantry.`,
-      };
-    }
+    // Same reasoning: chosen was just loaded from the Bin table by findAvailableBin.
     data.destinationBinCode = chosen.code;
     return { kind: "PROCEED", summary: `${chosen.code} chosen as the first AVAILABLE bin.` };
   }
