@@ -51,3 +51,4 @@ next-env.d.ts
 
 # generated Prisma client — recreated by `prisma generate` (npm postinstall)
 /src/generated
+data/camera-captures/
