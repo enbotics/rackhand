@@ -9,8 +9,8 @@ import { useWarehouseSession } from "./session";
  *
  * FOUR PAGES, GROUPED BY WHAT THE OPERATOR IS DOING:
  *
- *   Operate    — the live loop: scan, identify, ask, approve, watch.
- *   Warehouse  — where things are right now: bins, stock, machine.
+ *   Warehouse  — the main view: bins, inventory, machine and agent.
+ *   Scan       — the stationary camera and identification flow.
  *   History    — what has already happened: movements, local scans.
  *   Activity   — how the agent got there: traces.
  *
@@ -19,11 +19,13 @@ import { useWarehouseSession } from "./session";
  * navigating, and a menu that broke that would make the system worse, not
  * better.
  *
- * The badges are not decoration. A count beside "Operate" is how an operator
- * notices, from any page, that the server is holding a decision open — the
- * approval that would otherwise be invisible while they are reading history.
- * GANTRY MODE stays pinned across every page so nothing can imply that real
- * hardware exists.
+ * The badges are not decoration. A count beside "Warehouse" is how an
+ * operator notices, from any page, that the server is holding a decision
+ * open — the approval that would otherwise be invisible while they are
+ * reading history or standing at the scan station. The decision itself lives
+ * inline in the Warehouse Agent conversation on that page, never a separate
+ * panel. GANTRY MODE stays pinned across every page so nothing can imply that
+ * real hardware exists.
  */
 
 interface Tab {
@@ -45,23 +47,23 @@ const stroke = {
 const TABS: Tab[] = [
   {
     href: "/",
-    label: "Operate",
-    hint: "Scan, identify, ask and approve",
-    icon: (
-      <svg viewBox="0 0 20 20" className="size-4" aria-hidden="true">
-        <circle cx="10" cy="10.5" r="3.2" {...stroke} />
-        <path d="M2.5 6.5h3l1.4-2h6.2l1.4 2h3v9h-15z" {...stroke} />
-      </svg>
-    ),
-  },
-  {
-    href: "/warehouse",
     label: "Warehouse",
-    hint: "Bins, inventory and the gantry",
+    hint: "Bins, inventory, gantry and Warehouse Agent",
     icon: (
       <svg viewBox="0 0 20 20" className="size-4" aria-hidden="true">
         <path d="M2.5 5.5h15v11h-15z" {...stroke} />
         <path d="M2.5 10.5h15M7.5 5.5v11M12.5 5.5v11" {...stroke} />
+      </svg>
+    ),
+  },
+  {
+    href: "/scan",
+    label: "Scan",
+    hint: "Stationary camera and part identification",
+    icon: (
+      <svg viewBox="0 0 20 20" className="size-4" aria-hidden="true">
+        <circle cx="10" cy="10.5" r="3.2" {...stroke} />
+        <path d="M2.5 6.5h3l1.4-2h6.2l1.4 2h3v9h-15z" {...stroke} />
       </svg>
     ),
   },
@@ -123,7 +125,8 @@ export function WarehouseNav() {
           className="order-3 -mx-1 flex w-full items-center gap-1 overflow-x-auto rounded-xl border border-line-soft bg-bg-elevated/70 p-1 lg:order-none lg:mx-0 lg:w-auto"
         >
           {TABS.map((tab) => {
-            const active = pathname === tab.href;
+            const active =
+              pathname === tab.href || (tab.href === "/" && pathname === "/warehouse");
             const badge = tab.href === "/" && waiting > 0 ? waiting : 0;
             return (
               <Link

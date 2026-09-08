@@ -56,6 +56,8 @@ function destinationFailure(
       return failure("bin_unavailable", `Bin ${binCode} is reserved by another operation.`, {
         scanId,
       });
+    case "CHECKED_OUT":
+      return failure("bin_unavailable", `Bin ${binCode} is currently checked out.`, { scanId });
     case "DISABLED":
       return failure("bin_unavailable", `Bin ${binCode} is disabled.`, { scanId });
     default:

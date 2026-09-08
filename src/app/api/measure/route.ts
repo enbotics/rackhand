@@ -118,6 +118,8 @@ export async function POST(request: Request) {
     angleDegrees: measurement.angleDegrees,
     dimensionConfidence: outcome.measurement.dimensionConfidence,
     calibrationRmsPixels: calibration.rmsReprojectionErrorPixels,
+    observedQuantity: outcome.measurement.observedQuantity,
+    quantityConfidence: outcome.measurement.quantityConfidence,
   };
 
   return NextResponse.json(response);

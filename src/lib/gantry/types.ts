@@ -27,7 +27,7 @@ export type WarehouseBinCode = string;
  * warehouse must never see an intake conveyor as somewhere stock can live,
  * and bin-availability logic must never consider them.
  */
-export const GANTRY_STATIONS = ["INTAKE", "OUTPUT"] as const;
+export const GANTRY_STATIONS = ["INTAKE", "OUTPUT", "SCAN_STATION"] as const;
 export type GantryStation = (typeof GANTRY_STATIONS)[number];
 
 export type GantryLocation = WarehouseBinCode | GantryStation;
@@ -59,6 +59,8 @@ export const GANTRY_OPERATION_TYPES = [
   "RETRIEVAL",
   "BIN_PRESENTATION",
   "BIN_RETURN",
+  "AUDIT_PRESENTATION",
+  "AUDIT_RETURN",
 ] as const;
 export type GantryOperationType = (typeof GANTRY_OPERATION_TYPES)[number];
 
@@ -134,6 +136,11 @@ export interface BinPresentationRequest {
 
 /** Return the presented bin to the exact storage slot that reserved it. */
 export interface BinReturnRequest {
-  source: "INTAKE";
+  /** INTAKE for a presented loading bin; OUTPUT for a retrieved checkout. */
+  source: GantryStation;
   destination: WarehouseBinCode;
+}
+
+export interface AuditBinRequest {
+  binCode: WarehouseBinCode;
 }

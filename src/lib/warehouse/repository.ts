@@ -150,10 +150,10 @@ export async function findAvailableBin(db: Db = prisma): Promise<Bin | null> {
  * bin or changes a status — reservation belongs to a later milestone.
  */
 export async function listAvailableBins(db: Db = prisma): Promise<Bin[]> {
-  return db.bin.findMany({
+  const bins = await db.bin.findMany({
     where: AVAILABLE_BIN_WHERE,
-    orderBy: { code: "asc" },
   });
+  return bins.sort(compareBinsInShelfOrder);
 }
 
 export interface PutawayDestinationPreview extends PutawayDestinationEvaluation {
@@ -208,7 +208,23 @@ export async function setBinStatus(code: string, status: BinStatus): Promise<Bin
 export async function updateBin(code: string, input: UpdateBinInput): Promise<Bin> {
   const patch = validateUpdateBin(input);
   const bin = await requireBinByCode(code);
-  return prisma.bin.update({ where: { id: bin.id }, data: patch });
+  if (bin.status === "AUDITING") {
+    throw new WarehouseError(
+      "bin_unavailable",
+      `Bin "${bin.code}" is being physically audited and cannot be edited.`,
+    );
+  }
+  const updated = await prisma.bin.updateMany({
+    where: { id: bin.id, status: bin.status },
+    data: patch,
+  });
+  if (updated.count !== 1) {
+    throw new WarehouseError(
+      "bin_unavailable",
+      `Bin "${bin.code}" changed state before the edit could be saved.`,
+    );
+  }
+  return prisma.bin.findUniqueOrThrow({ where: { id: bin.id } });
 }
 
 /**
@@ -246,8 +262,20 @@ async function assertBinsHaveNoInventory(db: Db, bins: Bin[]): Promise<void> {
 export async function deleteBin(code: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const bin = await requireBinByCode(code, tx);
+    if (bin.status === "AUDITING") {
+      throw new WarehouseError(
+        "bin_unavailable",
+        `Bin "${bin.code}" is being physically audited and cannot be deleted.`,
+      );
+    }
     await assertBinsHaveNoInventory(tx, [bin]);
-    await tx.bin.delete({ where: { id: bin.id } });
+    const deleted = await tx.bin.deleteMany({ where: { id: bin.id, status: bin.status } });
+    if (deleted.count !== 1) {
+      throw new WarehouseError(
+        "bin_unavailable",
+        `Bin "${bin.code}" changed state before it could be deleted.`,
+      );
+    }
   });
 }
 

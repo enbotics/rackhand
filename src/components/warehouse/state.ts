@@ -76,7 +76,9 @@ export interface ApprovalSummaryView {
   canonicalName: string | null;
   source: string | null;
   destination: string | null;
-  quantity: number;
+  quantity: number | null;
+  scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS";
+  capacity?: { before: number; after: number; limit: number } | null;
 }
 
 export interface PendingApprovalView {
@@ -92,7 +94,13 @@ export interface PendingApprovalView {
  * `EXECUTING` is set on submit; every other value comes back from the server.
  * A click never produces `COMPLETED` — see approval-card.tsx.
  */
-export type ApprovalOutcomeKind = "EXECUTING" | "SETTLED" | "CANCELLED" | "EXPIRED" | "REJECTED";
+export type ApprovalOutcomeKind =
+  | "DECIDING"
+  | "EXECUTING"
+  | "SETTLED"
+  | "CANCELLED"
+  | "EXPIRED"
+  | "REJECTED";
 
 export interface ApprovalOutcome {
   kind: ApprovalOutcomeKind;

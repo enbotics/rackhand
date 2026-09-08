@@ -20,6 +20,7 @@ import { isTerminalTraceStatus, type TraceSummaryView, type TraceView } from "@/
 
 /** Slow safety net. Real freshness comes from refresh() after a mutation. */
 const OVERVIEW_IDLE_POLL_MS = 20_000;
+const OVERVIEW_ACTIVE_POLL_MS = 1_000;
 /** Only while something is actually moving. */
 const GANTRY_ACTIVE_POLL_MS = 800;
 const GANTRY_IDLE_POLL_MS = 5_000;
@@ -33,7 +34,7 @@ export interface OverviewState {
   refresh: () => Promise<WarehouseOverview | null>;
 }
 
-export function useWarehouseOverview(): OverviewState {
+export function useWarehouseOverview(active = false): OverviewState {
   const [overview, setOverview] = useState<WarehouseOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,14 +72,16 @@ export function useWarehouseOverview(): OverviewState {
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       await refresh();
-      if (!stopped) timer = setTimeout(tick, OVERVIEW_IDLE_POLL_MS);
+      if (!stopped) {
+        timer = setTimeout(tick, active ? OVERVIEW_ACTIVE_POLL_MS : OVERVIEW_IDLE_POLL_MS);
+      }
     };
     timer = setTimeout(tick, 0);
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   return { overview, loading, error, refresh };
 }
@@ -97,20 +100,12 @@ export function useGantryStatus(active: boolean): GantryState {
   const [status, setStatus] = useState<GantryStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Read inside the poll instead of listed as a dependency, so changing the
-  // cadence never restarts the loop mid-flight. Written from an effect rather
-  // than during render, which React forbids for refs.
-  const activeRef = useRef(active);
-  useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
-
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
 
     const tick = async () => {
-      let busy = activeRef.current;
+      let busy = active;
       try {
         const response = await fetch("/api/gantry/status", { cache: "no-store" });
         if (!response.ok) throw new Error("gantry status failed");
@@ -133,7 +128,7 @@ export function useGantryStatus(active: boolean): GantryState {
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [active]);
 
   return { status, error };
 }

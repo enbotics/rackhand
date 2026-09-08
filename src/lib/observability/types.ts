@@ -82,6 +82,7 @@ export const TRACE_EVENT_TYPES = [
   "GANTRY_COMPLETED",
   "GANTRY_FAILED",
   "INVENTORY_UPDATED",
+  "BIN_STATUS_UPDATED",
   "AGENT_COMPLETED",
   "AGENT_FAILED",
 ] as const;
@@ -138,6 +139,7 @@ const CATEGORY_BY_TYPE: Record<TraceEventType, TraceCategory> = {
   GANTRY_COMPLETED: "GANTRY",
   GANTRY_FAILED: "GANTRY",
   INVENTORY_UPDATED: "WAREHOUSE",
+  BIN_STATUS_UPDATED: "WAREHOUSE",
 };
 
 export function traceCategory(type: string): TraceCategory {

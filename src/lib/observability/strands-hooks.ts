@@ -82,6 +82,12 @@ function describeToolInput(name: string, input: unknown): Record<string, unknown
         sourceBinCode: args.sourceBinCode ?? "(chosen at execution)",
         quantity: args.quantity,
       };
+    case "execute_inventory_audit":
+      return { binCode: args.binCode ?? "all auditable shelf bins" };
+    case "inventory_auditor":
+      // Natural-language delegated input can contain arbitrary prompt text;
+      // traces record only that the specialist was consulted.
+      return {};
     case "search_inventory":
     case "search_catalog":
       return { query: args.query ?? args.sku ?? args.text };
@@ -145,13 +151,18 @@ function describeToolResult(
       if (payload.ok === true) {
         const part = payload.part as { sku?: unknown } | undefined;
         return {
-          summary: `${part?.sku ?? "part"} stored — INTAKE → ${payload.destinationBinCode}.`,
+          summary: `${part?.sku ?? "part"} put away → ${payload.destinationBinCode}.`,
           metadata: {
             sku: part?.sku,
             destination: payload.destinationBinCode,
             movementId: payload.movementId,
             gantryOperationId: payload.gantryOperationId,
             inventoryAdded: payload.inventoryQuantityAdded,
+            inventoryRemoved: payload.inventoryQuantityRemoved,
+            quantityBefore: payload.inventoryQuantityBefore,
+            quantityAfter: payload.inventoryQuantityAfter,
+            observedQuantity: payload.observedQuantity,
+            reconciledCheckout: payload.reconciledCheckout,
             duplicate: payload.duplicate,
           },
         };
@@ -172,8 +183,8 @@ function describeToolResult(
             destination: payload.destination,
             movementId: payload.movementId,
             gantryOperationId: payload.gantryOperationId,
+            checkedOutQuantity: payload.checkedOutQuantity,
             inventoryRemoved: payload.inventoryQuantityRemoved,
-            remainingInBin: payload.remainingQuantityInBin,
           },
         };
       }
@@ -182,6 +193,27 @@ function describeToolResult(
         metadata: { reason: payload.reason, movementId: payload.movementId },
       };
     }
+    case "execute_inventory_audit": {
+      const completed = Number(payload.binsCompleted ?? 0);
+      const reconciled = Number(payload.reconciledBins ?? 0);
+      const review = Number(payload.reviewRequiredBins ?? 0);
+      return {
+        summary:
+          payload.status === "FAILED"
+            ? "Inventory audit failed."
+            : `Inventory audit completed ${completed} bin(s): ${reconciled} reconciled, ${review} for review.`,
+        metadata: {
+          auditRunId: payload.auditRunId,
+          status: payload.status,
+          binsCompleted: payload.binsCompleted,
+          reconciledBins: payload.reconciledBins,
+          reviewRequiredBins: payload.reviewRequiredBins,
+          failedBins: payload.failedBins,
+        },
+      };
+    }
+    case "inventory_auditor":
+      return { summary: "Inventory Auditor agent completed.", metadata: {} };
     case "search_inventory": {
       const part = payload.part as { sku?: unknown } | undefined;
       return {

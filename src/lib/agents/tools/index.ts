@@ -1,21 +1,21 @@
 /**
  * The Warehouse Agent's approved tool list — its entire capability boundary.
  *
- * Nine READ-ONLY tools plus exactly ONE write tool: execute_retrieval.
- * Putaway is coordinated by request_guided_putaway, then performed only by
- * the deterministic guided dialog workflow. Every tool delegates to a warehouse service, repository
+ * Eight READ-ONLY tools plus three high-level physical tools: execute_putaway,
+ * execute_retrieval and execute_inventory_audit. The Inventory Auditor agent
+ * is mounted dynamically by warehouse-agent.ts as an additional read-only
+ * orchestration tool for client calls. Every tool delegates to a warehouse service, repository
  * function or the GantryController; none holds a Prisma client, and there is
  * no generic escape hatch — no shell, bash, filesystem, file editor, arbitrary
- * HTTP, code execution, browser automation or database-query tool, and no
- * Strands vended tool is imported anywhere in this subsystem.
+ * HTTP, code execution, browser automation or database-query tool. Strands
+ * GoalLoop and MemoryManager are internal agent plugins, not callable tools.
  *
- * The write capability is ONE high-level intent, never a set of primitives.
+ * Each write capability is one high-level atomic workflow, never a set of primitives.
  * There is deliberately no reserve_bin, create_movement, add_inventory,
  * remove_inventory, update_bin, complete_movement, gantry_putaway or
  * gantry_retrieve: exposing those would let the model run the steps out of
  * order, or change inventory before the gantry moved. Retrieval asks its
- * deterministic service to perform the whole sequence; guided putaway writes
- * are available only through the dialog's deterministic workflow.
+ * deterministic service to perform the whole sequence.
  *
  * Still absent entirely: create_part, any direct inventory or bin mutation,
  * and any direct gantry control. A test asserts this list contains none.
@@ -33,6 +33,11 @@ import { matchCatalogTool, MATCH_CATALOG_TOOL_NAME } from "./match-catalog";
 import { executePutawayTool, EXECUTE_PUTAWAY_TOOL_NAME } from "./execute-putaway";
 import { executeRetrievalTool, EXECUTE_RETRIEVAL_TOOL_NAME } from "./execute-retrieval";
 import {
+  executeInventoryAuditTool,
+  EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+} from "./execute-inventory-audit";
+import { INVENTORY_AUDITOR_TOOL_NAME } from "../inventory-auditor-agent";
+import {
   requestGuidedPutawayTool,
   REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
 } from "./request-guided-putaway";
@@ -40,18 +45,23 @@ import {
   getGuidedPutawayStatusTool,
   GET_GUIDED_PUTAWAY_STATUS_TOOL_NAME,
 } from "./get-guided-putaway-status";
+import {
+  observeDailyBinActivityTool,
+  OBSERVE_DAILY_BIN_ACTIVITY_TOOL_NAME,
+} from "./observe-daily-bin-activity";
 
 export const WAREHOUSE_AGENT_TOOLS = [
   getGantryStatusTool,
+  observeDailyBinActivityTool,
   searchCatalogTool,
   getPartTool,
   searchInventoryTool,
   getBinStatusTool,
   listAvailableBinsTool,
   matchCatalogTool,
-  requestGuidedPutawayTool,
-  getGuidedPutawayStatusTool,
+  executePutawayTool,
   executeRetrievalTool,
+  executeInventoryAuditTool,
 ];
 
 /**
@@ -65,38 +75,44 @@ export const WAREHOUSE_AGENT_TOOLS = [
  */
 export const APPROVAL_FREE_TOOL_NAMES = [
   GET_GANTRY_STATUS_TOOL_NAME,
+  OBSERVE_DAILY_BIN_ACTIVITY_TOOL_NAME,
   SEARCH_CATALOG_TOOL_NAME,
   GET_PART_TOOL_NAME,
   SEARCH_INVENTORY_TOOL_NAME,
   GET_BIN_STATUS_TOOL_NAME,
   LIST_AVAILABLE_BINS_TOOL_NAME,
   MATCH_CATALOG_TOOL_NAME,
-  REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
-  GET_GUIDED_PUTAWAY_STATUS_TOOL_NAME,
+  INVENTORY_AUDITOR_TOOL_NAME,
 ] as const;
 
 /** The state-changing tools, which always require approval. */
 export const APPROVAL_REQUIRED_TOOL_NAMES = [
+  EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
+  EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
 ] as const;
 
 /** The names the agent is expected to expose, for assertion in tests and at startup. */
 export const WAREHOUSE_AGENT_TOOL_NAMES = [
   GET_GANTRY_STATUS_TOOL_NAME,
+  OBSERVE_DAILY_BIN_ACTIVITY_TOOL_NAME,
   SEARCH_CATALOG_TOOL_NAME,
   GET_PART_TOOL_NAME,
   SEARCH_INVENTORY_TOOL_NAME,
   GET_BIN_STATUS_TOOL_NAME,
   LIST_AVAILABLE_BINS_TOOL_NAME,
   MATCH_CATALOG_TOOL_NAME,
-  REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
-  GET_GUIDED_PUTAWAY_STATUS_TOOL_NAME,
+  EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
+  EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+  INVENTORY_AUDITOR_TOOL_NAME,
 ] as const;
 
 export {
   getGantryStatusTool,
   GET_GANTRY_STATUS_TOOL_NAME,
+  observeDailyBinActivityTool,
+  OBSERVE_DAILY_BIN_ACTIVITY_TOOL_NAME,
   searchCatalogTool,
   SEARCH_CATALOG_TOOL_NAME,
   getPartTool,
@@ -113,9 +129,10 @@ export {
   REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
   getGuidedPutawayStatusTool,
   GET_GUIDED_PUTAWAY_STATUS_TOOL_NAME,
-  /** Legacy direct tool, exported for compatibility but not granted to the agent. */
   executePutawayTool,
   EXECUTE_PUTAWAY_TOOL_NAME,
   executeRetrievalTool,
   EXECUTE_RETRIEVAL_TOOL_NAME,
+  executeInventoryAuditTool,
+  EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
 };

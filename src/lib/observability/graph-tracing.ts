@@ -165,33 +165,47 @@ export async function traceGraphRun(input: {
     }
   }
 
-  // Only after the authoritative transaction committed, and only when it
-  // actually changed a quantity.
+  // Only after the authoritative transaction committed.
   if (result.ok && !duplicate) {
-    if ("inventoryQuantityAdded" in result && result.inventoryQuantityAdded === 1) {
+    if ("reconciledCheckout" in result && result.reconciledCheckout) {
       await recordEvent(traceId, {
         type: "INVENTORY_UPDATED",
         status: "COMPLETED",
         name: result.part.sku,
-        summary: `Inventory ${result.part.sku} in ${result.destinationBinCode}: +1.`,
+        summary: `Returned bin ${result.destinationBinCode} reconciled ${result.inventoryQuantityBefore} → ${result.inventoryQuantityAfter} ${result.part.sku}.`,
         metadata: {
           sku: result.part.sku,
           bin: result.destinationBinCode,
-          delta: 1,
+          before: result.inventoryQuantityBefore,
+          after: result.inventoryQuantityAfter,
+          delta: result.inventoryQuantityDelta,
+          observedQuantity: result.observedQuantity,
         },
       });
-    }
-    if ("inventoryQuantityRemoved" in result && result.inventoryQuantityRemoved === 1) {
+    } else if ("inventoryQuantityAdded" in result && result.inventoryQuantityAdded > 0) {
       await recordEvent(traceId, {
         type: "INVENTORY_UPDATED",
         status: "COMPLETED",
         name: result.part.sku,
-        summary: `Inventory ${result.part.sku} in ${result.sourceBinCode}: -1, ${result.remainingQuantityInBin} remaining.`,
+        summary: `Inventory ${result.part.sku} in ${result.destinationBinCode}: +${result.inventoryQuantityAdded}.`,
+        metadata: {
+          sku: result.part.sku,
+          bin: result.destinationBinCode,
+          delta: result.inventoryQuantityAdded,
+        },
+      });
+    }
+    if ("checkedOutQuantity" in result) {
+      await recordEvent(traceId, {
+        type: "BIN_STATUS_UPDATED",
+        status: "COMPLETED",
+        name: result.part.sku,
+        summary: `Bin ${result.sourceBinCode} checked out with ${result.checkedOutQuantity} ${result.part.sku} recorded inside.`,
         metadata: {
           sku: result.part.sku,
           bin: result.sourceBinCode,
-          delta: -1,
-          remaining: result.remainingQuantityInBin,
+          checkedOutQuantity: result.checkedOutQuantity,
+          inventoryDelta: 0,
         },
       });
     }

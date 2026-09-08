@@ -28,6 +28,8 @@ import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types
 interface RequestContext {
   /** Already validated by the API layer. Tools may trust its shape, not its meaning. */
   scanResult: ScanResult | null;
+  /** Raw camera evidence paired with scanResult; never authored by the model. */
+  scanImageDataUrl: string | null;
   /** Stable for the lifetime of one HTTP request; the default idempotency key. */
   requestId: string | null;
   /**
@@ -72,6 +74,7 @@ export function createRequestId(): string {
 export function runWithRequestContext<T>(
   context: {
     scanResult?: ScanResult | null;
+    scanImageDataUrl?: string | null;
     requestId?: string | null;
     catalogResolutionId?: string | null;
     traceId?: string | null;
@@ -81,6 +84,7 @@ export function runWithRequestContext<T>(
   return requestContextStorage.run(
     {
       scanResult: context.scanResult ?? null,
+      scanImageDataUrl: context.scanImageDataUrl ?? null,
       requestId: context.requestId ?? null,
       catalogResolutionId: context.catalogResolutionId ?? null,
       traceId: context.traceId ?? null,
@@ -93,6 +97,11 @@ export function runWithRequestContext<T>(
 /** The validated ScanResult attached to this request, if any. */
 export function getContextScanResult(): ScanResult | null {
   return requestContextStorage.getStore()?.scanResult ?? null;
+}
+
+/** The camera frame that produced the attached scan, if any. */
+export function getContextScanImageDataUrl(): string | null {
+  return requestContextStorage.getStore()?.scanImageDataUrl ?? null;
 }
 
 /** This request's stable id, if the API layer established one. */

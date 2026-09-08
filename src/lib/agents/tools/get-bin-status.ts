@@ -27,7 +27,7 @@ export const getBinStatusInputSchema = z.object({
 export const getBinStatusTool = tool({
   name: GET_BIN_STATUS_TOOL_NAME,
   description:
-    "Return the authoritative state of one storage bin by its code: whether it is AVAILABLE, RESERVED, OCCUPIED or DISABLED, its capacity, and which part and quantity it currently holds. Use this for questions about a specific bin. Returns found:false if no bin has that code. Read-only; it never reserves a bin or changes its contents.",
+    "Return the authoritative state of one storage bin by its code: AVAILABLE, RESERVED, OCCUPIED, CHECKED_OUT or DISABLED, its capacity, and which part and last-known quantity it holds. CHECKED_OUT means the physical bin is away and its quantity is unavailable until return reconciliation. Read-only.",
   inputSchema: getBinStatusInputSchema,
   callback: async ({ binCode }) => {
     try {

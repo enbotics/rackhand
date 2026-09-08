@@ -44,7 +44,7 @@ export function CurrentScanPanel({
         <EmptyState>
           No current scan.
           <br />
-          Place one part on the calibration mat and press “Scan Part”.
+          Place the matching part or parts on the calibration mat and press “Scan Part”.
         </EmptyState>
       )}
 
@@ -81,7 +81,12 @@ export function CurrentScanPanel({
             </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Metric
+              label="Quantity"
+              value={String(scan.measurement.observedQuantity ?? 1)}
+              tone="accent"
+            />
             <Metric label="Length" value={formatMM(scan.measurement.lengthMM)} unit="mm" tone="accent" />
             <Metric label="Width" value={formatMM(scan.measurement.widthMM)} unit="mm" tone="accent" />
             <Metric
@@ -93,6 +98,12 @@ export function CurrentScanPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 font-mono text-[11px] text-ink-faint">
+            <span>
+              Count confidence{" "}
+              <span className="text-ink-muted">
+                {formatPercent(scan.measurement.quantityConfidence ?? 1)}
+              </span>
+            </span>
             <span>
               Dimension confidence{" "}
               <span className="text-ink-muted">

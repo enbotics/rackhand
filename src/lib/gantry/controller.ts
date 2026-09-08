@@ -14,6 +14,7 @@
 import type {
   BinPresentationRequest,
   BinReturnRequest,
+  AuditBinRequest,
   GantryOperation,
   GantryStatus,
   PutawayRequest,
@@ -38,6 +39,12 @@ export interface GantryController {
 
   /** Return a presented bin to its reserved storage slot. */
   returnBin(input: BinReturnRequest): Promise<GantryOperation>;
+
+  /** Move a storage bin to the dedicated audit camera station. */
+  presentBinForAudit(input: AuditBinRequest): Promise<GantryOperation>;
+
+  /** Return an audited bin to its original storage slot. */
+  returnBinFromAudit(input: AuditBinRequest): Promise<GantryOperation>;
 
   /** Most recent operations, newest first. */
   getRecentOperations(limit?: number): Promise<GantryOperation[]>;

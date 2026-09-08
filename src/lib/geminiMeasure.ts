@@ -1,6 +1,6 @@
 /**
  * One Gemini call per measurement request. Gemini is asked ONLY to locate
- * the physical object (name it, and find the 4 corners of its minimum
+ * the physical object group (name it, count matching units, and find the 4 corners of one representative unit's minimum
  * bounding rectangle) — never to estimate any physical measurement itself.
  * Every mm number is computed afterward in lib/matMeasurement.ts from those
  * pixel corners plus the calibration mat's homography (see
@@ -29,17 +29,19 @@ const MAX_IMAGE_DIMENSION_PX = 1024;
 /** Below this, a returned height is dropped rather than trusted — see prompt: a single overhead frame has no vertical ruler, so height is inherently the shakiest of the three numbers. */
 const MIN_HEIGHT_CONFIDENCE = 0.5;
 
-const PROMPT = `This photo was taken by a webcam mounted directly overhead, looking straight down at a printed calibration mat lying on a flat work surface. The mat itself has 4 small QR-code squares near its corners and a ruled rectangular zone with tick marks and grid lines printed on it — IGNORE all of that printed mat graphics entirely, it is not the object. Exactly one physical object rests on top of the mat, inside its ruled zone.
+const PROMPT = `This photo was taken by a webcam mounted directly overhead, looking straight down at a printed calibration mat lying on a flat work surface. The mat itself has 4 small QR-code squares near its corners and a ruled rectangular zone with tick marks and grid lines printed on it — IGNORE all of that printed mat graphics entirely, it is not the object. One or more visually matching physical items may rest on top of the mat, inside its ruled zone.
 
 Do not estimate any physical measurement yourself — any size guess of yours would be unreliable, the actual mm conversion is done separately from the mat's own markings. Instead:
 
-1. Find the physical object's minimum-area bounding rectangle as it appears in the IMAGE (the real part resting on the mat — never the mat's printed QR codes, ruler ticks, grid lines, or text). Report its 4 corners in cyclic order (so consecutive corners share an edge, not a diagonal) using your normal 0-1000 normalized image coordinate convention: x = 0 at the left edge, 1000 at the right edge; y = 0 at the top edge, 1000 at the bottom edge. Be as tight as possible — the rectangle should hug the object, not include surrounding mat surface.
+1. Choose one clearest representative item and find that single item's minimum-area bounding rectangle as it appears in the IMAGE (never include neighbouring matching items or the mat's printed graphics). Report its 4 corners in cyclic order using your normal 0-1000 normalized image coordinate convention. Be as tight as possible.
 2. name: a short, concrete, human-readable name for the object (e.g. "Blue plastic USB hub", "M6 hex bolt") — specific enough to distinguish it from a similar item, not a generic category.
 3. description: one concise sentence on distinguishing features (material, color, notable markings).
 4. Separately, attempt the object's height above the surface (heightMM) using whatever perspective, shadow, or occlusion cues the photo offers — this is inherently uncertain from a single straight-down shot, since there is no vertical ruler the way there is a ground plane. Report heightConfidence (0 to 1) honestly; if you cannot form a reasonable estimate, set heightMM to null and heightConfidence to 0.
-5. dimensionConfidence: 0 to 1, your confidence in how tightly the bounding rectangle fits the object (not a confidence in any mm value — you are not asked for one).
+5. observedQuantity: count every visible item that is the same part as the representative item. Return an integer of 1 or more.
+6. quantityConfidence: 0 to 1, your confidence that the matching-item count is complete. Reduce it for overlap, occlusion, cropping, or uncertain similarity.
+7. dimensionConfidence: 0 to 1, your confidence in how tightly the representative bounding rectangle fits the object.
 
-If no object is visible on the mat (only the mat's own printed graphics), set objectDetected to false. If more than one distinct physical object is visible, set multipleObjects to true. In either case the corner/numeric fields are ignored, but still fill corners with four (0,0) points and name/description with empty strings.`;
+If no object is visible on the mat, set objectDetected to false. Set multipleObjects to true only when visibly different part types are mixed together; several matching units are not multipleObjects. In either failure case the corner/numeric fields are ignored, but still return observedQuantity 0, quantityConfidence 0, four (0,0) corners, and empty name/description.`;
 
 /** Gemini's own trained spatial-grounding convention for any bounding-box-shaped answer — asking in plain 0-1 fractions gets silently ignored in favor of this, so the prompt/schema now asks for it directly instead of fighting it. */
 const COORDINATE_SPACE_MAX = 1000;
@@ -63,6 +65,8 @@ const RESPONSE_SCHEMA = {
     },
     heightMM: { type: "NUMBER", nullable: true },
     heightConfidence: { type: "NUMBER" },
+    observedQuantity: { type: "INTEGER" },
+    quantityConfidence: { type: "NUMBER" },
     dimensionConfidence: { type: "NUMBER" },
   },
   required: [
@@ -73,6 +77,8 @@ const RESPONSE_SCHEMA = {
     "corners",
     "heightMM",
     "heightConfidence",
+    "observedQuantity",
+    "quantityConfidence",
     "dimensionConfidence",
   ],
 } as const;
@@ -88,6 +94,8 @@ export interface GeminiMeasurement {
   description: string;
   corners: [GeminiCorner, GeminiCorner, GeminiCorner, GeminiCorner];
   heightMM: number | null;
+  observedQuantity: number;
+  quantityConfidence: number;
   dimensionConfidence: number;
 }
 
@@ -196,6 +204,11 @@ export async function measureWithGemini(imageJPEG: Buffer): Promise<GeminiOutcom
   const heightMMRaw = asFiniteNumber(parsed.heightMM);
   const heightConfidence = asFiniteNumber(parsed.heightConfidence) ?? 0;
   const heightMM = heightMMRaw != null && heightMMRaw > 0 && heightConfidence >= MIN_HEIGHT_CONFIDENCE ? heightMMRaw : null;
+  const observedQuantityRaw = asFiniteNumber(parsed.observedQuantity);
+  const observedQuantity =
+    observedQuantityRaw !== null && Number.isInteger(observedQuantityRaw) && observedQuantityRaw > 0
+      ? observedQuantityRaw
+      : 1;
 
   return {
     ok: true,
@@ -204,6 +217,8 @@ export async function measureWithGemini(imageJPEG: Buffer): Promise<GeminiOutcom
       description: asString(parsed.description).trim(),
       corners: asCorners(parsed.corners),
       heightMM,
+      observedQuantity,
+      quantityConfidence: Math.min(Math.max(asFiniteNumber(parsed.quantityConfidence) ?? 0, 0), 1),
       dimensionConfidence: Math.min(Math.max(asFiniteNumber(parsed.dimensionConfidence) ?? 0.5, 0), 1),
     },
     usage,

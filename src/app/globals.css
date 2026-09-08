@@ -159,6 +159,11 @@ body {
   to { left: calc(100% - 4rem); }
 }
 
+@keyframes bin-audit {
+  0%, 100% { left: calc(100% - 4rem); }
+  45%, 55% { left: 5rem; }
+}
+
 .animate-breathe {
   animation: breathe 3s ease-in-out infinite;
 }
@@ -207,6 +212,10 @@ body {
   animation: bin-return 5s cubic-bezier(0.45, 0, 0.2, 1) both;
 }
 
+.animate-bin-audit {
+  animation: bin-audit 10.5s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+
 .gantry-at-intake {
   left: 5rem;
 }
@@ -229,12 +238,14 @@ body {
   .agent-typing-cursor,
   .agent-orb,
   .animate-bin-fetch,
-  .animate-bin-return {
+  .animate-bin-return,
+  .animate-bin-audit {
     animation: none;
   }
 
   .animate-bin-fetch { left: 5rem; }
   .animate-bin-return { left: calc(100% - 4rem); }
+  .animate-bin-audit { left: calc(100% - 4rem); }
 }
 
 ::selection {

@@ -30,6 +30,12 @@ export const scanResultSchema = z
     orientation: z.object({
       angleDegrees: z.number(),
     }),
+    quantity: z
+      .object({
+        observed: z.number(),
+        confidence: z.number(),
+      })
+      .optional(),
   })
   .superRefine((value, ctx) => {
     // The authoritative rule set — ranges, finiteness, ordering.

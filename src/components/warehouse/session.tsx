@@ -42,7 +42,12 @@ import type {
   PendingIdentification,
   ScanState,
 } from "./state";
-import type { BinView, InventoryRowView, MovementRowView } from "@/lib/warehouse/dashboard-types";
+import type {
+  BinView,
+  InventoryAuditView,
+  InventoryRowView,
+  MovementRowView,
+} from "@/lib/warehouse/dashboard-types";
 
 /**
  * One operator session, shared by every page (Milestone 10, split in 13).
@@ -99,6 +104,7 @@ export interface WarehouseSession {
   bins: BinView[];
   inventory: InventoryRowView[];
   movements: MovementRowView[];
+  latestAudit: InventoryAuditView | null;
   activeMovement: MovementRowView | null;
   totals: {
     units: number;
@@ -207,10 +213,11 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
   const lastOperatorMessage = useRef<string | null>(null);
 
   // Authoritative warehouse state.
-  const { overview, loading, error: overviewError, refresh } = useWarehouseOverview();
+  const [actionInFlight, setActionInFlight] = useState(false);
+  const { overview, loading, error: overviewError, refresh } =
+    useWarehouseOverview(actionInFlight);
   const { trace, error: traceError } = useAgentTrace(traceId);
   const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
-  const [actionInFlight, setActionInFlight] = useState(false);
   const { status: gantry, error: gantryError } = useGantryStatus(actionInFlight);
 
   useEffect(() => {
@@ -334,6 +341,8 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
         angleDegrees: body.angleDegrees as number,
         dimensionConfidence: body.dimensionConfidence as number,
         calibrationRmsPixels: body.calibrationRmsPixels as number,
+        observedQuantity: body.observedQuantity as number,
+        quantityConfidence: body.quantityConfidence as number,
         measuredAt: Date.now(),
       };
 
@@ -400,9 +409,6 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     const toolCalls = (data.toolCalls as string[] | undefined) ?? [];
     if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
     if (typeof data.traceId === "string") setTraceId(data.traceId);
-    if (toolCalls.includes("request_guided_putaway")) {
-      setGuidedPutawayRequestVersion((version) => version + 1);
-    }
     setTurns((previous) => [
       ...previous,
       {
@@ -430,12 +436,16 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       setAgentUnavailable(false);
 
       const scanResult = scanState.scan?.scanResult ?? null;
+      const scanImageDataUrl = scanState.scan
+        ? shots.find((shot) => shot.id === scanState.scan?.shotId)?.dataUrl ?? null
+        : null;
       try {
         const { ok, data } = await postJson("/api/agent", {
           message,
           // Structured, out-of-band, exactly as the Milestone 5 contract
           // defines it — never pasted into the message text.
           ...(scanResult ? { scanResult } : {}),
+          ...(scanResult && scanImageDataUrl ? { scanImageDataUrl } : {}),
           ...(confirmed ? { catalogResolutionId: confirmed.resolutionId } : {}),
         });
 
@@ -464,7 +474,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
         void refreshTraces();
       }
     },
-    [applyAgentReply, confirmed, refresh, refreshTraces, scanState.scan],
+    [applyAgentReply, confirmed, refresh, refreshTraces, scanState.scan, shots],
   );
 
   const decide = useCallback(
@@ -473,8 +483,12 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       const summary = approval.summary;
       setApproval(null);
       setAgentBusy(true);
-      setActionInFlight(true);
-      setOutcome({ kind: "EXECUTING", summary, message: "Executing…" });
+      setActionInFlight(decision === "APPROVE");
+      setOutcome(
+        decision === "APPROVE"
+          ? { kind: "EXECUTING", summary, message: "Executing…" }
+          : { kind: "DECIDING", summary, message: "Cancelling the pending operation…" },
+      );
 
       try {
         const { ok, data } = await postJson("/api/agent/approve", {
@@ -679,6 +693,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       bins,
       inventory,
       movements,
+      latestAudit: overview?.latestAudit ?? null,
       activeMovement:
         movements.find((movement) =>
           [

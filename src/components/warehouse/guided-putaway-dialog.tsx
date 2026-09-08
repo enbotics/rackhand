@@ -78,6 +78,8 @@ function destinationReasonLabel(
       return "Full";
     case "RESERVED":
       return "Reserved";
+    case "CHECKED_OUT":
+      return "Checked out";
     case "DISABLED":
       return "Disabled";
     case "DIFFERENT_PART":
@@ -198,6 +200,7 @@ export function GuidedPutawayDialog({
   registeringPart,
   registerError,
   onCaptureVerification,
+  getCameraStream,
   onWarehouseChanged,
 }: {
   scanState: ScanState;
@@ -222,20 +225,26 @@ export function GuidedPutawayDialog({
   registerError: string | null;
   /** Captures the current live camera frame without starting a new scan. */
   onCaptureVerification: () => Shot | null;
+  /** The same live stream already open for scanning — for the placement-verification preview below. */
+  getCameraStream?: () => MediaStream | null;
   onWarehouseChanged: () => void;
 }) {
   const scanId = scanState.scan?.scanResult?.scanId ?? null;
+  // Kept temporarily for the identification UI above; physical guided
+  // putaway is disabled and client movement now goes through agent HITL.
+  const legacyGuidedPutawayEnabled = false;
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("CHOOSING");
   const [selectedBin, setSelectedBin] = useState<string | null>(null);
   const [operation, setOperation] = useState<PutawayOperation | null>(null);
   const [gantryStatus, setGantryStatus] = useState<GuidedGantryStatus>("IDLE");
   const [liveGantry, setLiveGantry] = useState<GantryStatus | null>(null);
-  const [placementPhoto, setPlacementPhoto] = useState<Shot | null>(null);
+  const [verifying, setVerifying] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const seenOpenRequest = useRef(0);
   const [lastSeenPhase, setLastSeenPhase] = useState(scanState.phase);
+  const placementVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const shelfRows = useMemo(() => groupBinsInShelfOrder(bins), [bins]);
   const identityReady = identity === "MATCHED" || identity === "HUMAN_CONFIRMED";
@@ -299,7 +308,7 @@ export function GuidedPutawayDialog({
       setSelectedBin(null);
       setOperation(null);
       setGantryStatus("IDLE");
-      setPlacementPhoto(null);
+      setVerifying(false);
       setVerificationError(null);
       setError(null);
     }
@@ -310,6 +319,19 @@ export function GuidedPutawayDialog({
     seenOpenRequest.current = openRequestVersion;
     setOpen(true);
   }, [openRequestVersion, scanId]);
+
+  /**
+   * A second, read-only view of the SAME live stream already open for
+   * scanning — not a second camera device. Bound imperatively (not via
+   * React's `srcObject` prop, which does not exist) whenever this step is on
+   * screen, so the operator can see the item inside the bin before verifying,
+   * instead of aiming blind.
+   */
+  useEffect(() => {
+    if (phase !== "AWAITING_PLACEMENT") return;
+    const video = placementVideoRef.current;
+    if (video) video.srcObject = getCameraStream?.() ?? null;
+  }, [phase, getCameraStream]);
 
   useEffect(() => {
     if (phase !== "FETCHING" && phase !== "RETURNING") return;
@@ -348,7 +370,6 @@ export function GuidedPutawayDialog({
     setSelectedBin(destinationBinCode);
     setPhase("RESERVING");
     setGantryStatus("IDLE");
-    setPlacementPhoto(null);
     setVerificationError(null);
     setError(null);
 
@@ -394,13 +415,14 @@ export function GuidedPutawayDialog({
     }
   }, [applyFailure, confirmed, identityReady, onWarehouseChanged, scanState.scan, shots]);
 
+  /**
+   * `shot` carries the verification photo for placed=true — captured at the
+   * moment of the click, from the live preview above, rather than a photo
+   * taken and reviewed ahead of time. See `verify` below.
+   */
   const settle = useCallback(
-    async (placed: boolean) => {
+    async (placed: boolean, shot?: Shot) => {
       if (!operation) return;
-      if (placed && !placementPhoto) {
-        setVerificationError("Take a fresh photo of the item inside the bin before returning it.");
-        return;
-      }
       setPhase("RETURNING");
       setGantryStatus("RETURNING_BIN");
       setVerificationError(null);
@@ -412,8 +434,8 @@ export function GuidedPutawayDialog({
           placed
             ? {
                 placed: true,
-                verificationImageDataUrl: placementPhoto!.dataUrl,
-                verificationCapturedAt: placementPhoto!.createdAt,
+                verificationImageDataUrl: shot!.dataUrl,
+                verificationCapturedAt: shot!.createdAt,
               }
             : { placed: false },
         );
@@ -465,18 +487,29 @@ export function GuidedPutawayDialog({
         onWarehouseChanged();
       }
     },
-    [applyFailure, onWarehouseChanged, operation, placementPhoto],
+    [applyFailure, onWarehouseChanged, operation],
   );
 
-  const captureVerification = useCallback(() => {
+  /**
+   * One click: capture the live frame right now and go straight to
+   * verify+return. No separate "take photo, review, then confirm" step — the
+   * live preview above already lets the operator see the shot before
+   * clicking, so a second still-frame review added nothing but an extra click.
+   */
+  const verify = useCallback(async () => {
     const shot = onCaptureVerification();
     if (!shot) {
       setVerificationError("The camera is not ready. Start the live camera, then retry.");
       return;
     }
-    setPlacementPhoto(shot);
     setVerificationError(null);
-  }, [onCaptureVerification]);
+    setVerifying(true);
+    try {
+      await settle(true, shot);
+    } finally {
+      setVerifying(false);
+    }
+  }, [onCaptureVerification, settle]);
 
   // Nothing captured yet — genuinely nothing to show, not even a collapsed
   // reopen button. Every other phase (MEASURING, FAILED, MATCHING, READY) has
@@ -485,7 +518,7 @@ export function GuidedPutawayDialog({
   if (!open) {
     return (
       <button type="button" onClick={() => setOpen(true)} className={BUTTON_VARIANTS.secondary}>
-        {scanState.scan ? "Review latest scan and put away" : "Review scan status"}
+        {scanState.scan ? "Review latest scan" : "Review scan status"}
       </button>
     );
   }
@@ -498,7 +531,7 @@ export function GuidedPutawayDialog({
 
   return (
     <Modal
-      title="Scanned item · guided putaway"
+      title="Scanned item"
       onClose={() => setOpen(false)}
       dismissible={!locked}
       maxWidthClassName="max-w-4xl"
@@ -594,7 +627,7 @@ export function GuidedPutawayDialog({
           </section>
         )}
 
-        {phase === "CHOOSING" && identityReady && (
+        {phase === "CHOOSING" && identityReady && legacyGuidedPutawayEnabled && (
           <section
             className="animate-stage-reveal rounded-xl border border-line bg-surface p-4"
             data-guided-step="slots"
@@ -740,6 +773,28 @@ export function GuidedPutawayDialog({
           </section>
         )}
 
+        {phase === "CHOOSING" && identityReady && !legacyGuidedPutawayEnabled && (
+          <section className="animate-stage-reveal rounded-xl border border-success/35 bg-success-soft p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-success">
+              Identification complete
+            </p>
+            <p className="mt-2 text-sm text-ink">
+              The camera result and photo are ready. Ask the Warehouse Agent to put this item away;
+              the physical action will appear as a separate approval with gantry status.
+            </p>
+            {confirmed && (
+              <button
+                type="button"
+                onClick={onReconsiderIdentity}
+                disabled={identityBusy}
+                className={`${BUTTON_VARIANTS.secondary} mt-4`}
+              >
+                ← {identityBusy ? "Opening identity choices…" : "Choose a different identity"}
+              </button>
+            )}
+          </section>
+        )}
+
         {phase !== "CHOOSING" && (
           <>
             <div className="grid gap-3">
@@ -765,7 +820,7 @@ export function GuidedPutawayDialog({
             </p>
             <p className="mt-2 text-sm text-ink">
               Place <strong>{operation.part.sku}</strong> ({operation.part.canonicalName}) into bin{" "}
-              <strong>{operation.destinationBinCode}</strong>, then capture the bin before returning it.
+              <strong>{operation.destinationBinCode}</strong>, then verify while it&apos;s visible below.
             </p>
             {destinationBin && (
               <p className="mt-1 font-mono text-[10px] text-ink-muted">
@@ -773,36 +828,18 @@ export function GuidedPutawayDialog({
               </p>
             )}
 
-            <div className="mt-4 overflow-hidden rounded-xl border border-line bg-bg-elevated">
-              {placementPhoto ? (
-                <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                  {/* A just-captured local data URL; it is uploaded only when the operator verifies it. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={placementPhoto.dataUrl}
-                    alt={`Verification photo for bin ${operation.destinationBinCode}`}
-                    className="max-h-64 w-full rounded-lg border border-line object-contain"
-                  />
-                  <div className="space-y-1 sm:w-44">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-success">
-                      Photo ready
-                    </p>
-                    <p className="text-xs leading-relaxed text-ink-muted">
-                      Check that the item and remaining bin space are clearly visible.
-                    </p>
-                    <p className="font-mono text-[9px] text-ink-faint">
-                      {new Date(placementPhoto.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="px-4 py-7 text-center">
-                  <p className="text-xs text-ink-muted">No placement photo captured yet.</p>
-                  <p className="mt-1 text-[11px] text-ink-faint">
-                    Use the live camera to show the item inside the presented bin.
-                  </p>
-                </div>
-              )}
+            {/* Live view of the same camera used to scan — not a captured
+                still. The operator lines up the shot here and Verify captures
+                it at the moment of the click, so there is nothing to review
+                or retake afterward. */}
+            <div className="relative mt-4 aspect-video w-full overflow-hidden rounded-xl border border-line bg-black/40">
+              <video
+                ref={placementVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="h-full w-full object-cover"
+              />
             </div>
 
             {verificationError && (
@@ -812,26 +849,22 @@ export function GuidedPutawayDialog({
             )}
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-              <button type="button" onClick={() => void settle(false)} className={BUTTON_VARIANTS.secondary}>
+              <button
+                type="button"
+                onClick={() => void settle(false)}
+                disabled={verifying}
+                className={BUTTON_VARIANTS.secondary}
+              >
                 No item placed · return bin
               </button>
-              <div className="flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={captureVerification}
-                  className={BUTTON_VARIANTS.secondary}
-                >
-                  {placementPhoto ? "Retake photo" : "Take verification photo"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void settle(true)}
-                  disabled={!placementPhoto}
-                  className={BUTTON_VARIANTS.approve}
-                >
-                  Verify photo &amp; return bin
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => void verify()}
+                disabled={verifying}
+                className={BUTTON_VARIANTS.approve}
+              >
+                {verifying ? "Verifying…" : "Verify"}
+              </button>
             </div>
           </section>
         )}

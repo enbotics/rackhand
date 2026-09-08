@@ -13,7 +13,7 @@ export interface PutawayDestinationEvaluation {
   afterQuantity: number;
   remainingAfter: number;
   alreadyStoresPart: boolean;
-  reason: "COMPATIBLE" | "FULL" | "RESERVED" | "DISABLED" | "DIFFERENT_PART" | "INCONSISTENT";
+  reason: "COMPATIBLE" | "FULL" | "RESERVED" | "CHECKED_OUT" | "DISABLED" | "DIFFERENT_PART" | "INCONSISTENT";
 }
 
 /**
@@ -35,6 +35,7 @@ export function evaluatePutawayDestination(
   const base = { currentQuantity, afterQuantity, remainingAfter, alreadyStoresPart };
   if (bin.status === "DISABLED") return { ...base, eligible: false, reason: "DISABLED" };
   if (bin.status === "RESERVED") return { ...base, eligible: false, reason: "RESERVED" };
+  if (bin.status === "CHECKED_OUT") return { ...base, eligible: false, reason: "CHECKED_OUT" };
   if (bin.contents.some((item) => item.partId !== partId)) {
     return { ...base, eligible: false, reason: "DIFFERENT_PART" };
   }
