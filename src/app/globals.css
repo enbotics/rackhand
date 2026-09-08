@@ -115,6 +115,11 @@ body {
   to { opacity: 1; }
 }
 
+@keyframes fade-out-up {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-10px); }
+}
+
 @keyframes pop-scale {
   from { opacity: 0; transform: scale(0.94) translateY(8px); }
   to { opacity: 1; transform: scale(1) translateY(0); }
@@ -180,6 +185,12 @@ body {
   animation: pop-scale 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* A settled chat card retiring itself. Never used for conversation history —
+   only for the trailing "current state" cards, once they are terminal. */
+.animate-fade-out {
+  animation: fade-out-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .animate-stage-reveal {
   animation: stage-reveal 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -231,6 +242,7 @@ body {
   .animate-fade-up,
   .animate-fade-in,
   .animate-pop,
+  .animate-fade-out,
   .animate-stage-reveal,
   .animate-glow-pulse,
   .animate-spin-slow,

@@ -681,12 +681,12 @@ export async function commitGuidedPutaway(movementId: string): Promise<GuidedPut
           data: { status: "RETURNING" },
         });
         if (claimed.count !== 1) throw new Error("commit_already_claimed");
-        await applyInventoryAddition(
-          tx,
-          loaded.part,
-          { ...loaded.destinationBin!, status: "AVAILABLE" },
-          QUANTITY,
-        );
+        // The bin has been "RESERVED" (not "AVAILABLE") since prepareGuidedPutaway
+        // claimed it — applyInventoryAddition's own conditional lock matches
+        // against whatever status is passed in, so it must be the bin's real
+        // current status, not a hardcoded guess. Passing the wrong status here
+        // made the lock match zero rows and fail every real commit.
+        await applyInventoryAddition(tx, loaded.part, loaded.destinationBin!, QUANTITY);
         await tx.bin.update({
           where: { id: loaded.destinationBin!.id },
           data: { status: "OCCUPIED" },

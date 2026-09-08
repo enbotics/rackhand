@@ -3,6 +3,8 @@ import { Sora, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { WarehouseNav } from "@/components/warehouse/nav";
 import { WarehouseSessionProvider } from "@/components/warehouse/session";
+import { CameraProvider } from "@/lib/camera-context";
+import { AuditCaptureDialog } from "@/components/warehouse/audit-capture-dialog";
 
 const sora = Sora({
   variable: "--font-sora",
@@ -36,12 +38,23 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           card by clicking a menu item would leave the operator unable to
           answer a question the server is still holding open.
         */}
-        <WarehouseSessionProvider>
-          <div className="relative z-10 flex flex-1 flex-col">
-            <WarehouseNav />
-            <main className="flex flex-1 flex-col">{children}</main>
-          </div>
-        </WarehouseSessionProvider>
+        {/*
+          The camera sits beside the session, above the router, for the same
+          reason: it is the operator's ONE physical device, not a property of
+          /scan. An inventory audit started from the chat on the landing page
+          needs a live frame there and then — walking to another page to open
+          a camera is how audits used to die with capture_station_unavailable.
+        */}
+        <CameraProvider>
+          <WarehouseSessionProvider>
+            <div className="relative z-10 flex flex-1 flex-col">
+              <WarehouseNav />
+              <main className="flex flex-1 flex-col">{children}</main>
+            </div>
+            {/* Pops up wherever the operator is standing, on any page. */}
+            <AuditCaptureDialog />
+          </WarehouseSessionProvider>
+        </CameraProvider>
       </body>
     </html>
   );

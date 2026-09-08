@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useRef } from "react";
-import { CameraStage, type CameraStageHandle } from "@/components/camera-stage";
+import { CameraStage } from "@/components/camera-stage";
+import { useSharedCamera } from "@/lib/camera-context";
 import { GuidedPutawayDialog } from "../guided-putaway-dialog";
-import { AuditCaptureDialog } from "../audit-capture-dialog";
 import { Panel } from "../ui";
 import { useWarehouseSession } from "../session";
 import { PageShell } from "./shell";
@@ -14,16 +13,17 @@ import { PageShell } from "./shell";
  * The Warehouse Agent conversation lives on the Warehouse page only (see
  * warehouse-view.tsx) — it is never duplicated here. This page keeps just
  * the scanner-adjacent physical surfaces: the live camera, the guided
- * putaway dialog (capture -> identify -> confirmed-identity handoff), and
- * the audit capture dialog. A completed scan becomes shared session context
- * the Warehouse Agent can act on from the other page; scanning itself never
- * takes over the landing page.
+ * putaway dialog (capture -> identify -> confirmed-identity handoff). A
+ * completed scan becomes shared session context the Warehouse Agent can act
+ * on from the other page; scanning itself never takes over the landing page.
+ *
+ * The audit capture dialog is NOT here any more: an audit is usually started
+ * from the chat on the landing page, so it mounts at the layout instead and
+ * reads the same shared camera this stage does.
  */
 export function OperateView() {
   const session = useWarehouseSession();
-  const cameraRef = useRef<CameraStageHandle>(null);
-  const captureFrame = useCallback(() => cameraRef.current?.captureFrame() ?? null, []);
-  const getCameraStream = useCallback(() => cameraRef.current?.getStream() ?? null, []);
+  const camera = useSharedCamera();
 
   return (
     <PageShell
@@ -32,11 +32,7 @@ export function OperateView() {
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
         <Panel title="Stationary Scan" className="flex-1">
-          <CameraStage
-            ref={cameraRef}
-            onCapture={session.onCapture}
-            scanning={session.scanning}
-          />
+          <CameraStage onCapture={session.onCapture} scanning={session.scanning} />
         </Panel>
 
         <GuidedPutawayDialog
@@ -57,13 +53,11 @@ export function OperateView() {
           onRegisterNewPart={session.registerNewPart}
           registeringPart={session.registeringPart}
           registerError={session.registerError}
-          onCaptureVerification={captureFrame}
-          getCameraStream={getCameraStream}
+          onCaptureVerification={camera.captureFrame}
+          getCameraStream={camera.getStream}
           onWarehouseChanged={session.refresh}
         />
       </div>
-
-      <AuditCaptureDialog captureFrame={captureFrame} getCameraStream={getCameraStream} />
     </PageShell>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Shot } from "@/lib/shots-db";
+import { useSharedCamera } from "@/lib/camera-context";
 import { Modal } from "./modal";
 import { BUTTON_VARIANTS, ErrorNote } from "./ui";
 
@@ -18,20 +18,23 @@ interface PendingCapture {
  * frame is now a deliberate click on a live preview, matching the guided
  * putaway placement-verification dialog's shape, instead of an invisible
  * background grab the operator had no part in.
+ *
+ * MOUNTED AT THE LAYOUT, not on a page. An audit is almost always started
+ * from the Warehouse Agent chat on the landing page; requiring the operator
+ * to notice that and walk over to /scan is how audits ended up dying with
+ * `capture_station_unavailable`. It reads the one shared camera directly
+ * (lib/camera-context.tsx) rather than taking callbacks from whichever page
+ * happens to own a CameraStage.
  */
-export function AuditCaptureDialog({
-  captureFrame,
-  getCameraStream,
-}: {
-  captureFrame: () => Shot | null;
-  getCameraStream: () => MediaStream | null;
-}) {
+export function AuditCaptureDialog() {
+  const camera = useSharedCamera();
   const [pending, setPending] = useState<PendingCapture | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<"success" | "failure" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handledId = useRef<string | null>(null);
+  const autoStartedFor = useRef<string | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -64,15 +67,32 @@ export function AuditCaptureDialog({
     };
   }, [submitting, result]);
 
+  /**
+   * Lazily open the camera the moment the warehouse actually needs it, so a
+   * long-lived tab that never visited /scan is not a dead end. Attempted once
+   * per capture request: Chrome will show its permission prompt without a
+   * gesture, Safari will not, so the dialog ALWAYS renders a manual "Start
+   * camera" button below when this does not take — an empty black box with no
+   * way out was the original complaint.
+   */
+  useEffect(() => {
+    if (!pending || camera.status !== "idle") return;
+    if (autoStartedFor.current === pending.captureId) return;
+    autoStartedFor.current = pending.captureId;
+    void camera.start();
+  }, [camera, pending]);
+
   useEffect(() => {
     if (!pending) return;
     const video = videoRef.current;
-    if (video) video.srcObject = getCameraStream();
-  }, [pending, getCameraStream]);
+    // The one live stream already open for scanning, in a second read-only
+    // preview — never a second camera device.
+    if (video) video.srcObject = camera.getStream();
+  }, [pending, camera]);
 
   async function capture() {
     if (!pending) return;
-    const shot = captureFrame();
+    const shot = camera.captureFrame();
     if (!shot) {
       setError("The camera is not ready. Start the live camera, then retry.");
       return;
@@ -107,6 +127,8 @@ export function AuditCaptureDialog({
 
   if (!pending) return null;
 
+  const live = camera.status === "live";
+
   return (
     <Modal
       title={`Auditing ${pending.binCode}`}
@@ -121,13 +143,43 @@ export function AuditCaptureDialog({
         </p>
 
         <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-line bg-black/40">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="h-full w-full object-cover"
-          />
+          {live ? (
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`h-full w-full object-cover ${camera.mirrored ? "-scale-x-100" : ""}`}
+            />
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+              {camera.status === "requesting" ? (
+                <>
+                  <div className="animate-spin-slow h-7 w-7 rounded-full border-2 border-line border-t-accent" />
+                  <p className="text-xs text-ink-muted">Opening the overhead camera…</p>
+                </>
+              ) : (
+                <>
+                  <p className="max-w-sm text-xs leading-relaxed text-ink-muted">
+                    {camera.errorMessage ??
+                      "The overhead camera is not running yet."}
+                    {camera.status === "denied" &&
+                      " Allow camera access for this site in the browser address bar, then try again."}
+                  </p>
+                  <p className="max-w-sm text-[11px] leading-relaxed text-ink-faint">
+                    Frames are measured server-side and never leave this machine.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void camera.start()}
+                    className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-2"
+                  >
+                    {camera.status === "idle" ? "Start camera" : "Try again"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {error && <ErrorNote>{error}</ErrorNote>}
@@ -137,7 +189,7 @@ export function AuditCaptureDialog({
             <button
               type="button"
               onClick={() => void capture()}
-              disabled={submitting}
+              disabled={submitting || !live}
               className={BUTTON_VARIANTS.approve}
             >
               {submitting ? "Analyzing…" : "Capture & Analyze"}

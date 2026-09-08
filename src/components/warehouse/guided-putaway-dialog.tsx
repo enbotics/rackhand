@@ -230,9 +230,6 @@ export function GuidedPutawayDialog({
   onWarehouseChanged: () => void;
 }) {
   const scanId = scanState.scan?.scanResult?.scanId ?? null;
-  // Kept temporarily for the identification UI above; physical guided
-  // putaway is disabled and client movement now goes through agent HITL.
-  const legacyGuidedPutawayEnabled = false;
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("CHOOSING");
   const [selectedBin, setSelectedBin] = useState<string | null>(null);
@@ -627,7 +624,7 @@ export function GuidedPutawayDialog({
           </section>
         )}
 
-        {phase === "CHOOSING" && identityReady && legacyGuidedPutawayEnabled && (
+        {phase === "CHOOSING" && identityReady && (
           <section
             className="animate-stage-reveal rounded-xl border border-line bg-surface p-4"
             data-guided-step="slots"
@@ -769,28 +766,6 @@ export function GuidedPutawayDialog({
                   empty bin is currently available.
                 </ErrorNote>
               </div>
-            )}
-          </section>
-        )}
-
-        {phase === "CHOOSING" && identityReady && !legacyGuidedPutawayEnabled && (
-          <section className="animate-stage-reveal rounded-xl border border-success/35 bg-success-soft p-4">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-success">
-              Identification complete
-            </p>
-            <p className="mt-2 text-sm text-ink">
-              The camera result and photo are ready. Ask the Warehouse Agent to put this item away;
-              the physical action will appear as a separate approval with gantry status.
-            </p>
-            {confirmed && (
-              <button
-                type="button"
-                onClick={onReconsiderIdentity}
-                disabled={identityBusy}
-                className={`${BUTTON_VARIANTS.secondary} mt-4`}
-              >
-                ← {identityBusy ? "Opening identity choices…" : "Choose a different identity"}
-              </button>
             )}
           </section>
         )}

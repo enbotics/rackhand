@@ -1,7 +1,7 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { useCamera } from "@/lib/use-camera";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSharedCamera } from "@/lib/camera-context";
 import type { Shot } from "@/lib/shots-db";
 import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/icons";
 
@@ -15,29 +15,25 @@ import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/i
  * still comes from use-camera.ts, because the 4-QR calibration winding check
  * fails deterministically on a mirrored frame.
  *
+ * WHAT THIS COMPONENT NO LONGER OWNS: the camera itself. The stream and the
+ * capture canvas live in CameraProvider (lib/camera-context.tsx), mounted at
+ * the layout, so an audit triggered from the Warehouse Agent on another page
+ * still has a camera. This is the visible stage for it, not its owner —
+ * mirror, device switching and every status message below are unchanged.
+ *
  * Camera state is stated on screen in plain language. An operator must never
  * have to open a browser console to find out why nothing happened.
  */
-export interface CameraStageHandle {
-  /** Captures the current live frame without starting the measurement pipeline. */
-  captureFrame: () => Shot | null;
-  /**
-   * The same live MediaStream already open for scanning — for a second,
-   * read-only `<video>` preview elsewhere (e.g. the guided putaway dialog's
-   * placement-verification step) without opening a second camera device.
-   * Null whenever the camera itself is not live.
-   */
-  getStream: () => MediaStream | null;
-}
-
-export const CameraStage = forwardRef<CameraStageHandle, {
+export function CameraStage({
+  onCapture,
+  scanning = false,
+}: {
   onCapture: (shot: Shot) => void;
   /** True while the captured frame is being measured and matched. */
   scanning?: boolean;
-}>(function CameraStage({ onCapture, scanning = false }, ref) {
-  const camera = useCamera();
+}) {
+  const camera = useSharedCamera();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [flash, setFlash] = useState<"off" | "on" | "fade">("off");
   const [resolution, setResolution] = useState<{ width: number; height: number } | null>(null);
 
@@ -66,55 +62,18 @@ export const CameraStage = forwardRef<CameraStageHandle, {
         ? "text-ink-muted"
         : "text-danger";
 
-  const captureFrame = useCallback((): Shot | null => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || camera.status !== "live") return null;
-
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-    if (!w || !h) return null;
-
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-
-    if (camera.mirrored) {
-      ctx.translate(w, 0);
-      ctx.scale(-1, 1);
-    }
-    ctx.drawImage(video, 0, 0, w, h);
-
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-    const shot: Shot = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      dataUrl,
-      createdAt: Date.now(),
-      width: w,
-      height: h,
-      deviceLabel: camera.activeDeviceLabel,
-    };
+  /** The imaging is the provider's; the shutter flash is this stage's. */
+  const capture = useCallback(() => {
+    const shot = camera.captureFrame();
+    if (!shot) return;
     // paint the flash fully opaque with no transition, then fade it out
     // on the next frame — avoids relying on CSS animation fill-mode
     setFlash("on");
     requestAnimationFrame(() => {
       requestAnimationFrame(() => setFlash("fade"));
     });
-    return shot;
-  }, [camera.activeDeviceLabel, camera.mirrored, camera.status]);
-
-  const getStream = useCallback(
-    () => (camera.status === "live" ? camera.stream : null),
-    [camera.status, camera.stream],
-  );
-
-  useImperativeHandle(ref, () => ({ captureFrame, getStream }), [captureFrame, getStream]);
-
-  const capture = () => {
-    const shot = captureFrame();
-    if (shot) onCapture(shot);
-  };
+    onCapture(shot);
+  }, [camera, onCapture]);
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -228,8 +187,6 @@ export const CameraStage = forwardRef<CameraStageHandle, {
           />
         </div>
 
-        <canvas ref={canvasRef} className="hidden" />
-
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-2">
             {camera.devices.length > 1 && camera.status === "live" ? (
@@ -298,4 +255,4 @@ export const CameraStage = forwardRef<CameraStageHandle, {
       </div>
     </div>
   );
-});
+}

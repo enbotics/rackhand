@@ -54,6 +54,24 @@ const TOOL_LABELS: Record<string, string> = {
   execute_inventory_audit: "Physical inventory audit",
 };
 
+/**
+ * How long a settled trailing card stays before retiring itself, and how long
+ * its fade takes. Only the trailing "current state" card is ever dismissed —
+ * operator and agent messages are conversation history and are never removed.
+ */
+const CARD_DISMISS_AFTER_MS = 8_000;
+const CARD_FADE_MS = 450;
+
+/** Approval outcomes that are answers. EXECUTING and DECIDING are still in flight. */
+const SETTLED_OUTCOMES = new Set(["SETTLED", "CANCELLED", "EXPIRED", "REJECTED"]);
+
+/** Audit run statuses the server writes exactly once, at the end of a run. */
+const TERMINAL_AUDIT_STATUSES = new Set([
+  "COMPLETED",
+  "COMPLETED_WITH_ISSUES",
+  "FAILED",
+]);
+
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
@@ -70,6 +88,77 @@ function usePrefersReducedMotion(): boolean {
   }, []);
 
   return reduced;
+}
+
+/**
+ * A trailing "current state" card that clears itself once it is finished.
+ *
+ * WHY: a settled approval, a finished workflow and a completed audit are
+ * answers, not questions — leaving them pinned under the conversation turns
+ * the chat into a graveyard of stale panels, and the operator's next message
+ * arrives below three cards about the last one. Eight seconds is long enough
+ * to read the outcome, after which the transcript is just the transcript.
+ *
+ * WHAT IT NEVER DOES: dismiss anything still live. `settled` is false for
+ * PENDING/RUNNING/EXECUTING states and for a BLOCKED workflow (which is
+ * waiting on a person), so those stay until they resolve. Nothing here
+ * touches session state either — this is presentation only, the underlying
+ * approval/workflow/audit records are untouched and re-appear under a new
+ * `cardKey` the moment they change.
+ */
+function SettlingCard({
+  cardKey,
+  settled,
+  onDismissed,
+  children,
+}: {
+  /** Identity of what is being shown. A change means "this is a new thing", and restarts the clock. */
+  cardKey: string;
+  settled: boolean;
+  onDismissed: () => void;
+  children: React.ReactNode;
+}) {
+  const reducedMotion = usePrefersReducedMotion();
+  const [phase, setPhase] = useState<"visible" | "leaving" | "dismissed">("visible");
+  const [seenKey, setSeenKey] = useState(cardKey);
+
+  // Adjusted during render (React's own pattern for resetting state when an
+  // external value changes) rather than in an effect, which would show the
+  // previous card's dismissed state for a frame before correcting itself.
+  if (cardKey !== seenKey) {
+    setSeenKey(cardKey);
+    setPhase("visible");
+  }
+
+  useEffect(() => {
+    if (!settled || phase !== "visible") return;
+    const timer = window.setTimeout(
+      // A reduced-motion operator still gets the dismissal, just not the fade.
+      () => setPhase(reducedMotion ? "dismissed" : "leaving"),
+      CARD_DISMISS_AFTER_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [phase, reducedMotion, settled]);
+
+  useEffect(() => {
+    if (phase !== "leaving") return;
+    // Timed rather than driven by animationend: the reduced-motion rule in
+    // globals.css sets `animation: none`, which fires no event at all.
+    const timer = window.setTimeout(() => setPhase("dismissed"), CARD_FADE_MS);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase === "dismissed") onDismissed();
+  }, [onDismissed, phase]);
+
+  if (phase === "dismissed") return null;
+
+  return (
+    <div className={phase === "leaving" ? "animate-fade-out" : "animate-fade-up"}>
+      {children}
+    </div>
+  );
 }
 
 function AgentReplyText({
@@ -433,7 +522,17 @@ export function AgentPanel({
           )}
 
           {(approval || outcome) && (
-            <div className="animate-fade-up">
+            <SettlingCard
+              cardKey={
+                approval
+                  ? `approval:${approval.approvalId}`
+                  : `outcome:${outcome?.kind}:${outcome?.message}`
+              }
+              // A pending decision, an in-flight execution and a cancellation
+              // still being submitted all stay. Only an answered one goes.
+              settled={approval === null && SETTLED_OUTCOMES.has(outcome?.kind ?? "")}
+              onDismissed={scrollToLatest}
+            >
               <ApprovalCard
                 approval={approval}
                 outcome={outcome}
@@ -442,19 +541,30 @@ export function AgentPanel({
                 gantry={gantry}
                 onDecide={onDecide}
               />
-            </div>
+            </SettlingCard>
           )}
 
           {workflow && (
-            <div className="animate-fade-up">
+            <SettlingCard
+              cardKey={`workflow:${workflow.operationId}:${workflow.status}`}
+              // BLOCKED is not finished — it is a workflow waiting on a human
+              // decision, and hiding it would hide the reason for the card
+              // right next to it.
+              settled={workflow.status === "COMPLETED" || workflow.status === "FAILED"}
+              onDismissed={scrollToLatest}
+            >
               <WorkflowPanel workflow={workflow} />
-            </div>
+            </SettlingCard>
           )}
 
           {latestAudit && (
-            <div className="animate-fade-up">
+            <SettlingCard
+              cardKey={`audit:${latestAudit.auditRunId}:${latestAudit.status}`}
+              settled={TERMINAL_AUDIT_STATUSES.has(latestAudit.status)}
+              onDismissed={scrollToLatest}
+            >
               <InventoryAuditPanel audit={latestAudit} />
-            </div>
+            </SettlingCard>
           )}
         </div>
 
