@@ -1,0 +1,97 @@
+import { NextResponse } from "next/server";
+
+import {
+  CameraCaptureJobError,
+  requireCaptureJob,
+} from "@/lib/camera/capture-job-service";
+
+import type { MeasurementResult } from "@/lib/warehouse/scan-types";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function parseResult(value: string | null): MeasurementResult | null {
+  if (!value) return null;
+
+  try {
+    return JSON.parse(value) as MeasurementResult;
+  } catch {
+    return null;
+  }
+}
+
+export async function GET(
+  _request: Request,
+  context: {
+    params: Promise<{
+      id: string;
+    }>;
+  },
+) {
+  try {
+    const { id } = await context.params;
+
+    const job = await requireCaptureJob(id);
+
+    return NextResponse.json({
+      captureJobId: job.id,
+      purpose: job.purpose,
+      status: job.status,
+
+      evidenceUrl: job.evidenceUrl,
+
+      imageWidth: job.imageWidth,
+
+      imageHeight: job.imageHeight,
+
+      requestedAt: job.requestedAt.toISOString(),
+
+      claimedAt: job.claimedAt?.toISOString() ?? null,
+
+      capturedAt: job.capturedAt?.toISOString() ?? null,
+
+      uploadedAt: job.uploadedAt?.toISOString() ?? null,
+
+      completedAt: job.completedAt?.toISOString() ?? null,
+
+      result: parseResult(job.resultJson),
+
+      error: job.errorCode
+        ? {
+            code: job.errorCode,
+            message: job.errorMessage ?? "Camera capture failed.",
+          }
+        : null,
+    });
+  } catch (error) {
+    if (error instanceof CameraCaptureJobError) {
+      const status = error.code === "camera_job_not_found" ? 404 : 409;
+
+      return NextResponse.json(
+        {
+          error: {
+            code: error.code,
+            message: error.message,
+          },
+        },
+        {
+          status,
+        },
+      );
+    }
+
+    console.error("[camera] Could not read capture job:", error);
+
+    return NextResponse.json(
+      {
+        error: {
+          code: "camera_job_status_failed",
+          message: "Could not read camera capture status.",
+        },
+      },
+      {
+        status: 500,
+      },
+    );
+  }
+}

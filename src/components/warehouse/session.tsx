@@ -18,7 +18,6 @@ import {
   type Shot,
 } from "@/lib/shots-db";
 import { measurementToScanResult } from "@/lib/warehouse/scan-result";
-import type { ScanResult } from "@/lib/warehouse/scan-types";
 import type { CatalogMatchResult } from "@/lib/warehouse/catalog-match-types";
 import type { CatalogResolutionRequestResult } from "@/lib/warehouse/catalog-resolution-types";
 import {
@@ -48,6 +47,15 @@ import type {
   InventoryRowView,
   MovementRowView,
 } from "@/lib/warehouse/dashboard-types";
+
+import type { MeasurementResult, ScanResult } from "@/lib/warehouse/scan-types";
+
+import {
+  CameraCaptureClientError,
+  createCameraCapture,
+  waitForCameraCapture,
+  type CameraCaptureJobView,
+} from "@/lib/camera/capture-client";
 
 /**
  * One operator session, shared by every page (Milestone 10, split in 13).
@@ -122,10 +130,18 @@ export interface WarehouseSession {
   shots: Shot[];
   scanState: ScanState;
   scanning: boolean;
+  /* ---- Raspberry Pi camera ---- */
+  piCapture: CameraCaptureJobView | null;
+  startPiScan: () => void;
+
   identity: ScanIdentityStatus | null;
   onCapture: (shot: Shot) => void;
   onDeleteShot: (id: string) => void;
-  onMeasured: (id: string, measurement: Measurement, scanResult?: ScanResult) => void;
+  onMeasured: (
+    id: string,
+    measurement: Measurement,
+    scanResult?: ScanResult,
+  ) => void;
 
   /* ---- human decisions ---- */
   identification: PendingIdentification | null;
@@ -172,25 +188,42 @@ const SessionContext = createContext<WarehouseSession | null>(null);
 export function useWarehouseSession(): WarehouseSession {
   const session = useContext(SessionContext);
   if (!session) {
-    throw new Error("useWarehouseSession must be used inside <WarehouseSessionProvider>.");
+    throw new Error(
+      "useWarehouseSession must be used inside <WarehouseSessionProvider>.",
+    );
   }
   return session;
 }
 
-export function WarehouseSessionProvider({ children }: { children: React.ReactNode }) {
+export function WarehouseSessionProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   // Local scan history (IndexedDB). Never warehouse authority.
   const [shots, setShots] = useState<Shot[]>([]);
 
   // Current scan session.
   const [scanState, setScanState] = useState<ScanState>(EMPTY_SCAN);
-  const [identification, setIdentification] = useState<PendingIdentification | null>(null);
+
+  const [piCapture, setPiCapture] = useState<CameraCaptureJobView | null>(null);
+
+  /**
+   * Synchronous guard against two fast clicks before React
+   * has had time to update scanState.
+   */
+  const piScanInFlightRef = useRef(false);
+
+  const [identification, setIdentification] =
+    useState<PendingIdentification | null>(null);
   const [confirmed, setConfirmed] = useState<ConfirmedIdentity | null>(null);
   const [identityRejected, setIdentityRejected] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [registeringPart, setRegisteringPart] = useState(false);
   const [registerError, setRegisterError] = useState<string | null>(null);
-  const [guidedPutawayRequestVersion, setGuidedPutawayRequestVersion] = useState(0);
+  const [guidedPutawayRequestVersion, setGuidedPutawayRequestVersion] =
+    useState(0);
 
   // Agent conversation.
   const [turns, setTurns] = useState<AgentTurn[]>([]);
@@ -239,166 +272,212 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
   const handleMeasured = useCallback(
     (id: string, measurement: Measurement, scanResult?: ScanResult) => {
       setShots((previous) =>
-        previous.map((shot) => (shot.id === id ? { ...shot, measurement, scanResult } : shot)),
+        previous.map((shot) =>
+          shot.id === id ? { ...shot, measurement, scanResult } : shot,
+        ),
       );
     },
     [],
   );
 
-  const requestIdentification = useCallback(async (scanResult: ScanResult): Promise<boolean> => {
-    setIdentityBusy(true);
+  const beginNewScan = useCallback(() => {
+    /*
+     * A new physical scan invalidates operator decisions
+     * attached to the previous scan.
+     */
+    setIdentification(null);
+
+    setConfirmed(null);
+
+    setIdentityRejected(false);
+
     setIdentityError(null);
-    try {
-      const { data } = await postJson("/api/warehouse/catalog/resolutions", {
-        scanResult,
-      });
-      const result = data as unknown as CatalogResolutionRequestResult;
-      if (result.status === "HUMAN_DECISION_REQUIRED") {
-        setIdentification({
-          resolutionId: result.resolutionId,
-          scanId: result.scanId,
-          reason: result.reason,
-          expiresAt: result.expiresAt,
-          candidates: result.candidates,
-        });
-        return true;
-      }
-      // MATCHED / NO_MATCH / RESCAN_REQUIRED need no card: the scan panel
-      // already shows the matcher's verdict, and none of them is resolvable.
-    } catch {
-      setIdentityError("The identification service could not be reached.");
-      return false;
-    } finally {
-      setIdentityBusy(false);
-    }
-    return false;
+
+    setRegisterError(null);
+
+    /*
+     * Old Pi status must not remain attached to a new scan.
+     */
+    setPiCapture(null);
+
+    setScanState({
+      phase: "MEASURING",
+      scan: null,
+      failure: null,
+    });
   }, []);
 
-  /**
-   * capture -> measure -> ScanResult -> catalog match.
-   *
-   * Ends there, deliberately. Scanning identifies a part; it never puts one
-   * away. The physical action is a separate request that a person approves.
-   */
-  const handleCapture = useCallback(
-    async (shot: Shot) => {
-      setShots((previous) => [shot, ...previous]);
-      addShot(shot).catch(() => {
-        // local history failing must not stop the warehouse workflow
-      });
-
-      // A new scan retires every decision made about the previous one. An
-      // identity confirmed for one scan may never travel to another.
-      setIdentification(null);
-      setConfirmed(null);
-      setIdentityRejected(false);
+  const requestIdentification = useCallback(
+    async (scanResult: ScanResult): Promise<boolean> => {
+      setIdentityBusy(true);
       setIdentityError(null);
-      setScanState({ phase: "MEASURING", scan: null, failure: null });
-
-      let ok: boolean;
-      let body: Record<string, unknown>;
       try {
-        const response = await fetch("/api/measure", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageDataUrl: shot.dataUrl,
-            imageWidthPx: shot.width,
-            imageHeightPx: shot.height,
-          }),
+        const { data } = await postJson("/api/warehouse/catalog/resolutions", {
+          scanResult,
         });
-        ok = response.ok;
-        body = (await response.json()) as Record<string, unknown>;
+        const result = data as unknown as CatalogResolutionRequestResult;
+        if (result.status === "HUMAN_DECISION_REQUIRED") {
+          setIdentification({
+            resolutionId: result.resolutionId,
+            scanId: result.scanId,
+            reason: result.reason,
+            expiresAt: result.expiresAt,
+            candidates: result.candidates,
+          });
+          return true;
+        }
+        // MATCHED / NO_MATCH / RESCAN_REQUIRED need no card: the scan panel
+        // already shows the matcher's verdict, and none of them is resolvable.
       } catch {
-        setScanState({
-          phase: "FAILED",
-          scan: null,
-          failure: {
-            title: "The measurement service could not be reached.",
-            guidance: "Check that the application server is running, then scan again.",
-          },
-        });
-        return;
+        setIdentityError("The identification service could not be reached.");
+        return false;
+      } finally {
+        setIdentityBusy(false);
       }
+      return false;
+    },
+    [],
+  );
 
-      if (!ok) {
-        const failure = (body.error ?? {}) as {
-          code?: unknown;
-          message?: unknown;
-        };
-        setScanState({
-          phase: "FAILED",
-          scan: null,
-          failure: describeMeasureFailure(failure.code, failure.message),
-        });
-        return;
-      }
-
+  const applyMeasurementResult = useCallback(
+    async ({
+      measurementResult,
+      shot,
+    }: {
+      measurementResult: MeasurementResult;
+      shot: Shot;
+    }) => {
+      /*
+       * Measurement is the local-history version of
+       * MeasurementResult. The only additional field is measuredAt.
+       */
       const measurement: Measurement = {
-        name: body.name as string,
-        description: body.description as string,
-        lengthMM: body.lengthMM as number,
-        widthMM: body.widthMM as number,
-        heightMM: body.heightMM as number | null,
-        angleDegrees: body.angleDegrees as number,
-        dimensionConfidence: body.dimensionConfidence as number,
-        calibrationRmsPixels: body.calibrationRmsPixels as number,
-        observedQuantity: body.observedQuantity as number,
-        quantityConfidence: body.quantityConfidence as number,
+        ...measurementResult,
+
+        observedQuantity: measurementResult.observedQuantity ?? 1,
+
+        quantityConfidence: measurementResult.quantityConfidence ?? 1,
+
         measuredAt: Date.now(),
       };
 
-      // The same conversion the lightbox uses. A measurement that fails it is
-      // still shown, but it is not warehouse evidence and cannot be put away.
+      /*
+       * This remains the ONE canonical point where
+       * measurement becomes warehouse evidence.
+       */
       const conversion = measurementToScanResult(measurement, {
         capturedAt: shot.createdAt,
       });
+
       const scanResult = conversion.ok ? conversion.scanResult : null;
 
-      setShotMeasurement(shot.id, measurement, scanResult ?? undefined).catch(() => {});
+      /*
+       * IndexedDB is local scan history only.
+       * It is not warehouse authority.
+       */
+      setShotMeasurement(shot.id, measurement, scanResult ?? undefined).catch(
+        () => {},
+      );
+
       setShots((previous) =>
         previous.map((item) =>
           item.id === shot.id
-            ? { ...item, measurement, scanResult: scanResult ?? undefined }
+            ? {
+                ...item,
+
+                measurement,
+
+                scanResult: scanResult ?? undefined,
+              }
             : item,
         ),
       );
 
       const scan: CurrentScan = {
         shotId: shot.id,
+
         capturedAt: shot.createdAt,
+
         measurement,
+
         scanResult,
+
         issues: conversion.ok ? [] : conversion.issues,
+
         match: null,
+
         matchError: null,
       };
 
+      /*
+       * A measurement that does not satisfy ScanResult
+       * can still be displayed, but cannot become warehouse
+       * evidence.
+       */
       if (!scanResult) {
-        setScanState({ phase: "READY", scan, failure: null });
+        setScanState({
+          phase: "READY",
+          scan,
+          failure: null,
+        });
+
         return;
       }
 
-      setScanState({ phase: "MATCHING", scan, failure: null });
+      /*
+       * Now enter the exact same catalog matcher used
+       * by the existing browser scan.
+       */
+      setScanState({
+        phase: "MATCHING",
+        scan,
+        failure: null,
+      });
 
       try {
-        const { ok: matchOk, data } = await postJson("/api/warehouse/catalog/match", {
-          scanResult,
-        });
-        if (!matchOk) throw new Error("match failed");
+        const { ok: matchOk, data } = await postJson(
+          "/api/warehouse/catalog/match",
+          {
+            scanResult,
+          },
+        );
+
+        if (!matchOk) {
+          throw new Error("Catalog match failed");
+        }
+
         const match = data as unknown as CatalogMatchResult;
+
         setScanState({
           phase: "READY",
-          scan: { ...scan, match },
+
+          scan: {
+            ...scan,
+            match,
+          },
+
           failure: null,
         });
+
+        /*
+         * Preserve existing HITL behavior.
+         */
         if (match.status === "AMBIGUOUS") {
           await requestIdentification(scanResult);
         }
       } catch {
+        /*
+         * Measurement remains valid even if catalog matching
+         * is temporarily unavailable.
+         */
         setScanState({
           phase: "READY",
-          scan: { ...scan, matchError: "unavailable" },
+
+          scan: {
+            ...scan,
+            matchError: "unavailable",
+          },
+
           failure: null,
         });
       }
@@ -406,8 +485,318 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     [requestIdentification],
   );
 
+  /**
+   * capture -> measure -> ScanResult -> catalog match.
+   *
+   * Ends there, deliberately. Scanning identifies a part; it never puts one
+   * away. The physical action is a separate request that a person approves.
+   */
+  /**
+   * Existing browser-camera path.
+   *
+   * Browser and Raspberry Pi now differ only in how they
+   * obtain MeasurementResult.
+   *
+   * Everything afterward goes through applyMeasurementResult().
+   */
+  const handleCapture = useCallback(
+    async (shot: Shot) => {
+      setShots((previous) => [shot, ...previous]);
+
+      addShot(shot).catch(() => {
+        /*
+         * Local IndexedDB history failing must never stop
+         * the warehouse workflow.
+         */
+      });
+
+      beginNewScan();
+
+      try {
+        const response = await fetch("/api/measure", {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+          },
+
+          body: JSON.stringify({
+            imageDataUrl: shot.dataUrl,
+
+            imageWidthPx: shot.width,
+
+            imageHeightPx: shot.height,
+          }),
+        });
+
+        const body = (await response.json()) as
+          | MeasurementResult
+          | {
+              error?: {
+                code?: unknown;
+                message?: unknown;
+              };
+            };
+
+        if (!response.ok) {
+          const failure = "error" in body ? (body.error ?? {}) : {};
+
+          setScanState({
+            phase: "FAILED",
+
+            scan: null,
+
+            failure: describeMeasureFailure(failure.code, failure.message),
+          });
+
+          return;
+        }
+
+        await applyMeasurementResult({
+          measurementResult: body as MeasurementResult,
+
+          shot,
+        });
+      } catch {
+        setScanState({
+          phase: "FAILED",
+
+          scan: null,
+
+          failure: {
+            title: "The measurement service could not be reached.",
+
+            guidance:
+              "Check that the application server is running, then scan again.",
+          },
+        });
+      }
+    },
+    [beginNewScan, applyMeasurementResult],
+  );
+
+  const startPiScan = useCallback(async () => {
+    /*
+     * Prevent duplicate jobs from a rapid double click.
+     */
+    if (piScanInFlightRef.current) {
+      return;
+    }
+
+    if (scanState.phase === "MEASURING" || scanState.phase === "MATCHING") {
+      return;
+    }
+
+    piScanInFlightRef.current = true;
+
+    beginNewScan();
+
+    try {
+      /*
+       * 1. Create MANUAL_SCAN camera job.
+       */
+      const created = await createCameraCapture();
+
+      /*
+       * 2. Wait for:
+       *
+       * PENDING
+       * → CLAIMED
+       * → UPLOADED
+       * → PROCESSING
+       * → COMPLETED
+       */
+      const completed = await waitForCameraCapture(created.captureJobId, {
+        pollIntervalMs: 1000,
+
+        timeoutMs: 120_000,
+
+        onStatus: (job) => {
+          setPiCapture(job);
+        },
+      });
+
+      /*
+       * COMPLETED should always have the measurement result.
+       */
+      if (!completed.result) {
+        throw new CameraCaptureClientError(
+          "camera_result_missing",
+          "The camera job completed without a measurement result.",
+        );
+      }
+
+      /*
+       * Every physical scan should retain its evidence image.
+       */
+      if (!completed.evidenceUrl) {
+        throw new CameraCaptureClientError(
+          "camera_evidence_missing",
+          "The camera job completed without image evidence.",
+        );
+      }
+
+      /*
+       * 3. Download the already-stored server JPEG.
+       *
+       * We convert it to data URL only because the current
+       * Shot/IndexedDB/agent pipeline already uses dataUrl.
+       *
+       * Later we can migrate Shot to evidence URLs if desired.
+       */
+      const imageResponse = await fetch(completed.evidenceUrl, {
+        cache: "no-store",
+      });
+
+      if (!imageResponse.ok) {
+        throw new CameraCaptureClientError(
+          "camera_evidence_fetch_failed",
+          "The captured image could not be loaded.",
+        );
+      }
+
+      const imageBlob = await imageResponse.blob();
+
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+
+            return;
+          }
+
+          reject(new Error("Could not encode the captured image."));
+        };
+
+        reader.onerror = () => {
+          reject(
+            reader.error ?? new Error("Could not read the captured image."),
+          );
+        };
+
+        reader.readAsDataURL(imageBlob);
+      });
+
+      /*
+       * Prefer the physical Pi capture timestamp,
+       * not the time the browser happened to receive the result.
+       */
+      const capturedAt = completed.capturedAt
+        ? new Date(completed.capturedAt).getTime()
+        : Date.now();
+
+      if (!Number.isFinite(capturedAt)) {
+        throw new CameraCaptureClientError(
+          "camera_capture_timestamp_invalid",
+          "The camera returned an invalid capture timestamp.",
+        );
+      }
+
+      /*
+       * 4. Adapt the Raspberry Pi capture to the existing Shot model.
+       *
+       * From this point forward the warehouse no longer needs to know
+       * which camera source created the scan.
+       */
+      const shot: Shot = {
+        id: completed.captureJobId,
+
+        dataUrl,
+
+        createdAt: capturedAt,
+
+        width: completed.imageWidth ?? 0,
+
+        height: completed.imageHeight ?? 0,
+
+        deviceLabel: "Raspberry Pi Camera Module 3",
+      };
+
+      setShots((previous) => [shot, ...previous]);
+
+      addShot(shot).catch(() => {
+        /*
+         * Local scan history is not warehouse authority.
+         */
+      });
+
+      /*
+       * 5. Enter the SAME warehouse pipeline
+       * as the browser camera.
+       */
+      await applyMeasurementResult({
+        measurementResult: completed.result,
+
+        shot,
+      });
+    } catch (error) {
+      console.error("[camera] Pi scan failed:", error);
+
+      let title = "The Raspberry Pi camera scan failed.";
+
+      let guidance = "Check the Raspberry Pi camera worker and try again.";
+
+      if (error instanceof CameraCaptureClientError) {
+        title = error.message;
+
+        switch (error.code) {
+          case "camera_job_expired":
+            guidance =
+              "The Raspberry Pi did not complete the capture before the job expired. Check that the worker is running.";
+            break;
+
+          case "camera_capture_timeout":
+            guidance =
+              "The browser stopped waiting for the camera. Check the Raspberry Pi worker and server logs.";
+            break;
+
+          case "measurement_mat_not_detected":
+            guidance =
+              "Make sure all four calibration markers are visible and the mat is flat.";
+            break;
+
+          case "measurement_calibration_failed":
+            guidance =
+              "Check the calibration mat position and take a clearer image.";
+            break;
+
+          case "measurement_no_object_detected":
+            guidance =
+              "Place the part inside the calibration area and scan again.";
+            break;
+
+          case "measurement_multiple_objects":
+            guidance =
+              "Remove different part types from the calibration mat and scan again.";
+            break;
+
+          case "camera_evidence_fetch_failed":
+            guidance =
+              "The measurement completed, but the captured JPEG could not be loaded from the server.";
+            break;
+        }
+      }
+
+      setScanState({
+        phase: "FAILED",
+
+        scan: null,
+
+        failure: {
+          title,
+          guidance,
+        },
+      });
+    } finally {
+      piScanInFlightRef.current = false;
+    }
+  }, [scanState.phase, beginNewScan, applyMeasurementResult]);
+
   const applyAgentReply = useCallback((data: Record<string, unknown>) => {
-    const workflows = (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
+    const workflows =
+      (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
     const toolCalls = (data.toolCalls as string[] | undefined) ?? [];
     if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
     if (typeof data.traceId === "string") setTraceId(data.traceId);
@@ -432,14 +821,18 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     async (message: string) => {
       lastOperatorMessage.current = message;
       setWorkflow(null);
-      setTurns((previous) => [...previous, { id: nextTurnId(), role: "operator", text: message }]);
+      setTurns((previous) => [
+        ...previous,
+        { id: nextTurnId(), role: "operator", text: message },
+      ]);
       setAgentBusy(true);
       setAgentError(null);
       setAgentUnavailable(false);
 
       const scanResult = scanState.scan?.scanResult ?? null;
       const scanImageDataUrl = scanState.scan
-        ? shots.find((shot) => shot.id === scanState.scan?.shotId)?.dataUrl ?? null
+        ? (shots.find((shot) => shot.id === scanState.scan?.shotId)?.dataUrl ??
+          null)
         : null;
       try {
         const { ok, data } = await postJson("/api/agent", {
@@ -459,7 +852,9 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
           if (failure.code === "agent_model_unavailable") {
             setAgentUnavailable(true);
           } else {
-            setAgentError(failure.message ?? "The warehouse agent could not answer that.");
+            setAgentError(
+              failure.message ?? "The warehouse agent could not answer that.",
+            );
           }
           return;
         }
@@ -489,7 +884,11 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
       setOutcome(
         decision === "APPROVE"
           ? { kind: "EXECUTING", summary, message: "Executing…" }
-          : { kind: "DECIDING", summary, message: "Cancelling the pending operation…" },
+          : {
+              kind: "DECIDING",
+              summary,
+              message: "Cancelling the pending operation…",
+            },
       );
 
       try {
@@ -514,7 +913,8 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
           return;
         }
 
-        const workflows = (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
+        const workflows =
+          (data.workflows as WarehouseGraphResult[] | undefined) ?? [];
         if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
         // The SAME trace the pause belongs to — a decision continues the
         // timeline rather than starting a second one.
@@ -574,11 +974,14 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
           // The server refused — an unlisted candidate, an expired decision,
           // or one already settled. The card stays open and says so.
           setIdentityError(
-            (data.message as string) ?? "That identification could not be recorded.",
+            (data.message as string) ??
+              "That identification could not be recorded.",
           );
           return;
         }
-        const candidate = identification.candidates.find((item) => item.partId === partId);
+        const candidate = identification.candidates.find(
+          (item) => item.partId === partId,
+        );
         setConfirmed({
           resolutionId: identification.resolutionId,
           scanId: identification.scanId,
@@ -606,7 +1009,9 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
         { decision: "REJECT" },
       );
       if (!ok || data.ok !== true) {
-        setIdentityError((data.message as string) ?? "That decision could not be recorded.");
+        setIdentityError(
+          (data.message as string) ?? "That decision could not be recorded.",
+        );
         return;
       }
       setIdentification(null);
@@ -652,14 +1057,22 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
         ...(shot ? { imageDataUrl: shot.dataUrl } : {}),
       });
       if (!ok) {
-        setRegisterError((data.error as { message?: string } | undefined)?.message ?? "Registration failed.");
+        setRegisterError(
+          (data.error as { message?: string } | undefined)?.message ??
+            "Registration failed.",
+        );
         return;
       }
-      const { ok: matchOk, data: matchData } = await postJson("/api/warehouse/catalog/match", {
-        scanResult,
-      });
+      const { ok: matchOk, data: matchData } = await postJson(
+        "/api/warehouse/catalog/match",
+        {
+          scanResult,
+        },
+      );
       if (!matchOk) {
-        setRegisterError("The part was registered, but the catalog could not be re-checked. Scan again to continue.");
+        setRegisterError(
+          "The part was registered, but the catalog could not be re-checked. Scan again to continue.",
+        );
         return;
       }
       const match = matchData as unknown as CatalogMatchResult;
@@ -680,7 +1093,8 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
         hasValidScan: scanState.scan.scanResult !== null,
         matchStatus: scanState.scan.match?.status ?? null,
         humanConfirmed:
-          confirmed !== null && confirmed.scanId === scanState.scan.scanResult?.scanId,
+          confirmed !== null &&
+          confirmed.scanId === scanState.scan.scanResult?.scanId,
       })
     : null;
 
@@ -717,12 +1131,15 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
 
       shots,
       scanState,
-      scanning: scanState.phase === "MEASURING" || scanState.phase === "MATCHING",
+      scanning:
+        scanState.phase === "MEASURING" || scanState.phase === "MATCHING",
       identity,
       onCapture: (shot) => void handleCapture(shot),
       onDeleteShot: handleDelete,
       onMeasured: handleMeasured,
+      piCapture,
 
+      startPiScan: () => void startPiScan(),
       identification,
       confirmed,
       identityRejected,
@@ -774,6 +1191,8 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     handleCapture,
     handleDelete,
     handleMeasured,
+    piCapture,
+    startPiScan,
     identification,
     confirmed,
     identityRejected,
@@ -800,5 +1219,7 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
     recentTraces,
   ]);
 
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+  return (
+    <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
+  );
 }

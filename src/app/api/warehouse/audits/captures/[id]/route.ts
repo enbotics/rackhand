@@ -6,15 +6,30 @@ import { uploadAuditEvidence } from "@/lib/warehouse/storage";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+export async function POST(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
   const { id } = await context.params;
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: { code: "malformed_request", message: "Body is not valid JSON." } }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: {
+          code: "malformed_request",
+          message: "Body is not valid JSON.",
+        },
+      },
+      { status: 400 },
+    );
   }
-  const input = body as { imageDataUrl?: unknown; imageWidth?: unknown; imageHeight?: unknown };
+  const input = body as {
+    imageDataUrl?: unknown;
+    imageWidth?: unknown;
+    imageHeight?: unknown;
+  };
   if (
     typeof input.imageDataUrl !== "string" ||
     !/^data:image\/[a-z0-9.+-]+;base64,/i.test(input.imageDataUrl) ||
@@ -24,7 +39,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     Number(input.imageWidth) <= 0 ||
     Number(input.imageHeight) <= 0
   ) {
-    return NextResponse.json({ error: { code: "validation_failed", message: "A valid camera image and dimensions are required." } }, { status: 422 });
+    return NextResponse.json(
+      {
+        error: {
+          code: "validation_failed",
+          message: "A valid camera image and dimensions are required.",
+        },
+      },
+      { status: 422 },
+    );
   }
 
   const claimed = await prisma.auditCaptureRequest.updateMany({
@@ -32,7 +55,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     data: { status: "CAPTURING" },
   });
   if (claimed.count !== 1) {
-    return NextResponse.json({ error: { code: "capture_not_pending", message: "This audit capture is no longer pending." } }, { status: 409 });
+    return NextResponse.json(
+      {
+        error: {
+          code: "capture_not_pending",
+          message: "This audit capture is no longer pending.",
+        },
+      },
+      { status: 409 },
+    );
   }
 
   let evidenceUrl: string | null = null;
@@ -47,7 +78,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       },
     });
     binAuditId = capture.binAuditId;
-    const imageBuffer = Buffer.from(input.imageDataUrl.slice(input.imageDataUrl.indexOf(",") + 1), "base64");
+    const imageBuffer = Buffer.from(
+      input.imageDataUrl.slice(input.imageDataUrl.indexOf(",") + 1),
+      "base64",
+    );
     evidenceUrl = await uploadAuditEvidence(
       capture.binAudit.auditRunId,
       capture.binAuditId,
@@ -60,7 +94,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       sku: part?.sku ?? null,
       canonicalName: part?.canonicalName ?? null,
       dimensions: part
-        ? { lengthMM: part.lengthMM, widthMM: part.widthMM, heightMM: part.heightMM }
+        ? {
+            lengthMM: part.lengthMM,
+            widthMM: part.widthMM,
+            heightMM: part.heightMM,
+          }
         : null,
     });
     const capturedAt = new Date();
@@ -85,22 +123,35 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ ok: true, captureId: id, status: "CAPTURED" });
   } catch (error) {
     console.error(`[inventory-audit] capture failed id=${id}`, error);
-    await prisma.auditCaptureRequest.update({
-      where: { id },
-      data: {
-        status: "FAILED",
-        evidenceUrl,
-        errorCode: error instanceof Error && error.message === "audit_vision_invalid"
-          ? "audit_vision_invalid"
-          : "capture_failed",
-      },
-    }).catch(() => {});
+    await prisma.auditCaptureRequest
+      .update({
+        where: { id },
+        data: {
+          status: "FAILED",
+          evidenceUrl,
+          errorCode:
+            error instanceof Error && error.message === "audit_vision_invalid"
+              ? "audit_vision_invalid"
+              : "capture_failed",
+        },
+      })
+      .catch(() => {});
     if (evidenceUrl && binAuditId) {
-      await prisma.binAudit.update({
-        where: { id: binAuditId },
-        data: { evidenceUrl, capturedAt: new Date() },
-      }).catch(() => {});
+      await prisma.binAudit
+        .update({
+          where: { id: binAuditId },
+          data: { evidenceUrl, capturedAt: new Date() },
+        })
+        .catch(() => {});
     }
-    return NextResponse.json({ error: { code: "capture_failed", message: "The audit image could not be processed." } }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: {
+          code: "capture_failed",
+          message: "The audit image could not be processed.",
+        },
+      },
+      { status: 500 },
+    );
   }
 }

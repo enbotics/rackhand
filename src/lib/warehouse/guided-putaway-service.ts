@@ -17,7 +17,6 @@ import {
 } from "./putaway-destination";
 import { collectScanResultIssues } from "./scan-result";
 import { getBinByCode } from "./repository";
-import { uploadBinVerificationPhoto, uploadPutawayPhoto } from "./storage";
 import type { BinStatus } from "./types";
 import { getGantryController } from "@/lib/gantry/factory";
 import { isGantryError } from "@/lib/gantry/errors";
@@ -30,6 +29,7 @@ import type {
   GuidedPutawayResult,
   GuidedPutawayStatusView,
 } from "./guided-putaway-types";
+import { uploadPutawayPhoto } from "./storage";
 
 const QUANTITY = 1;
 
@@ -53,13 +53,23 @@ function destinationFailure(
         { scanId },
       );
     case "RESERVED":
-      return failure("bin_unavailable", `Bin ${binCode} is reserved by another operation.`, {
+      return failure(
+        "bin_unavailable",
+        `Bin ${binCode} is reserved by another operation.`,
+        {
+          scanId,
+        },
+      );
+    case "CHECKED_OUT":
+      return failure(
+        "bin_unavailable",
+        `Bin ${binCode} is currently checked out.`,
+        { scanId },
+      );
+    case "DISABLED":
+      return failure("bin_unavailable", `Bin ${binCode} is disabled.`, {
         scanId,
       });
-    case "CHECKED_OUT":
-      return failure("bin_unavailable", `Bin ${binCode} is currently checked out.`, { scanId });
-    case "DISABLED":
-      return failure("bin_unavailable", `Bin ${binCode} is disabled.`, { scanId });
     default:
       return failure(
         "bin_unavailable",
@@ -84,7 +94,11 @@ function failure(
   };
 }
 
-function context(movement: Movement, part: Part, bin: Bin): GuidedPutawayContext {
+function context(
+  movement: Movement,
+  part: Part,
+  bin: Bin,
+): GuidedPutawayContext {
   return {
     movementId: movement.id,
     scanId: movement.scanId ?? "",
@@ -95,7 +109,9 @@ function context(movement: Movement, part: Part, bin: Bin): GuidedPutawayContext
 
 function uniqueViolation(value: unknown): boolean {
   return (
-    typeof value === "object" && value !== null && (value as { code?: unknown }).code === "P2002"
+    typeof value === "object" &&
+    value !== null &&
+    (value as { code?: unknown }).code === "P2002"
   );
 }
 
@@ -127,7 +143,10 @@ export async function getGuidedPutawayStatusForScan(
       databaseStatus: "WAITING_TO_SAVE",
       gantryStatus: "WAITING_FOR_PLACEMENT",
     },
-    RETURNING: { databaseStatus: "WAITING_TO_SAVE", gantryStatus: "RETURNING_BIN" },
+    RETURNING: {
+      databaseStatus: "WAITING_TO_SAVE",
+      gantryStatus: "RETURNING_BIN",
+    },
     READY_TO_COMMIT: { databaseStatus: "SAVING", gantryStatus: "COMPLETED" },
     READY_TO_CANCEL: { databaseStatus: "SAVING", gantryStatus: "COMPLETED" },
     COMPLETED: { databaseStatus: "SAVED", gantryStatus: "COMPLETED" },
@@ -214,18 +233,23 @@ export async function sweepAbandonedGuidedPutaways(
   const stale = await prisma.movement.findMany({
     where: {
       type: "PUTAWAY",
-      status: { in: [...ABANDONED_BEFORE_ANY_MOTION, ...ABANDONED_WITH_BIN_OFF_SHELF] },
+      status: {
+        in: [...ABANDONED_BEFORE_ANY_MOTION, ...ABANDONED_WITH_BIN_OFF_SHELF],
+      },
       createdAt: { lt: cutoff },
     },
     include: { destinationBin: true },
   });
 
-  const result: GuidedPutawaySweepResult = { released: [], reconciliationRequired: [] };
+  const result: GuidedPutawaySweepResult = {
+    released: [],
+    reconciliationRequired: [],
+  };
 
   for (const movement of stale) {
-    const releasable = (ABANDONED_BEFORE_ANY_MOTION as readonly string[]).includes(
-      movement.status,
-    );
+    const releasable = (
+      ABANDONED_BEFORE_ANY_MOTION as readonly string[]
+    ).includes(movement.status);
     try {
       const swept = await prisma.$transaction(async (tx) => {
         // The audit trail is never dropped: the row is closed, not deleted, and
@@ -256,7 +280,11 @@ export async function sweepAbandonedGuidedPutaways(
       if (!swept) continue;
     } catch (error) {
       // One stuck row must never block the putaway that triggered the sweep.
-      console.error("[guided-putaway] abandoned reservation sweep failed", movement.id, error);
+      console.error(
+        "[guided-putaway] abandoned reservation sweep failed",
+        movement.id,
+        error,
+      );
       continue;
     }
 
@@ -283,10 +311,15 @@ export async function prepareGuidedPutaway(
   input: GuidedPutawayRequest,
 ): Promise<GuidedPutawayResult> {
   const scanResult = input?.scanResult;
-  const scanId = typeof scanResult?.scanId === "string" ? scanResult.scanId : "";
+  const scanId =
+    typeof scanResult?.scanId === "string" ? scanResult.scanId : "";
   const issues = collectScanResultIssues(scanResult);
   if (issues.length > 0) {
-    return failure("invalid_scan", `The scan is not valid: ${issues.join("; ")}`, { scanId });
+    return failure(
+      "invalid_scan",
+      `The scan is not valid: ${issues.join("; ")}`,
+      { scanId },
+    );
   }
 
   // Before claiming a slot, hand back any slot a previous session abandoned.
@@ -295,10 +328,14 @@ export async function prepareGuidedPutaway(
   // hard refresh or a crash never gets to run an unmount handler.
   await sweepAbandonedGuidedPutaways();
 
-  const existing = await prisma.movement.findUnique({ where: { idempotencyKey: scanId } });
+  const existing = await prisma.movement.findUnique({
+    where: { idempotencyKey: scanId },
+  });
   if (existing) {
     return failure(
-      existing.status === "COMPLETED" ? "putaway_already_completed" : "putaway_in_progress",
+      existing.status === "COMPLETED"
+        ? "putaway_already_completed"
+        : "putaway_in_progress",
       existing.status === "COMPLETED"
         ? "This scan has already been stored."
         : "This scan already has a putaway in progress.",
@@ -321,8 +358,18 @@ export async function prepareGuidedPutaway(
     getBinByCode(input.destinationBinCode),
     getGantryController().getStatus(),
   ]);
-  if (!part) return failure("part_not_found", "The identified part is no longer in the catalog.", { scanId });
-  if (!bin) return failure("bin_not_found", `No bin has code "${input.destinationBinCode}".`, { scanId });
+  if (!part)
+    return failure(
+      "part_not_found",
+      "The identified part is no longer in the catalog.",
+      { scanId },
+    );
+  if (!bin)
+    return failure(
+      "bin_not_found",
+      `No bin has code "${input.destinationBinCode}".`,
+      { scanId },
+    );
   const contents = await prisma.inventory.findMany({
     where: { binId: bin.id, quantity: { gt: 0 } },
     select: { partId: true, quantity: true },
@@ -335,7 +382,10 @@ export async function prepareGuidedPutaway(
   if (!destination.eligible) {
     return destinationFailure(bin.code, bin.capacity, destination, scanId);
   }
-  if (gantryStatus.state !== "IDLE" || gantryStatus.activeOperationId !== null) {
+  if (
+    gantryStatus.state !== "IDLE" ||
+    gantryStatus.activeOperationId !== null
+  ) {
     return failure("gantry_busy", `The gantry is ${gantryStatus.state}.`, {
       scanId,
       gantryStatus: "FAILED",
@@ -381,13 +431,26 @@ export async function prepareGuidedPutaway(
     });
   } catch (error) {
     if (uniqueViolation(error)) {
-      return failure("putaway_in_progress", "This scan or slot was claimed concurrently.", { scanId });
+      return failure(
+        "putaway_in_progress",
+        "This scan or slot was claimed concurrently.",
+        { scanId },
+      );
     }
-    if (error instanceof Error && error.message === "bin_reservation_conflict") {
-      return failure("bin_reservation_conflict", `Bin ${bin.code} was just reserved by another operation.`, { scanId });
+    if (
+      error instanceof Error &&
+      error.message === "bin_reservation_conflict"
+    ) {
+      return failure(
+        "bin_reservation_conflict",
+        `Bin ${bin.code} was just reserved by another operation.`,
+        { scanId },
+      );
     }
     if (error instanceof Error && error.message.startsWith("destination_")) {
-      const reason = error.message.slice("destination_".length) as PutawayDestinationEvaluation["reason"];
+      const reason = error.message.slice(
+        "destination_".length,
+      ) as PutawayDestinationEvaluation["reason"];
       const freshContents = await prisma.inventory.findMany({
         where: { binId: bin.id, quantity: { gt: 0 } },
         select: { partId: true, quantity: true },
@@ -419,9 +482,15 @@ export async function prepareGuidedPutaway(
   if (input.imageDataUrl) {
     try {
       const imageUrl = await uploadPutawayPhoto(scanId, input.imageDataUrl);
-      await prisma.movement.update({ where: { id: movement.id }, data: { imageUrl } });
+      await prisma.movement.update({
+        where: { id: movement.id },
+        data: { imageUrl },
+      });
     } catch (error) {
-      console.error("[guided-putaway] photo upload failed, continuing without it:", error);
+      console.error(
+        "[guided-putaway] photo upload failed, continuing without it:",
+        error,
+      );
     }
   }
 
@@ -436,7 +505,9 @@ export async function prepareGuidedPutaway(
 }
 
 /** Move the reserved compatible bin from its shelf to the operator. */
-export async function presentGuidedPutawayBin(movementId: string): Promise<GuidedPutawayResult> {
+export async function presentGuidedPutawayBin(
+  movementId: string,
+): Promise<GuidedPutawayResult> {
   const loaded = await movementWithContext(movementId);
   if (!loaded || !loaded.destinationBin || loaded.type !== "PUTAWAY") {
     return failure("movement_not_found", "That guided putaway does not exist.");
@@ -447,10 +518,17 @@ export async function presentGuidedPutawayBin(movementId: string): Promise<Guide
     data: { status: "PRESENTING" },
   });
   if (claimed.count !== 1) {
-    return failure("invalid_putaway_stage", `This putaway is already ${loaded.status}.`, {
-      ...info,
-      databaseStatus: loaded.status === "AWAITING_PLACEMENT" ? "WAITING_TO_SAVE" : "RESERVED",
-    });
+    return failure(
+      "invalid_putaway_stage",
+      `This putaway is already ${loaded.status}.`,
+      {
+        ...info,
+        databaseStatus:
+          loaded.status === "AWAITING_PLACEMENT"
+            ? "WAITING_TO_SAVE"
+            : "RESERVED",
+      },
+    );
   }
 
   let operation: GantryOperation;
@@ -465,11 +543,15 @@ export async function presentGuidedPutawayBin(movementId: string): Promise<Guide
         where: { id: loaded.id, status: "PRESENTING" },
         data: { status: "VALIDATED" },
       });
-      return failure("gantry_busy", "The gantry became busy before it could fetch the bin.", {
-        ...info,
-        databaseStatus: "RESERVED",
-        gantryStatus: "FAILED",
-      });
+      return failure(
+        "gantry_busy",
+        "The gantry became busy before it could fetch the bin.",
+        {
+          ...info,
+          databaseStatus: "RESERVED",
+          gantryStatus: "FAILED",
+        },
+      );
     }
     throw error;
   }
@@ -477,29 +559,47 @@ export async function presentGuidedPutawayBin(movementId: string): Promise<Guide
   if (operation.status !== "COMPLETED") {
     await prisma.movement.update({
       where: { id: loaded.id },
-      data: { status: "FAILED", completedAt: new Date(), gantryOperationId: operation.operationId },
+      data: {
+        status: "FAILED",
+        completedAt: new Date(),
+        gantryOperationId: operation.operationId,
+      },
     });
-    return failure("gantry_failed", "The bin could not be presented. Its slot remains reserved for reconciliation.", {
-      ...info,
-      databaseStatus: "RECONCILIATION_REQUIRED",
-      gantryStatus: "FAILED",
-      gantryOperationId: operation.operationId,
-    });
+    return failure(
+      "gantry_failed",
+      "The bin could not be presented. Its slot remains reserved for reconciliation.",
+      {
+        ...info,
+        databaseStatus: "RECONCILIATION_REQUIRED",
+        gantryStatus: "FAILED",
+        gantryOperationId: operation.operationId,
+      },
+    );
   }
 
   try {
     await prisma.movement.update({
       where: { id: loaded.id },
-      data: { status: "AWAITING_PLACEMENT", gantryOperationId: operation.operationId },
+      data: {
+        status: "AWAITING_PLACEMENT",
+        gantryOperationId: operation.operationId,
+      },
     });
   } catch (error) {
-    console.error("[guided-putaway] bin presented but status persistence failed", error);
-    return failure("presentation_commit_failed", "The bin reached INTAKE, but its database status could not be saved. Reconciliation is required.", {
-      ...info,
-      databaseStatus: "RECONCILIATION_REQUIRED",
-      gantryStatus: "COMPLETED",
-      gantryOperationId: operation.operationId,
-    });
+    console.error(
+      "[guided-putaway] bin presented but status persistence failed",
+      error,
+    );
+    return failure(
+      "presentation_commit_failed",
+      "The bin reached INTAKE, but its database status could not be saved. Reconciliation is required.",
+      {
+        ...info,
+        databaseStatus: "RECONCILIATION_REQUIRED",
+        gantryStatus: "COMPLETED",
+        gantryOperationId: operation.operationId,
+      },
+    );
   }
 
   return {
@@ -577,10 +677,14 @@ export async function returnGuidedPutawayBin(
     data: { status: "RETURNING", ...verification },
   });
   if (claimed.count !== 1) {
-    return failure("invalid_putaway_stage", `This putaway is already ${loaded.status}.`, {
-      ...info,
-      databaseStatus: loaded.status === "COMPLETED" ? "SAVED" : "RESERVED",
-    });
+    return failure(
+      "invalid_putaway_stage",
+      `This putaway is already ${loaded.status}.`,
+      {
+        ...info,
+        databaseStatus: loaded.status === "COMPLETED" ? "SAVED" : "RESERVED",
+      },
+    );
   }
 
   let operation: GantryOperation;
@@ -595,33 +699,49 @@ export async function returnGuidedPutawayBin(
         where: { id: loaded.id, status: "RETURNING" },
         data: { status: "AWAITING_PLACEMENT" },
       });
-      return failure("gantry_busy", "The gantry became busy before the bin could return. The placement decision is still waiting.", {
-        ...info,
-        databaseStatus: "WAITING_TO_SAVE",
-        gantryStatus: "FAILED",
-      });
+      return failure(
+        "gantry_busy",
+        "The gantry became busy before the bin could return. The placement decision is still waiting.",
+        {
+          ...info,
+          databaseStatus: "WAITING_TO_SAVE",
+          gantryStatus: "FAILED",
+        },
+      );
     }
     await prisma.movement.updateMany({
       where: { id: loaded.id, status: "RETURNING" },
       data: { status: "FAILED", completedAt: new Date() },
     });
-    return failure("gantry_failed", "The bin return could not be started. Inventory was not saved and reconciliation is required.", {
-      ...info,
-      databaseStatus: "RECONCILIATION_REQUIRED",
-      gantryStatus: "FAILED",
-    });
+    return failure(
+      "gantry_failed",
+      "The bin return could not be started. Inventory was not saved and reconciliation is required.",
+      {
+        ...info,
+        databaseStatus: "RECONCILIATION_REQUIRED",
+        gantryStatus: "FAILED",
+      },
+    );
   }
   if (operation.status !== "COMPLETED") {
     await prisma.movement.update({
       where: { id: loaded.id },
-      data: { status: "FAILED", completedAt: new Date(), gantryOperationId: operation.operationId },
+      data: {
+        status: "FAILED",
+        completedAt: new Date(),
+        gantryOperationId: operation.operationId,
+      },
     });
-    return failure("gantry_failed", "The bin did not return to its slot. Inventory was not saved and reconciliation is required.", {
-      ...info,
-      databaseStatus: "RECONCILIATION_REQUIRED",
-      gantryStatus: "FAILED",
-      gantryOperationId: operation.operationId,
-    });
+    return failure(
+      "gantry_failed",
+      "The bin did not return to its slot. Inventory was not saved and reconciliation is required.",
+      {
+        ...info,
+        databaseStatus: "RECONCILIATION_REQUIRED",
+        gantryStatus: "FAILED",
+        gantryOperationId: operation.operationId,
+      },
+    );
   }
 
   try {
@@ -633,13 +753,20 @@ export async function returnGuidedPutawayBin(
       },
     });
   } catch (error) {
-    console.error("[guided-putaway] bin returned but decision persistence failed", error);
-    return failure("putaway_commit_failed", "The bin returned successfully, but Supabase could not record that it is ready to save. Reconciliation is required.", {
-      ...info,
-      databaseStatus: "RECONCILIATION_REQUIRED",
-      gantryStatus: "COMPLETED",
-      gantryOperationId: operation.operationId,
-    });
+    console.error(
+      "[guided-putaway] bin returned but decision persistence failed",
+      error,
+    );
+    return failure(
+      "putaway_commit_failed",
+      "The bin returned successfully, but Supabase could not record that it is ready to save. Reconciliation is required.",
+      {
+        ...info,
+        databaseStatus: "RECONCILIATION_REQUIRED",
+        gantryStatus: "COMPLETED",
+        gantryOperationId: operation.operationId,
+      },
+    );
   }
 
   return {
@@ -657,7 +784,9 @@ export async function returnGuidedPutawayBin(
  * deliberately a separate call so the UI can show movement completion and
  * Supabase persistence as two independent facts.
  */
-export async function commitGuidedPutaway(movementId: string): Promise<GuidedPutawayResult> {
+export async function commitGuidedPutaway(
+  movementId: string,
+): Promise<GuidedPutawayResult> {
   const loaded = await movementWithContext(movementId);
   if (!loaded || !loaded.destinationBin || loaded.type !== "PUTAWAY") {
     return failure("movement_not_found", "That guided putaway does not exist.");
@@ -666,11 +795,16 @@ export async function commitGuidedPutaway(movementId: string): Promise<GuidedPut
   const placed = loaded.status === "READY_TO_COMMIT";
   const cancelled = loaded.status === "READY_TO_CANCEL";
   if (!placed && !cancelled) {
-    return failure("invalid_putaway_stage", `This putaway is ${loaded.status}, not ready to save.`, {
-      ...info,
-      databaseStatus: loaded.status === "COMPLETED" ? "SAVED" : "RECONCILIATION_REQUIRED",
-      gantryStatus: "COMPLETED",
-    });
+    return failure(
+      "invalid_putaway_stage",
+      `This putaway is ${loaded.status}, not ready to save.`,
+      {
+        ...info,
+        databaseStatus:
+          loaded.status === "COMPLETED" ? "SAVED" : "RECONCILIATION_REQUIRED",
+        gantryStatus: "COMPLETED",
+      },
+    );
   }
 
   try {
@@ -712,18 +846,26 @@ export async function commitGuidedPutaway(movementId: string): Promise<GuidedPut
         });
         await tx.movement.update({
           where: { id: loaded.id },
-          data: { status: "CANCELLED", completedAt: new Date(), idempotencyKey: null },
+          data: {
+            status: "CANCELLED",
+            completedAt: new Date(),
+            idempotencyKey: null,
+          },
         });
       });
     }
   } catch (error) {
     console.error("[guided-putaway] final Supabase commit failed", error);
-    return failure("putaway_commit_failed", "The gantry completed, but Supabase could not save the final warehouse state. Reconciliation is required.", {
-      ...info,
-      databaseStatus: "RECONCILIATION_REQUIRED",
-      gantryStatus: "COMPLETED",
-      gantryOperationId: loaded.gantryOperationId ?? undefined,
-    });
+    return failure(
+      "putaway_commit_failed",
+      "The gantry completed, but Supabase could not save the final warehouse state. Reconciliation is required.",
+      {
+        ...info,
+        databaseStatus: "RECONCILIATION_REQUIRED",
+        gantryStatus: "COMPLETED",
+        gantryOperationId: loaded.gantryOperationId ?? undefined,
+      },
+    );
   }
 
   return {
@@ -735,4 +877,11 @@ export async function commitGuidedPutaway(movementId: string): Promise<GuidedPut
     gantryOperationId: loaded.gantryOperationId ?? undefined,
     inventoryQuantityAdded: placed ? 1 : 0,
   };
+}
+function uploadBinVerificationPhoto(
+  id: string,
+  code: string,
+  verificationImageDataUrl: string,
+): string | PromiseLike<string> {
+  throw new Error("Function not implemented.");
 }
