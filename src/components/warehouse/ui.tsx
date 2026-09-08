@@ -63,12 +63,14 @@ export function Panel({
   children,
   className = "",
   tone,
+  bodyClassName = "",
 }: {
   title: string;
   meta?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  bodyClassName?: string;
   /** Highlights a panel that needs the operator's attention. */
   tone?: "attention";
 }) {
@@ -87,7 +89,7 @@ export function Panel({
           {actions}
         </div>
       </header>
-      <div className="min-w-0 flex-1 p-4">{children}</div>
+      <div className={`min-h-0 min-w-0 flex-1 p-4 ${bodyClassName}`}>{children}</div>
     </section>
   );
 }

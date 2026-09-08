@@ -215,10 +215,12 @@ export function WarehouseSessionProvider({ children }: { children: React.ReactNo
   // Authoritative warehouse state.
   const [actionInFlight, setActionInFlight] = useState(false);
   const { overview, loading, error: overviewError, refresh } =
-    useWarehouseOverview(actionInFlight);
+    useWarehouseOverview(actionInFlight || agentBusy);
   const { trace, error: traceError } = useAgentTrace(traceId);
   const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
-  const { status: gantry, error: gantryError } = useGantryStatus(actionInFlight);
+  const { status: gantry, error: gantryError } = useGantryStatus(
+    actionInFlight || agentBusy || overview?.latestAudit?.status === "RUNNING",
+  );
 
   useEffect(() => {
     getAllShots()

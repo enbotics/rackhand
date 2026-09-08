@@ -96,6 +96,8 @@ export class SimulatedGantryController implements GantryController {
   private lastError: string | null = null;
   private history: GantryOperation[] = [];
   private pendingFailure: GantryFailureKind | null = null;
+  private carrying = false;
+  private motion: NonNullable<GantryStatus["motion"]> | null = null;
 
   private readonly moveDelayMs: number;
   private readonly pickDelayMs: number;
@@ -122,6 +124,12 @@ export class SimulatedGantryController implements GantryController {
       homed: this.homed,
       activeOperationId: this.activeOperation?.operationId ?? null,
       lastError: this.lastError,
+      carrying: this.carrying,
+      operation: this.activeOperation ?? this.history[0] ?? null,
+      motion: this.motion ? {
+        ...this.motion,
+        elapsedMs: Math.min(this.motion.durationMs, Date.now() - this.motion.startedAt),
+      } : null,
     };
   }
 
@@ -216,6 +224,8 @@ export class SimulatedGantryController implements GantryController {
     this.lastError = null;
     this.history = [];
     this.pendingFailure = null;
+    this.carrying = false;
+    this.motion = null;
   }
 
   /* ------------------------------------------------------------- internals */
@@ -271,11 +281,20 @@ export class SimulatedGantryController implements GantryController {
 
     for (const phase of phases) {
       this.state = phase.state;
+      this.motion = {
+        from: this.currentLocation,
+        to: phase.state === "HOMING" ? null : phase.arriveAt ?? this.currentLocation,
+        startedAt: Date.now(),
+        durationMs: phase.delayMs,
+        elapsedMs: 0,
+      };
       await sleep(phase.delayMs);
 
       // Checked before arriving: a movement that times out never got there.
       if (injected && phase.failOn === injected) return this.finish(operation, injected);
       if (phase.arriveAt !== undefined) this.currentLocation = phase.arriveAt;
+      if (phase.state === "PICKING") this.carrying = true;
+      if (phase.state === "DROPPING") this.carrying = false;
     }
 
     return this.finish(operation, null);
@@ -312,6 +331,7 @@ export class SimulatedGantryController implements GantryController {
     };
 
     this.activeOperation = null;
+    this.motion = null;
     this.state = "IDLE";
     this.lastError = failure ?? null;
 

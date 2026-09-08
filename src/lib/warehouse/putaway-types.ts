@@ -64,6 +64,10 @@ export const PUTAWAY_FAILURE_REASONS = [
   "putaway_in_progress",
   /** A supplied catalog resolution was missing, unconfirmed, expired or for another scan. */
   "catalog_resolution_invalid",
+  /** No-scan direct return (returnCheckedOutBin): nothing is checked out at all. */
+  "no_checked_out_bin",
+  /** No-scan direct return: more than one bin is checked out and none was named. */
+  "checked_out_bin_ambiguous",
 ] as const;
 export type PutawayFailureReason = (typeof PUTAWAY_FAILURE_REASONS)[number];
 

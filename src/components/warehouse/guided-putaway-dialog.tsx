@@ -147,36 +147,48 @@ function putawayBlockedReason(
   }
 }
 
-function GantryMotion({ phase, binCode }: { phase: Phase; binCode: string | null }) {
-  const moving = phase === "FETCHING" || phase === "RETURNING";
+/**
+ * What the machine is doing, in one line of plain text.
+ *
+ * There used to be a small abstract box sliding along a track here. It has
+ * been removed: the digital warehouse rack behind this dialog now draws the
+ * arm at its real position on the real shelf, for putaway, retrieval and
+ * audits alike, and a second, cruder picture of the same trip could only
+ * disagree with it.
+ */
+function TransferNote({ phase, binCode }: { phase: Phase; binCode: string | null }) {
+  const slot = binCode ?? "the reserved slot";
+  switch (phase) {
+    case "RESERVING":
+      return <TransferLine>Reserving {slot}.</TransferLine>;
+    case "FETCHING":
+      return (
+        <TransferLine busy>
+          Bringing bin {slot} to INTAKE · approximately 5 seconds.
+        </TransferLine>
+      );
+    case "AWAITING_PLACEMENT":
+      return <TransferLine>Bin {slot} is at INTAKE, waiting for placement.</TransferLine>;
+    case "RETURNING":
+      return (
+        <TransferLine busy>
+          Returning bin {slot} to the shelf · approximately 5 seconds.
+        </TransferLine>
+      );
+    case "SAVING":
+      return <TransferLine busy>Recording the placement.</TransferLine>;
+    default:
+      return null;
+  }
+}
+
+function TransferLine({ children, busy }: { children: React.ReactNode; busy?: boolean }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-bg-elevated p-4">
-      <div className="relative mx-auto h-28 max-w-2xl">
-        <div className="absolute left-4 right-4 top-5 h-1 rounded-full bg-line" />
-        <div className="absolute left-4 top-12 flex h-14 w-24 items-center justify-center rounded-lg border border-accent-soft bg-accent-tint font-mono text-[10px] text-accent">
-          INTAKE
-        </div>
-        <div className="absolute right-4 top-12 flex h-14 w-24 items-center justify-center rounded-lg border border-line bg-surface font-mono text-[10px] text-ink-muted">
-          {binCode ?? "SLOT"}
-        </div>
-        <div
-          className={`absolute top-2 h-10 w-12 rounded-md border border-warn/60 bg-warn-soft shadow-[0_0_22px_rgba(217,164,65,0.18)] ${
-            phase === "FETCHING"
-              ? "animate-bin-fetch"
-              : phase === "RETURNING"
-                ? "animate-bin-return"
-                : phase === "AWAITING_PLACEMENT"
-                  ? "gantry-at-intake"
-                  : "gantry-at-slot"
-          }`}
-          aria-hidden="true"
-        >
-          <div className="mx-auto mt-2 h-5 w-1 rounded-full bg-warn" />
-        </div>
-      </div>
-      <p className="text-center font-mono text-[10px] text-ink-faint">
-        {moving ? "Simulated transfer · approximately 5 seconds" : "Guided bin transfer"}
-      </p>
+    <div className="flex items-center gap-3 rounded-xl border border-line bg-bg-elevated px-3 py-2.5">
+      {busy && (
+        <span className="animate-spin-slow h-3.5 w-3.5 shrink-0 rounded-full border-2 border-line border-t-accent" />
+      )}
+      <p className="text-xs text-ink-muted">{children}</p>
     </div>
   );
 }
@@ -230,9 +242,6 @@ export function GuidedPutawayDialog({
   onWarehouseChanged: () => void;
 }) {
   const scanId = scanState.scan?.scanResult?.scanId ?? null;
-  // Kept temporarily for the identification UI above; physical guided
-  // putaway is disabled and client movement now goes through agent HITL.
-  const legacyGuidedPutawayEnabled = false;
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("CHOOSING");
   const [selectedBin, setSelectedBin] = useState<string | null>(null);
@@ -290,20 +299,14 @@ export function GuidedPutawayDialog({
   );
 
   /**
-   * Opens the popup the INSTANT a capture starts, not once matching finishes.
-   * MEASURING is entered exactly once per new capture (handleCapture in
-   * session.tsx always sets it first). Adjusted directly during render
-   * (React's own recommended pattern for "reset state when an external value
-   * changes") rather than in a useEffect, which would otherwise fire a
-   * cascade of extra renders for what is really just "this render already
-   * knows the answer." Everything below CurrentScanPanel still waits for an
-   * actual scan object (see the `scanState.scan &&` guard further down), so
-   * this only controls WHEN the popup appears and resets, not what it shows.
+   * Keep the camera scene visible while measurement and matching run.
+   * Reset on capture, then reveal the actual result (including a failure)
+   * once the pipeline settles. No fabricated countdown or completion state.
    */
   if (scanState.phase !== lastSeenPhase) {
     setLastSeenPhase(scanState.phase);
     if (scanState.phase === "MEASURING") {
-      setOpen(true);
+      setOpen(false);
       setPhase("CHOOSING");
       setSelectedBin(null);
       setOperation(null);
@@ -312,6 +315,7 @@ export function GuidedPutawayDialog({
       setVerificationError(null);
       setError(null);
     }
+    if (scanState.phase === "READY" || scanState.phase === "FAILED") setOpen(true);
   }
 
   useEffect(() => {
@@ -514,7 +518,7 @@ export function GuidedPutawayDialog({
   // Nothing captured yet — genuinely nothing to show, not even a collapsed
   // reopen button. Every other phase (MEASURING, FAILED, MATCHING, READY) has
   // something worth surfacing, even before a scan object exists.
-  if (scanState.phase === "EMPTY") return null;
+  if (["EMPTY", "MEASURING", "MATCHING"].includes(scanState.phase)) return null;
   if (!open) {
     return (
       <button type="button" onClick={() => setOpen(true)} className={BUTTON_VARIANTS.secondary}>
@@ -627,7 +631,7 @@ export function GuidedPutawayDialog({
           </section>
         )}
 
-        {phase === "CHOOSING" && identityReady && legacyGuidedPutawayEnabled && (
+        {phase === "CHOOSING" && identityReady && (
           <section
             className="animate-stage-reveal rounded-xl border border-line bg-surface p-4"
             data-guided-step="slots"
@@ -773,28 +777,6 @@ export function GuidedPutawayDialog({
           </section>
         )}
 
-        {phase === "CHOOSING" && identityReady && !legacyGuidedPutawayEnabled && (
-          <section className="animate-stage-reveal rounded-xl border border-success/35 bg-success-soft p-4">
-            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-success">
-              Identification complete
-            </p>
-            <p className="mt-2 text-sm text-ink">
-              The camera result and photo are ready. Ask the Warehouse Agent to put this item away;
-              the physical action will appear as a separate approval with gantry status.
-            </p>
-            {confirmed && (
-              <button
-                type="button"
-                onClick={onReconsiderIdentity}
-                disabled={identityBusy}
-                className={`${BUTTON_VARIANTS.secondary} mt-4`}
-              >
-                ← {identityBusy ? "Opening identity choices…" : "Choose a different identity"}
-              </button>
-            )}
-          </section>
-        )}
-
         {phase !== "CHOOSING" && (
           <>
             <div className="grid gap-3">
@@ -809,7 +791,7 @@ export function GuidedPutawayDialog({
                 status={gantryStatus}
               />
             </div>
-            <GantryMotion phase={phase} binCode={destination} />
+            <TransferNote phase={phase} binCode={destination} />
           </>
         )}
 

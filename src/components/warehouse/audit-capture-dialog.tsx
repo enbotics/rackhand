@@ -1,177 +1,126 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useSharedCamera } from "@/lib/camera-context";
 import type { Shot } from "@/lib/shots-db";
+import { CapturePopup } from "./capture-popup";
 import { Modal } from "./modal";
-import { BUTTON_VARIANTS, ErrorNote } from "./ui";
+import { BUTTON_VARIANTS } from "./ui";
+import { useWarehouseSession } from "./session";
 
-interface PendingCapture {
-  captureId: string;
-  binCode: string;
+interface PendingCapture { captureId: string; binCode: string }
+interface CaptureState {
+  pending: PendingCapture | null;
+  submitting: boolean;
+  result: "success" | "failure" | null;
+  error: string | null;
+  capture: (shot?: Shot) => Promise<void>;
+  close: () => void;
+}
+const CaptureContext = createContext<CaptureState | null>(null);
+export function useAuditCapture() {
+  const value = useContext(CaptureContext);
+  if (!value) throw new Error("AuditCaptureProvider is missing");
+  return value;
 }
 
-/**
- * The operator-visible replacement for the old silent AuditCameraBridge.
- *
- * Same server contract (poll for a pending capture, upload the frame to the
- * same capture id) — the only thing that changed is that submitting the
- * frame is now a deliberate click on a live preview, matching the guided
- * putaway placement-verification dialog's shape, instead of an invisible
- * background grab the operator had no part in.
- */
-export function AuditCaptureDialog({
-  captureFrame,
-  getCameraStream,
-}: {
-  captureFrame: () => Shot | null;
-  getCameraStream: () => MediaStream | null;
-}) {
+/** Single request owner above navigation. The scene and fallback UI share it. */
+export function AuditCaptureProvider({ children }: { children: ReactNode }) {
+  const camera = useSharedCamera();
   const [pending, setPending] = useState<PendingCapture | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<"success" | "failure" | null>(null);
+  const [result, setResult] = useState<CaptureState["result"]>(null);
   const [error, setError] = useState<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const inFlight = useRef(false);
   const handledId = useRef<string | null>(null);
+  const autoStartedFor = useRef<string | null>(null);
 
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
+    const controller = new AbortController();
+    async function poll() {
       try {
-        // Never interrupt a capture already being submitted or reviewed —
-        // only look for a NEW one once this one is fully closed out.
-        if (!submitting && result === null) {
-          const response = await fetch("/api/warehouse/audits/captures/pending", { cache: "no-store" });
-          const data = response.ok
-            ? ((await response.json()) as { captureId: string | null; binCode?: string })
-            : null;
-          if (!stopped && data?.captureId && data.captureId !== handledId.current) {
-            setPending({ captureId: data.captureId, binCode: data.binCode ?? "bin" });
-            setError(null);
-          } else if (!stopped && !data?.captureId) {
-            setPending(null);
+        if (!inFlight.current) {
+          const response = await fetch("/api/warehouse/audits/captures/pending", {
+            cache: "no-store", signal: controller.signal,
+          });
+          if (response.ok) {
+            const data = await response.json() as { captureId: string | null; binCode?: string };
+            if (!stopped && !inFlight.current) {
+              if (data.captureId && data.captureId !== handledId.current) {
+                setPending((previous) => previous?.captureId === data.captureId ? previous
+                  : { captureId: data.captureId!, binCode: data.binCode ?? "bin" });
+                // Multi-bin runs must not wait for dismissal of the previous result.
+                setResult(null);
+              } else if (!data.captureId && result === null) setPending(null);
+            }
           }
         }
-      } catch {
-        // The rest of the app stays usable when this optional poll misses.
-      }
+      } catch { /* Transient poll failures do not cancel a pending capture. */ }
       if (!stopped) timer = setTimeout(poll, 1_000);
-    };
+    }
     timer = setTimeout(poll, 0);
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [submitting, result]);
+    return () => { stopped = true; controller.abort(); clearTimeout(timer); };
+  }, [result]);
 
   useEffect(() => {
-    if (!pending) return;
-    const video = videoRef.current;
-    if (video) video.srcObject = getCameraStream();
-  }, [pending, getCameraStream]);
+    if (!pending || camera.status !== "idle" || autoStartedFor.current === pending.captureId) return;
+    autoStartedFor.current = pending.captureId;
+    void camera.start();
+  }, [camera, pending]);
 
-  async function capture() {
-    if (!pending) return;
-    const shot = captureFrame();
-    if (!shot) {
-      setError("The camera is not ready. Start the live camera, then retry.");
-      return;
-    }
+  async function capture(providedShot?: Shot) {
+    if (!pending || inFlight.current || result !== null) return;
+    const shot = providedShot ?? camera.captureFrame();
+    if (!shot) { setError("Start the camera, then capture again."); return; }
+    inFlight.current = true;
     setSubmitting(true);
     setError(null);
     try {
       const response = await fetch(`/api/warehouse/audits/captures/${pending.captureId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageDataUrl: shot.dataUrl,
-          imageWidth: shot.width,
-          imageHeight: shot.height,
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl: shot.dataUrl, imageWidth: shot.width, imageHeight: shot.height }),
       });
       handledId.current = pending.captureId;
       setResult(response.ok ? "success" : "failure");
     } catch {
       handledId.current = pending.captureId;
       setResult("failure");
-    } finally {
-      setSubmitting(false);
-    }
+    } finally { inFlight.current = false; setSubmitting(false); }
   }
 
   function close() {
-    setPending(null);
-    setResult(null);
-    setError(null);
+    if (inFlight.current) return;
+    setResult(null); setPending(null); setError(null);
   }
 
-  if (!pending) return null;
+  return <CaptureContext.Provider value={{ pending, submitting, result, error, capture, close }}>
+    {children}
+    <AuditCaptureDialog />
+  </CaptureContext.Provider>;
+}
 
-  return (
-    <Modal
-      title={`Auditing ${pending.binCode}`}
-      onClose={close}
-      dismissible={!submitting}
-      maxWidthClassName="max-w-2xl"
-    >
+/** Preview -> dismiss -> warehouse scanning animation -> result popup. */
+export function AuditCaptureDialog() {
+  const audit = useAuditCapture();
+  const session = useWarehouseSession();
+  if (!audit.pending) return null;
+  if (audit.result !== null) return (
+    <Modal title={`Capture · ${audit.pending.binCode}`} onClose={audit.close} maxWidthClassName="max-w-lg">
       <div className="space-y-4">
-        <p className="text-sm text-ink">
-          The gantry has presented <strong>{pending.binCode}</strong> for a physical inventory
-          check. Line it up in the frame below, then capture.
+        <p className={audit.result === "success" ? "text-success" : "text-danger"}>
+          {audit.result === "success" ? "Frame analyzed" : "Capture could not be confirmed"}
         </p>
-
-        <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-line bg-black/40">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="h-full w-full object-cover"
-          />
-        </div>
-
-        {error && <ErrorNote>{error}</ErrorNote>}
-
-        {result === null && (
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => void capture()}
-              disabled={submitting}
-              className={BUTTON_VARIANTS.approve}
-            >
-              {submitting ? "Analyzing…" : "Capture & Analyze"}
-            </button>
-          </div>
-        )}
-
-        {result === "success" && (
-          <div className="rounded-xl border border-success/40 bg-success-soft p-4 text-success">
-            <p className="font-semibold">Image captured</p>
-            <p className="mt-1 text-xs leading-relaxed">
-              The frame was analyzed and the bin is being returned to the shelf. Full results
-              appear in the Inventory Auditor panel.
-            </p>
-          </div>
-        )}
-
-        {result === "failure" && (
-          <div className="rounded-xl border border-danger/40 bg-danger-soft p-4 text-danger">
-            <p className="font-semibold">Capture failed</p>
-            <p className="mt-1 text-xs leading-relaxed">
-              The bin will still be returned to the shelf; this audit is flagged for review.
-            </p>
-          </div>
-        )}
-
-        {result !== null && (
-          <div className="flex justify-end">
-            <button type="button" onClick={close} className={BUTTON_VARIANTS.secondary}>
-              Close
-            </button>
-          </div>
-        )}
+        <p className="text-sm text-ink-muted">Follow the bin’s return and final inventory result in the Warehouse Agent conversation.</p>
+        <button type="button" onClick={audit.close} className={BUTTON_VARIANTS.secondary}>Back to warehouse</button>
       </div>
     </Modal>
+  );
+  if (audit.submitting) return null;
+  return (
+    <CapturePopup key={audit.pending.captureId} title={`Audit capture · ${audit.pending.binCode}`}
+      onClose={audit.close} dismissible={false} disabled={!!session.gantry?.activeOperationId}
+      onCapture={(shot) => void audit.capture(shot)} captureLabel="Capture bin for audit" error={audit.error} />
   );
 }
