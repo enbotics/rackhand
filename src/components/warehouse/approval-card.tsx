@@ -132,36 +132,30 @@ export function ApprovalCard({
               Executing… the warehouse service is validating and driving the gantry.
             </p>
           </div>
-          <div className="relative h-12 overflow-hidden rounded-lg border border-line bg-bg-elevated">
-            <div className="absolute left-5 right-5 top-1/2 h-px bg-line" />
-            <span className="absolute left-3 top-2 font-mono text-[8px] uppercase text-ink-faint">
+          {/*
+           * No animation here, deliberately. The digital warehouse panel on
+           * this same page draws the arm at its real, position-accurate place
+           * on the rack; a second abstract box sliding along a line beside it
+           * showed the same trip less truthfully. This card states the route
+           * and the controller's status in words instead.
+           */}
+          <div className="rounded-lg border border-line bg-bg-elevated px-3 py-2">
+            <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
+              Route
+            </p>
+            <p className="mt-1 font-mono text-[11px] text-ink-muted">
               {outcome.summary?.action === "INVENTORY_AUDIT"
-                ? "SCAN_STATION"
-                : outcome.summary?.action === "RETRIEVAL"
-                ? outcome.summary?.destination ?? "OUTPUT"
-                : outcome.summary?.source ?? "Station"}
-            </span>
-            <span className="absolute right-3 top-2 font-mono text-[8px] uppercase text-ink-faint">
-              {outcome.summary?.action === "INVENTORY_AUDIT"
-                ? outcome.summary?.source ?? "Shelf bins"
-                : outcome.summary?.action === "RETRIEVAL"
-                ? outcome.summary?.source ?? "Shelf"
-                : outcome.summary?.destination ?? "Slot"}
-            </span>
-            <div
-              className={`absolute top-6 h-4 w-8 rounded border border-accent bg-accent-tint shadow-[0_0_14px_rgba(91,157,217,0.4)] ${
-                outcome.summary?.action === "INVENTORY_AUDIT"
-                  ? "animate-bin-audit"
-                  : outcome.summary?.action === "RETRIEVAL"
-                    ? "animate-bin-fetch"
-                    : "animate-bin-return"
-              }`}
-            />
+                ? `${outcome.summary?.source ?? "Shelf bins"} → SCAN_STATION`
+                : `${outcome.summary?.source ?? "?"} → ${outcome.summary?.destination ?? "?"}`}
+            </p>
           </div>
           <div className="flex justify-between font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
             <span>Gantry {gantry?.state ?? "STARTING"}</span>
             <span>{gantry?.currentLocation ?? "HOME"}</span>
           </div>
+          <p className="text-[11px] text-ink-faint">
+            The arm&apos;s live position is shown on the digital warehouse rack.
+          </p>
         </div>
       )}
 

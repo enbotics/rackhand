@@ -22,7 +22,7 @@ import { isTerminalTraceStatus, type TraceSummaryView, type TraceView } from "@/
 const OVERVIEW_IDLE_POLL_MS = 20_000;
 const OVERVIEW_ACTIVE_POLL_MS = 1_000;
 /** Only while something is actually moving. */
-const GANTRY_ACTIVE_POLL_MS = 800;
+const GANTRY_ACTIVE_POLL_MS = 250;
 const GANTRY_IDLE_POLL_MS = 5_000;
 
 export interface OverviewState {
@@ -116,7 +116,12 @@ export function useGantryStatus(active: boolean): GantryState {
         }
         busy = busy || next.state !== "IDLE";
       } catch {
-        if (!stopped) setError("Gantry status unavailable.");
+        if (!stopped) {
+          setError("Gantry status unavailable.");
+          // Freeze the visual at its last pose instead of implying that an
+          // unobserved physical move is still progressing successfully.
+          setStatus((previous) => previous ? { ...previous, state: "OFFLINE", motion: null } : null);
+        }
       }
       if (!stopped) {
         timer = setTimeout(tick, busy ? GANTRY_ACTIVE_POLL_MS : GANTRY_IDLE_POLL_MS);

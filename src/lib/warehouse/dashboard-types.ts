@@ -24,6 +24,8 @@ export interface BinContentView {
   sku: string;
   canonicalName: string;
   quantity: number;
+  /** Catalog reference image for identifying the stored object visually. */
+  catalogImageUrl?: string | null;
   /**
    * The photo from the most recent COMPLETED putaway of this part into this
    * bin, if one was captured. Null for stock that predates the photo feature,
@@ -103,6 +105,8 @@ export interface BinAuditView {
   previousQuantity: number | null;
   newQuantity: number | null;
   evidenceUrl: string | null;
+  /** True for a REVIEW_REQUIRED audit a human can still act on: known part, countable observation. */
+  awaitingConfirmation: boolean;
   reason: string | null;
 }
 

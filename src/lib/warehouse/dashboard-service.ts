@@ -159,6 +159,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
         sku: row.part.sku,
         canonicalName: row.part.canonicalName,
         quantity: row.quantity,
+        catalogImageUrl: row.part.imageUrl,
         imageUrl: putawayImages.get(`${row.partId}:${bin.id}`) ?? null,
       }));
 
@@ -248,6 +249,13 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
           previousQuantity: audit.previousQuantity,
           newQuantity: audit.newQuantity,
           evidenceUrl: audit.evidenceUrl,
+          // Confirmable only with a known part and a countable observation —
+          // a "physical stock, no catalog record" flag has neither and stays
+          // a read-only entry here.
+          awaitingConfirmation:
+            audit.status === "REVIEW_REQUIRED" &&
+            audit.expectedPartId !== null &&
+            audit.observedQuantity !== null,
           reason: audit.errorCode,
         })),
       }

@@ -691,6 +691,41 @@ async function summarizeToolCall(
     };
   }
 
+  // A putaway call with no attached scan can ONLY be a plain checked-out
+  // return (see execute-putaway.ts) — so the preview names the exact bin,
+  // part and quantity that call will restore, unchanged, rather than the
+  // scan-based guesses below (which do not apply here at all).
+  if (toolName === "execute_putaway" && !scanResult) {
+    const requestedCode =
+      typeof args.binCode === "string" && args.binCode.trim() !== ""
+        ? args.binCode.trim().toUpperCase()
+        : null;
+    const checkedOutBins = await prisma.bin.findMany({
+      where: {
+        status: "CHECKED_OUT",
+        ...(requestedCode ? { code: requestedCode } : {}),
+      },
+      include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
+    });
+    const bin =
+      (requestedCode
+        ? checkedOutBins[0]
+        : checkedOutBins.length === 1
+          ? checkedOutBins[0]
+          : undefined) ?? null;
+    const row = bin?.inventory[0] ?? null;
+    return {
+      action: "PUTAWAY",
+      sku: row?.part.sku ?? null,
+      canonicalName: row?.part.canonicalName ?? null,
+      source: "OUTPUT",
+      destination: bin?.code ?? requestedCode ?? "(chosen at execution)",
+      quantity: row?.quantity ?? null,
+      scope: "COUNTED_UNITS",
+      capacity: row && bin ? { before: row.quantity, after: row.quantity, limit: bin.capacity } : null,
+    };
+  }
+
   let sku: string | null = null;
   let canonicalName: string | null = null;
   let resolvedPartId: string | null = null;

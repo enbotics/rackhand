@@ -4,7 +4,7 @@ import "./globals.css";
 import { WarehouseNav } from "@/components/warehouse/nav";
 import { WarehouseSessionProvider } from "@/components/warehouse/session";
 import { CameraProvider } from "@/lib/camera-context";
-import { AuditCaptureDialog } from "@/components/warehouse/audit-capture-dialog";
+import { AuditCaptureProvider } from "@/components/warehouse/audit-capture-dialog";
 
 const sora = Sora({
   variable: "--font-sora",
@@ -47,12 +47,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         */}
         <CameraProvider>
           <WarehouseSessionProvider>
-            <div className="relative z-10 flex flex-1 flex-col">
-              <WarehouseNav />
-              <main className="flex flex-1 flex-col">{children}</main>
-            </div>
-            {/* Pops up wherever the operator is standing, on any page. */}
-            <AuditCaptureDialog />
+            <AuditCaptureProvider>
+              <div className="relative z-10 flex flex-1 flex-col">
+                <WarehouseNav />
+                <main className="flex flex-1 flex-col">{children}</main>
+              </div>
+            </AuditCaptureProvider>
           </WarehouseSessionProvider>
         </CameraProvider>
       </body>

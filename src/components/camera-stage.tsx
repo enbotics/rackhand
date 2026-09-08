@@ -27,14 +27,21 @@ import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/i
 export function CameraStage({
   onCapture,
   scanning = false,
+  compact = false,
+  disabled = false,
+  captureLabel = "Capture & identify",
 }: {
   onCapture: (shot: Shot) => void;
   /** True while the captured frame is being measured and matched. */
   scanning?: boolean;
+  compact?: boolean;
+  disabled?: boolean;
+  captureLabel?: string;
 }) {
   const camera = useSharedCamera();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [flash, setFlash] = useState<"off" | "on" | "fade">("off");
+  const [capturedFrame, setCapturedFrame] = useState<string | null>(null);
   const [resolution, setResolution] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
@@ -66,6 +73,7 @@ export function CameraStage({
   const capture = useCallback(() => {
     const shot = camera.captureFrame();
     if (!shot) return;
+    setCapturedFrame(shot.dataUrl);
     // paint the flash fully opaque with no transition, then fade it out
     // on the next frame — avoids relying on CSS animation fill-mode
     setFlash("on");
@@ -93,11 +101,8 @@ export function CameraStage({
           <span className={statusTone}>{statusLabel}</span>
         </div>
 
-        {/* Was a fixed aspect-video box — now grows to fill whatever height
-            the panel actually has, so the camera stage never leaves blank
-            space beneath it. object-cover on the <video> keeps the live feed
-            filling this box cleanly regardless of its resulting aspect ratio. */}
-        <div className="relative min-h-[260px] w-full flex-1 overflow-hidden bg-black/40">
+        {/* Contain the whole frame: cropping can hide calibration markers. */}
+        <div className={`relative w-full overflow-hidden bg-black/40 ${compact ? "h-[220px]" : "min-h-[260px] flex-1"}`}>
           {camera.status === "live" && (
             <video
               ref={videoRef}
@@ -110,7 +115,7 @@ export function CameraStage({
                   height: event.currentTarget.videoHeight,
                 })
               }
-              className={`h-full w-full object-cover ${camera.mirrored ? "-scale-x-100" : ""}`}
+              className={`h-full w-full object-contain ${camera.mirrored ? "-scale-x-100" : ""}`}
             />
           )}
 
@@ -132,7 +137,7 @@ export function CameraStage({
                     <h3 className="text-base font-semibold text-ink">Camera standby</h3>
                     <p className="max-w-xs text-xs leading-relaxed text-ink-muted">
                       Mount the overhead camera above the calibration mat, then start the preview.
-                      Frames are measured server-side and never leave this machine.
+                      Captured frames are sent to the configured vision service for analysis.
                     </p>
                   </div>
                   <button
@@ -173,6 +178,21 @@ export function CameraStage({
                   </button>
                 </>
               )}
+            </div>
+          )}
+
+          {scanning && (
+            <div className="station-scan absolute inset-0" role="status">
+              {capturedFrame && (
+                // A local, already captured data URL; never re-capture during analysis.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={capturedFrame} alt="Captured frame being analyzed" className="h-full w-full object-contain" />
+              )}
+              <div className="station-scan-grid absolute inset-0" aria-hidden="true" />
+              <div className="station-scan-beam absolute inset-x-0" aria-hidden="true" />
+              <div className="absolute inset-x-0 bottom-4 flex justify-center">
+                <span className="rounded-full border border-cyan-300/30 bg-slate-950/90 px-4 py-2 font-mono text-[10px] tracking-wider text-cyan-200">ANALYZING CAPTURED FRAME…</span>
+              </div>
             </div>
           )}
 
@@ -245,10 +265,10 @@ export function CameraStage({
             <button
               type="button"
               onClick={capture}
-              disabled={camera.status !== "live" || scanning}
+              disabled={camera.status !== "live" || scanning || disabled}
               className="rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-2 disabled:pointer-events-none disabled:opacity-40"
             >
-              {scanning ? "Scanning…" : "Scan Part"}
+              {scanning ? "Analyzing…" : captureLabel}
             </button>
           </div>
         </div>

@@ -9,18 +9,18 @@ datasource db {
 
 /// A canonical warehouse catalog item. Authoritative identity.
 model Part {
-  id            String              @id @default(cuid())
-  sku           String              @unique
-  canonicalName String
-  category      String?
-  description   String?
+  id                String              @id @default(cuid())
+  sku               String              @unique
+  canonicalName     String
+  category          String?
+  description       String?
   /// Nullable throughout: the catalog may know a part before it knows its
   /// size. Never negative — enforced by the validation layer.
-  lengthMM      Float?
-  widthMM       Float?
-  heightMM      Float?
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
+  lengthMM          Float?
+  widthMM           Float?
+  heightMM          Float?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
   /// Whether this kind of part is typically checked out and returned (a
   /// shared tool like a screwdriver) rather than consumed/installed by
   /// whoever takes it (small hardware, single-use items). Classified once by
@@ -28,7 +28,7 @@ model Part {
   /// src/lib/agents/returnability-classifier.ts) — never inferred from
   /// stock levels or movement history. Defaults false: an unclassified or
   /// misclassified part is safer treated as "not shared" than the reverse.
-  returnable    Boolean             @default(false)
+  returnable        Boolean             @default(false)
   /// The representative photo used to RECOGNIZE this part — shown as a
   /// clickable candidate tile when a human disambiguates an AMBIGUOUS scan,
   /// so identity is chosen by sight, not by reading a generated SKU. Set
@@ -37,11 +37,11 @@ model Part {
   /// seeded demo catalog, or a part created via the plain parts API).
   /// Unrelated to Movement.imageUrl, which is a per-putaway-event audit photo
   /// for the bin-detail modal, not an identification aid.
-  imageUrl      String?
-  resolutions   CatalogResolution[]
-  inventory     Inventory[]
-  movements     Movement[]
+  imageUrl          String?
   expectedBinAudits BinAudit[]
+  resolutions       CatalogResolution[]
+  inventory         Inventory[]
+  movements         Movement[]
 
   @@index([category])
 }
@@ -57,10 +57,10 @@ model Bin {
   capacity             Int         @default(100)
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
+  binAudits            BinAudit[]
   inventory            Inventory[]
   movementsToThisBin   Movement[]  @relation("MovementDestination")
   movementsFromThisBin Movement[]  @relation("MovementSource")
-  binAudits            BinAudit[]
 
   @@index([status])
 }
@@ -307,7 +307,7 @@ model InventoryAuditRun {
 
 /// Persisted physical-vs-digital observation for one bin.
 model BinAudit {
-  id                     String             @id @default(cuid())
+  id                     String               @id @default(cuid())
   auditRunId             String
   binId                  String
   expectedPartId         String?
@@ -319,21 +319,21 @@ model BinAudit {
   foreignObjectSuspected Boolean?
   occlusion              String?
   notes                  String?
-  status                 String             @default("PENDING")
+  status                 String               @default("PENDING")
   evidenceUrl            String?
-  inventoryUpdated       Boolean            @default(false)
+  inventoryUpdated       Boolean              @default(false)
   previousQuantity       Int?
   newQuantity            Int?
   errorCode              String?
   errorMessage           String?
-  startedAt              DateTime            @default(now())
+  startedAt              DateTime             @default(now())
   capturedAt             DateTime?
   completedAt            DateTime?
-  createdAt              DateTime            @default(now())
-  auditRun               InventoryAuditRun   @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
-  bin                    Bin                 @relation(fields: [binId], references: [id], onDelete: Restrict)
-  expectedPart           Part?               @relation(fields: [expectedPartId], references: [id], onDelete: Restrict)
+  createdAt              DateTime             @default(now())
   capture                AuditCaptureRequest?
+  auditRun               InventoryAuditRun    @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  bin                    Bin                  @relation(fields: [binId], references: [id])
+  expectedPart           Part?                @relation(fields: [expectedPartId], references: [id], onDelete: Restrict)
 
   @@unique([auditRunId, binId])
   @@index([binId, createdAt])
@@ -343,18 +343,45 @@ model BinAudit {
 /// Browser-camera handshake. Image bytes go straight to Supabase Storage;
 /// Prisma stores only the durable URL and structured Gemini result.
 model AuditCaptureRequest {
-  id               String   @id @default(cuid())
-  binAuditId       String   @unique
-  status           String   @default("WAITING_FOR_CAMERA")
+  id               String    @id @default(cuid())
+  binAuditId       String    @unique
+  status           String    @default("WAITING_FOR_CAMERA")
   evidenceUrl      String?
   visionResultJson String?
   imageWidth       Int?
   imageHeight      Int?
   errorCode        String?
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
   expiresAt        DateTime
   capturedAt       DateTime?
-  binAudit         BinAudit @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
+  binAudit         BinAudit  @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model CameraCaptureJob {
+  id           String    @id
+  purpose      String
+  deviceId     String
+  status       String    @default("PENDING")
+  binAuditId   String?
+  evidenceUrl  String?
+  imageWidth   Int?
+  imageHeight  Int?
+  resultJson   String?
+  requestedAt  DateTime  @default(now())
+  claimedAt    DateTime?
+  capturedAt   DateTime?
+  uploadedAt   DateTime?
+  completedAt  DateTime?
+  expiresAt    DateTime
+  errorCode    String?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime
+
+  @@index([binAuditId])
+  @@index([deviceId, status, requestedAt])
+  @@index([status])
 }

@@ -19,6 +19,10 @@ export type BinAuditOutcomeStatus =
   | "VERIFIED"
   | "AUTO_RECONCILED"
   | "REVIEW_REQUIRED"
+  /** A human reviewed a pending observation and applied its count. */
+  | "CONFIRMED"
+  /** A human reviewed a pending observation and declined to apply it. */
+  | "DISMISSED"
   | "FAILED";
 
 export interface BinAuditResult {

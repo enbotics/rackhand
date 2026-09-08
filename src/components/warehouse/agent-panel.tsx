@@ -15,6 +15,7 @@ import { ApprovalCard } from "./approval-card";
 import { CatalogResolutionCard } from "./catalog-resolution-card";
 import { WorkflowPanel } from "./workflow-panel";
 import { InventoryAuditPanel } from "./inventory-audit-panel";
+import { usePrefersReducedMotion } from "./use-reduced-motion";
 import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel } from "./ui";
 
 /**
@@ -72,24 +73,6 @@ const TERMINAL_AUDIT_STATUSES = new Set([
   "FAILED",
 ]);
 
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  });
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setReduced(query.matches);
-    update();
-    query.addEventListener?.("change", update);
-    return () => query.removeEventListener?.("change", update);
-  }, []);
-
-  return reduced;
-}
-
 /**
  * A trailing "current state" card that clears itself once it is finished.
  *
@@ -99,22 +82,30 @@ function usePrefersReducedMotion(): boolean {
  * arrives below three cards about the last one. Eight seconds is long enough
  * to read the outcome, after which the transcript is just the transcript.
  *
- * WHAT IT NEVER DOES: dismiss anything still live. `settled` is false for
- * PENDING/RUNNING/EXECUTING states and for a BLOCKED workflow (which is
- * waiting on a person), so those stay until they resolve. Nothing here
- * touches session state either — this is presentation only, the underlying
+ * WHAT IT NEVER DOES: dismiss anything still live, and it never auto-dismisses
+ * a FAILURE. `settled` is false for PENDING/RUNNING/EXECUTING states, a
+ * BLOCKED workflow (waiting on a person), and — deliberately — a SETTLED
+ * approval whose Movement came back FAILED: that can mean reconciliation is
+ * required, and silently wiping it after 8 seconds could hide the one thing
+ * an operator still needed to see. A failed card instead gets `dismissible`,
+ * a manual close, so it never auto-hides but also never sits there forever
+ * with no way to clear it once it's been read. Nothing here touches session
+ * state either way — this is presentation only, the underlying
  * approval/workflow/audit records are untouched and re-appear under a new
  * `cardKey` the moment they change.
  */
 function SettlingCard({
   cardKey,
   settled,
+  dismissible = false,
   onDismissed,
   children,
 }: {
   /** Identity of what is being shown. A change means "this is a new thing", and restarts the clock. */
   cardKey: string;
   settled: boolean;
+  /** Offers a manual "Dismiss" control. For a terminal card that chose not to auto-dismiss (a failure) — never for one still in progress. */
+  dismissible?: boolean;
   onDismissed: () => void;
   children: React.ReactNode;
 }) {
@@ -157,6 +148,17 @@ function SettlingCard({
   return (
     <div className={phase === "leaving" ? "animate-fade-out" : "animate-fade-up"}>
       {children}
+      {dismissible && phase === "visible" && (
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setPhase(reducedMotion ? "dismissed" : "leaving")}
+            className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint transition-colors hover:text-ink"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -377,7 +379,9 @@ export function AgentPanel({
   latestMovement,
   workflow,
   latestAudit,
+  onAuditChanged,
   detectedName,
+  active = true,
 }: {
   turns: AgentTurn[];
   busy: boolean;
@@ -405,28 +409,61 @@ export function AgentPanel({
   latestMovement: MovementRowView | null;
   workflow: WarehouseGraphResult | null;
   latestAudit: InventoryAuditView | null;
+  /** Re-reads the warehouse snapshot after a human applies/dismisses an audit observation. */
+  onAuditChanged: () => void;
   /** The vision-detected name for the current scan, if any — used only in the identification card's "register as new" copy. */
   detectedName: string | null;
+  /** Keep draft/history mounted while another workspace tab is selected. */
+  active?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [turnsPresentAtMount] = useState(() => new Set(turns.map((turn) => turn.id)));
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const scrollFrame = useRef<number | null>(null);
+  const [showLatest, setShowLatest] = useState(false);
+  const reducedMotion = usePrefersReducedMotion();
 
   const scrollToLatest = useCallback(() => {
     const transcript = transcriptRef.current;
-    if (!transcript) return;
-    const distanceFromBottom =
-      transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-    // Only follows the conversation when already near the bottom — an
-    // operator scrolled up to reread earlier history must never get yanked
-    // back down by a new card arriving. Explicit smooth behavior here rather
-    // than relying solely on the container's CSS scroll-behavior, so this
-    // animates reliably regardless of what triggered the call (a new turn, a
-    // reveal-in-progress reply, or a trailing card changing state).
-    if (distanceFromBottom < 120) {
-      transcript.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" });
+    if (!active || !transcript?.clientHeight || !followLatest.current) return;
+    if (reducedMotion) { transcript.scrollTop = transcript.scrollHeight; return; }
+    if (scrollFrame.current !== null) return;
+    let previousTime = performance.now();
+    function tick(now: number) {
+      const element = transcriptRef.current;
+      if (!element?.clientHeight || !followLatest.current) { scrollFrame.current = null; return; }
+      const target = element.scrollHeight - element.clientHeight;
+      const remaining = target - element.scrollTop;
+      if (Math.abs(remaining) <= 1) { element.scrollTop = target; scrollFrame.current = null; return; }
+      // One animation follows a changing target, including progressively
+      // revealed replies and late-loading images. New content never resets it.
+      const blend = 1 - Math.exp(-Math.min(64, now - previousTime) / 65);
+      element.scrollTop += Math.sign(remaining) * Math.max(1, Math.abs(remaining) * blend);
+      previousTime = now;
+      scrollFrame.current = requestAnimationFrame(tick);
     }
-  }, []);
+    scrollFrame.current = requestAnimationFrame(tick);
+  }, [active, reducedMotion]);
+
+  const stopFollowing = () => {
+    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    scrollFrame.current = null;
+    followLatest.current = false;
+    setShowLatest(true);
+  };
+
+  useEffect(() => {
+    const observer = new ResizeObserver(scrollToLatest);
+    if (contentRef.current) observer.observe(contentRef.current);
+    if (transcriptRef.current) observer.observe(transcriptRef.current);
+    return () => {
+      observer.disconnect();
+      if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+      scrollFrame.current = null;
+    };
+  }, [scrollToLatest]);
 
   // A new trailing card (or an existing one changing state, e.g. approval ->
   // executing -> settled) should bring itself into view exactly like a new
@@ -448,6 +485,8 @@ export function AgentPanel({
   const send = (text: string) => {
     const trimmed = text.trim();
     if (trimmed === "" || busy) return;
+    followLatest.current = true;
+    setShowLatest(false);
     setDraft("");
     onSend(trimmed);
   };
@@ -455,7 +494,8 @@ export function AgentPanel({
   return (
     <Panel
       title="Warehouse agent"
-      className="min-h-[440px] overflow-hidden xl:h-full xl:min-h-0"
+      className="h-full min-h-0 overflow-hidden"
+      bodyClassName="flex min-h-0 flex-col"
       meta={
         scanAttached ? (
           <span className="inline-flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.08em] text-accent">
@@ -465,7 +505,7 @@ export function AgentPanel({
         ) : undefined
       }
     >
-      <div className="flex h-full flex-col gap-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
         {unavailable ? (
           <ErrorNote onRetry={onRetry} retryLabel="Try again">
             Warehouse agent unavailable — the language model could not be reached. Everything else
@@ -477,8 +517,24 @@ export function AgentPanel({
 
         <div
           ref={transcriptRef}
-          className="min-h-[230px] flex-1 space-y-4 overflow-y-auto pr-1 scroll-smooth"
+          tabIndex={0}
+          aria-label="Warehouse agent conversation"
+          onWheel={stopFollowing}
+          onTouchStart={stopFollowing}
+          onPointerDown={(event) => { if (event.target === event.currentTarget) stopFollowing(); }}
+          onKeyDown={(event) => {
+            if (event.target === event.currentTarget && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) stopFollowing();
+          }}
+          onScroll={() => {
+            const element = transcriptRef.current;
+            if (!element?.clientHeight || scrollFrame.current !== null) return;
+            const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 60;
+            followLatest.current = nearBottom;
+            setShowLatest(!nearBottom);
+          }}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
         >
+          <div ref={contentRef} className="space-y-4">
           {turns.length === 0 && !busy ? (
             <EmptyState>
               Ask about inventory, bins, or the gantry—or request a guided putaway.
@@ -529,8 +585,17 @@ export function AgentPanel({
                   : `outcome:${outcome?.kind}:${outcome?.message}`
               }
               // A pending decision, an in-flight execution and a cancellation
-              // still being submitted all stay. Only an answered one goes.
-              settled={approval === null && SETTLED_OUTCOMES.has(outcome?.kind ?? "")}
+              // still being submitted all stay. An answered one goes — UNLESS
+              // it was an APPROVE whose Movement actually failed on the
+              // machine: `outcome.kind` only tells us the decision was
+              // submitted, never whether the physical action worked, so that
+              // has to come from the re-read Movement row instead.
+              settled={
+                approval === null &&
+                SETTLED_OUTCOMES.has(outcome?.kind ?? "") &&
+                !(outcome?.kind === "SETTLED" && latestMovement?.status === "FAILED")
+              }
+              dismissible={outcome?.kind === "SETTLED" && latestMovement?.status === "FAILED"}
               onDismissed={scrollToLatest}
             >
               <ApprovalCard
@@ -560,15 +625,27 @@ export function AgentPanel({
           {latestAudit && (
             <SettlingCard
               cardKey={`audit:${latestAudit.auditRunId}:${latestAudit.status}`}
-              settled={TERMINAL_AUDIT_STATUSES.has(latestAudit.status)}
+              // A bin still awaiting a human's apply/dismiss decision must
+              // never auto-hide, even once the run itself finished — the run
+              // reaching a terminal status only means the machine is done;
+              // it says nothing about whether a person has answered yet.
+              settled={
+                TERMINAL_AUDIT_STATUSES.has(latestAudit.status) &&
+                !latestAudit.bins.some((bin) => bin.awaitingConfirmation)
+              }
               onDismissed={scrollToLatest}
             >
-              <InventoryAuditPanel audit={latestAudit} />
+              <InventoryAuditPanel audit={latestAudit} onChanged={onAuditChanged} />
             </SettlingCard>
           )}
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
+        {showLatest && <button type="button" onClick={() => {
+          followLatest.current = true; setShowLatest(false); scrollToLatest();
+        }} className="shrink-0 self-center rounded-full border border-accent-soft bg-accent-tint px-3 py-1 text-[11px] text-accent">Jump to latest ↓</button>}
+
+        <div className="flex shrink-0 flex-wrap gap-1.5">
           {SUGGESTIONS.map((suggestion) => (
             <button
               key={suggestion}
@@ -587,7 +664,7 @@ export function AgentPanel({
             event.preventDefault();
             send(draft);
           }}
-          className="flex items-center gap-2 rounded-xl border border-line bg-bg-elevated p-1.5 transition-colors focus-within:border-accent-soft"
+          className="flex shrink-0 items-center gap-2 rounded-xl border border-line bg-bg-elevated p-1.5 transition-colors focus-within:border-accent-soft"
         >
           <input
             value={draft}

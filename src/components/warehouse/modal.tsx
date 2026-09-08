@@ -18,6 +18,7 @@ export function Modal({
   children,
   maxWidthClassName = "max-w-lg",
   dismissible = true,
+  closing = false,
 }: {
   title: string;
   onClose: () => void;
@@ -26,6 +27,8 @@ export function Modal({
   maxWidthClassName?: string;
   /** False while a physical workflow is active and losing the dialog would hide its state. */
   dismissible?: boolean;
+  /** Capture popups leave the scene visible before processing starts. */
+  closing?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -37,7 +40,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in sm:p-8"
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm sm:p-8 ${closing ? "capture-popup-exit pointer-events-none" : "animate-fade-in"}`}
       onClick={() => {
         if (dismissible) onClose();
       }}
@@ -48,7 +51,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
-        className={`glass animate-pop relative flex max-h-[90vh] w-full ${maxWidthClassName} flex-col overflow-hidden rounded-3xl border border-line shadow-[0_40px_80px_-20px_rgba(0,0,0,0.7)]`}
+        className={`glass ${closing ? "capture-popup-panel-exit" : "animate-pop"} relative flex max-h-[90vh] w-full ${maxWidthClassName} flex-col overflow-hidden rounded-3xl border border-line shadow-[0_40px_80px_-20px_rgba(0,0,0,0.7)]`}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-line-soft px-4 py-3">
           <h2 id="modal-title" className="font-mono text-xs uppercase tracking-[0.14em] text-ink-muted">

@@ -97,6 +97,17 @@ export interface GantryStatus {
   activeOperationId: string | null;
   /** The failure of the most recent failed operation, cleared by the next success. */
   lastError: string | null;
+  /** Optional visual telemetry; never an inventory authority. */
+  carrying?: boolean;
+  operation?: GantryOperation | null;
+  motion?: {
+    from: GantryLocation | null;
+    to: GantryLocation | null;
+    startedAt: number;
+    durationMs: number;
+    /** Server-relative elapsed time avoids depending on the browser clock. */
+    elapsedMs: number;
+  } | null;
 }
 
 /**

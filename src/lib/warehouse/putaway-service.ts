@@ -524,6 +524,221 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
   };
 }
 
+export interface CheckedOutReturnRequest {
+  /** Which checked-out bin to return. Required only when more than one bin is checked out. */
+  binCode?: string;
+}
+
+/**
+ * Returns an already-known CHECKED_OUT bin to its own shelf slot, restoring
+ * the exact quantity that was checked out. No scan and no fresh photo: the
+ * identity, quantity and evidence photo are already on file from when the
+ * bin was originally put away — putting back something that never left the
+ * warehouse's own records is not a new intake, and there is nothing for a
+ * camera to re-prove that it did not already prove once.
+ *
+ * Deliberately narrow. This can ONLY move a bin the warehouse already has
+ * CHECKED_OUT back to that same slot, for the exact preserved quantity. It
+ * never accepts an operator-supplied quantity, never relocates to a
+ * different bin, and never touches a bin that is not already checked out —
+ * every one of those needs fresh visual evidence and stays the scan-based
+ * path in `executePutaway`.
+ */
+export async function returnCheckedOutBin(
+  input: CheckedOutReturnRequest,
+): Promise<PutawayResult> {
+  const requestedCode = input.binCode?.trim().toUpperCase();
+
+  const checkedOutBins = await prisma.bin.findMany({
+    where: { status: "CHECKED_OUT" },
+    include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
+  });
+
+  let bin: (typeof checkedOutBins)[number] | undefined;
+  if (requestedCode) {
+    bin = checkedOutBins.find((candidate) => candidate.code === requestedCode);
+    if (!bin) {
+      return fail("", "bin_not_found", `Bin "${requestedCode}" is not currently checked out.`);
+    }
+  } else if (checkedOutBins.length === 0) {
+    return fail("", "no_checked_out_bin", "No bin is currently checked out; there is nothing to return.");
+  } else if (checkedOutBins.length > 1) {
+    return fail(
+      "",
+      "checked_out_bin_ambiguous",
+      `More than one bin is checked out (${checkedOutBins
+        .sort(compareBinsInShelfOrder)
+        .map((candidate) => candidate.code)
+        .join(", ")}); name which one to return.`,
+    );
+  } else {
+    bin = checkedOutBins[0];
+  }
+
+  const inventoryRow = bin.inventory[0];
+  if (!inventoryRow) {
+    return fail("", "inventory_conflict", `Checked-out bin ${bin.code} has no preserved baseline to return.`);
+  }
+  const part = inventoryRow.part;
+  const quantity = inventoryRow.quantity;
+
+  const gantry = getGantryController();
+  const status = await gantry.getStatus();
+  if (status.state !== "IDLE" || status.activeOperationId !== null) {
+    return fail("", "gantry_busy", `The gantry is ${status.state} and cannot start a return.`);
+  }
+
+  // The last photo this exact part/bin pairing has on file. A plain return
+  // carries no new evidence, so the record keeps the one it already has
+  // rather than a blank field.
+  const priorPhoto = await prisma.movement.findFirst({
+    where: {
+      type: "PUTAWAY",
+      status: "COMPLETED",
+      partId: part.id,
+      destinationBinId: bin.id,
+      imageUrl: { not: null },
+    },
+    orderBy: { completedAt: "desc" },
+    select: { imageUrl: true },
+  });
+  const imageUrl = priorPhoto?.imageUrl ?? "";
+
+  let movement: Movement;
+  try {
+    movement = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.bin.updateMany({
+        where: { id: bin!.id, status: "CHECKED_OUT" },
+        data: { status: "RESERVED" },
+      });
+      if (claimed.count !== 1) {
+        throw new PutawayClaimError(
+          "bin_reservation_conflict",
+          `Bin ${bin!.code} changed before it could be returned.`,
+        );
+      }
+      const fresh = await tx.inventory.findUnique({
+        where: { partId_binId: { partId: part.id, binId: bin!.id } },
+      });
+      if (!fresh || fresh.quantity !== quantity) {
+        throw new PutawayClaimError(
+          "inventory_conflict",
+          `Bin ${bin!.code}'s checked-out baseline changed before it could be returned.`,
+        );
+      }
+      return tx.movement.create({
+        data: {
+          type: "PUTAWAY",
+          partId: part.id,
+          quantity,
+          status: "VALIDATED",
+          destinationBinId: bin!.id,
+          sourceLocation: PUTAWAY_RETURN_SOURCE,
+          previousQuantity: quantity,
+          newQuantity: quantity,
+          ...(imageUrl ? { imageUrl } : {}),
+        },
+      });
+    });
+  } catch (error) {
+    if (error instanceof PutawayClaimError) return fail("", error.reason, error.message);
+    throw error;
+  }
+
+  logPutaway(
+    `return bin=${bin.code} sku=${part.sku} qty=${quantity} movement=${movement.id} status=VALIDATED`,
+  );
+
+  let operation: GantryOperation;
+  try {
+    await updateMovementStatus(movement.id, "RUNNING");
+    operation = await gantry.returnBin({ source: PUTAWAY_RETURN_SOURCE, destination: bin.code });
+  } catch (error) {
+    const busy = isGantryError(error) && error.code === "gantry_busy";
+    await releaseClaim(movement.id, bin.id, "CHECKED_OUT");
+    if (busy) {
+      return fail("", "gantry_busy", "The gantry became busy before the return started.", {
+        movementId: movement.id,
+      });
+    }
+    console.error(`[putaway] checked-out return gantry failed bin=${bin.code} movement=${movement.id}`, error);
+    return fail("", "gantry_failed", "The gantry could not complete the return.", {
+      movementId: movement.id,
+      error: isGantryError(error) ? error.message : undefined,
+    });
+  }
+
+  if (operation.status !== "COMPLETED") {
+    await releaseClaim(movement.id, bin.id, "CHECKED_OUT", operation.operationId);
+    return fail("", "gantry_failed", "The gantry did not complete the return.", {
+      movementId: movement.id,
+      gantryOperationId: operation.operationId,
+      error: operation.error ?? undefined,
+    });
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.inventory.findUnique({
+        where: { partId_binId: { partId: part.id, binId: bin!.id } },
+      });
+      if (!existing || existing.quantity !== quantity) {
+        throw new Error("checked-out inventory baseline changed after physical return");
+      }
+      // Quantity is unchanged by design — this transition commits status, not
+      // a stock write.
+      const committed = await tx.bin.updateMany({
+        where: { id: bin!.id, status: "RESERVED" },
+        data: { status: "OCCUPIED" },
+      });
+      if (committed.count !== 1) {
+        throw new Error("return reservation was lost after physical movement");
+      }
+      await tx.movement.update({
+        where: { id: movement.id },
+        data: {
+          status: "COMPLETED",
+          completedAt: new Date(),
+          gantryOperationId: operation.operationId,
+        },
+      });
+    });
+  } catch (error) {
+    console.error(
+      `[putaway] INCONSISTENT checked-out return movement=${movement.id} gantry=${operation.operationId} bin=${bin.code}`,
+      error,
+    );
+    return fail(
+      "",
+      "putaway_commit_failed",
+      "The gantry completed the move but database reconciliation failed. Manual reconciliation is required.",
+      { movementId: movement.id, gantryOperationId: operation.operationId },
+    );
+  }
+
+  logPutaway(
+    `return movement=${movement.id} gantry=${operation.operationId} status=COMPLETED bin=${bin.code}`,
+  );
+  return {
+    ok: true,
+    scanId: "",
+    part: { partId: part.id, sku: part.sku, canonicalName: part.canonicalName },
+    destinationBinCode: bin.code,
+    movementId: movement.id,
+    gantryOperationId: operation.operationId,
+    observedQuantity: quantity,
+    inventoryQuantityBefore: quantity,
+    inventoryQuantityAfter: quantity,
+    inventoryQuantityAdded: 0,
+    inventoryQuantityRemoved: 0,
+    inventoryQuantityDelta: 0,
+    reconciledCheckout: true,
+    imageUrl,
+    status: "COMPLETED",
+    identity: { source: "DETERMINISTIC_MATCH", partId: part.id },
+  };
+}
+
 class PutawayClaimError extends Error {
   constructor(readonly reason: PutawayFailureReason, message: string) {
     super(message);

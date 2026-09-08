@@ -29,7 +29,7 @@ async function callJson<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-/** Groups bins by bed, highest bed first — same rule warehouse-map.tsx uses. */
+/** Groups bins by bed, highest bed first — same rule warehouse-rack.tsx uses. */
 function byBed(bins: BinView[]): Array<{ bed: number; bins: BinView[] }> {
   const beds = new Map<number, BinView[]>();
   for (const bin of bins) {
