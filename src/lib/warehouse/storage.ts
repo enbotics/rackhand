@@ -58,10 +58,9 @@ function decodeDataUrl(dataUrl: string): { bytes: Buffer; contentType: string } 
 /**
  * Uploads the photo captured for one scan and returns its public URL.
  *
- * Never throws for a caller to treat as fatal in the way a warehouse
- * business rule would — see the try/catch at every call site. A photo is
- * evidence for a human later, not something a physical operation should ever
- * be blocked by.
+ * Throws when storage fails. Callers choose the policy: catalog registration
+ * may treat the image as optional, while direct physical putaway requires the
+ * evidence to be durable before the gantry may move.
  */
 export async function uploadPutawayPhoto(scanId: string, imageDataUrl: string): Promise<string> {
   await ensureBucket();
@@ -103,4 +102,24 @@ export async function uploadBinVerificationPhoto(
 
   const { data } = client.storage.from(BUCKET).getPublicUrl(path);
   return data.publicUrl;
+}
+
+/** Stores one immutable Inventory Auditor camera frame. */
+export async function uploadAuditEvidence(
+  auditRunId: string,
+  binAuditId: string,
+  binCode: string,
+  imageDataUrl: string,
+): Promise<string> {
+  await ensureBucket();
+  const { bytes, contentType } = decodeDataUrl(imageDataUrl);
+  const safeBinCode = binCode.toUpperCase().replace(/[^A-Z0-9-]/g, "-");
+  const path = `inventory-audits/${auditRunId}/${safeBinCode}-${binAuditId}.jpg`;
+  const client = getClient();
+  const { error } = await client.storage.from(BUCKET).upload(path, bytes, {
+    contentType,
+    upsert: false,
+  });
+  if (error) throw new Error(`Supabase Storage upload failed: ${error.message}`);
+  return client.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
 }

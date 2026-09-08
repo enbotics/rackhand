@@ -6,8 +6,8 @@
  *
  * The mirror image of putaway, and deliberately NOT a reuse of it. Putaway
  * starts from a physical observation (a ScanResult) and ends in stock;
- * retrieval starts from authoritative catalog identity and ends with stock
- * removed. Sharing one "movement service" would force both flows through
+ * retrieval starts from authoritative catalog identity and ends with a whole
+ * bin checked out. Sharing one "movement service" would force both flows through
  * preconditions that only make sense for one of them.
  */
 /**
@@ -18,22 +18,14 @@
  * boundary, using the read-only tools; by the time a physical operation is
  * requested, the part must already be pinned down.
  *
- * Quantity is absent because it is fixed at 1: the gantry moves one physical
- * item per operation, and a bulk workflow is a later milestone. Destination is
- * absent because it is fixed at OUTPUT.
+ * The gantry moves the entire physical bin to OUTPUT. Inventory quantity is
+ * therefore observed and reconciled when that same bin later returns through
+ * putaway; retrieval never guesses how many units the client removed.
  */
 export interface RetrievalRequest {
   sku?: string;
   partId?: string;
-  /**
-   * How many items the CALLER was asked for — not how many to move.
-   *
-   * The gantry moves one item per operation, so anything other than 1 is
-   * refused outright. It exists so an agent must declare the quantity it is
-   * acting on: a prompt rule saying "do not retrieve when three are requested"
-   * is advice a model can forget, whereas a declared 3 is refused here every
-   * time. Omitted means 1.
-   */
+  /** Deprecated compatibility input. The physical operation always checks out the whole bin. */
   quantity?: number;
   /** Optional. Omitted means the deterministic lowest-bin-code policy chooses. */
   sourceBinCode?: string;
@@ -45,13 +37,10 @@ export interface RetrievalRequest {
   requestId?: string;
 }
 
-export const RETRIEVAL_QUANTITY = 1;
 export const RETRIEVAL_DESTINATION = "OUTPUT" as const;
 
 export const RETRIEVAL_FAILURE_REASONS = [
   "invalid_request",
-  /** More than one item was requested; the gantry moves one per operation. */
-  "unsupported_quantity",
   "part_not_found",
   "out_of_stock",
   "source_bin_not_found",
@@ -73,10 +62,13 @@ export interface RetrievalSuccess {
   destination: typeof RETRIEVAL_DESTINATION;
   movementId: string;
   gantryOperationId: string;
-  /** 1 for a retrieval this call performed; 0 when replaying a completed one. */
-  inventoryQuantityRemoved: 0 | 1;
-  /** Stock left in the source bin afterwards. 0 means the bin is now AVAILABLE. */
+  /** Last verified quantity travelling with the checked-out bin. */
+  checkedOutQuantity: number;
+  /** No authoritative quantity is removed until return-photo reconciliation. */
+  inventoryQuantityRemoved: 0;
+  /** Compatibility alias for the last verified count retained in the bin. */
   remainingQuantityInBin: number;
+  binStatus: "CHECKED_OUT";
   status: "COMPLETED";
   /** True when this requestId had already been retrieved and nothing new ran. */
   duplicate?: boolean;

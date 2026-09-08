@@ -32,6 +32,7 @@ import { GantryError } from "./errors";
 import {
   type BinPresentationRequest,
   type BinReturnRequest,
+  type AuditBinRequest,
   type GantryFailureKind,
   type GantryLocation,
   type GantryOperation,
@@ -160,12 +161,9 @@ export class SimulatedGantryController implements GantryController {
     const { source, destination } = validateRetrieval(input);
     const operation = this.claim("RETRIEVAL", source, destination);
 
-    return this.execute(operation, [
-      { state: "MOVING", delayMs: this.moveDelayMs, failOn: "movement_timeout", arriveAt: source },
-      { state: "PICKING", delayMs: this.pickDelayMs, failOn: "pickup_failed" },
-      { state: "MOVING", delayMs: this.moveDelayMs, failOn: null, arriveAt: destination },
-      { state: "DROPPING", delayMs: this.dropDelayMs, failOn: "drop_failed" },
-    ]);
+    // Retrieval now carries the whole physical bin, so it uses the same
+    // deliberately visible five-second transfer as presentation/return.
+    return this.execute(operation, this.binTransferPhases(source, destination));
   }
 
   async presentBin(input: BinPresentationRequest): Promise<GantryOperation> {
@@ -178,6 +176,18 @@ export class SimulatedGantryController implements GantryController {
     const { source, destination } = validateBinReturn(input);
     const operation = this.claim("BIN_RETURN", source, destination);
     return this.execute(operation, this.binTransferPhases(source, destination));
+  }
+
+  async presentBinForAudit(input: AuditBinRequest): Promise<GantryOperation> {
+    const binCode = validateAuditBin(input);
+    const operation = this.claim("AUDIT_PRESENTATION", binCode, "SCAN_STATION");
+    return this.execute(operation, this.binTransferPhases(binCode, "SCAN_STATION"));
+  }
+
+  async returnBinFromAudit(input: AuditBinRequest): Promise<GantryOperation> {
+    const binCode = validateAuditBin(input);
+    const operation = this.claim("AUDIT_RETURN", "SCAN_STATION", binCode);
+    return this.execute(operation, this.binTransferPhases("SCAN_STATION", binCode));
   }
 
   /* ---------------------------------------------------- failure injection */
@@ -404,18 +414,29 @@ export function validateBinPresentation(input: BinPresentationRequest): {
 }
 
 export function validateBinReturn(input: BinReturnRequest): {
-  source: "INTAKE";
+  source: "INTAKE" | "OUTPUT";
   destination: WarehouseBinCode;
 } {
   const { source, destination } = (input ?? {}) as {
     source?: unknown;
     destination?: unknown;
   };
-  if (source !== "INTAKE" || !looksLikeBinCode(destination)) {
+  if ((source !== "INTAKE" && source !== "OUTPUT") || !looksLikeBinCode(destination)) {
     throw new GantryError(
       "invalid_location",
-      `A bin return must move the presented bin from INTAKE to a storage slot.`,
+      `A bin return must move a bin from INTAKE or OUTPUT to a storage slot.`,
     );
   }
   return { source, destination };
+}
+
+export function validateAuditBin(input: AuditBinRequest): WarehouseBinCode {
+  const binCode = (input ?? {}) as { binCode?: unknown };
+  if (!looksLikeBinCode(binCode.binCode)) {
+    throw new GantryError(
+      "invalid_location",
+      `An inventory audit requires a known storage bin, not "${String(binCode.binCode)}".`,
+    );
+  }
+  return binCode.binCode;
 }

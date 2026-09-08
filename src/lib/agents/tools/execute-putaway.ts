@@ -1,10 +1,5 @@
 /**
- * Legacy direct putaway adapter.
- *
- * Retained for compatibility with older direct callers and tests, but it is
- * deliberately absent from WAREHOUSE_AGENT_TOOLS. Interactive agent putaway
- * now uses the operator-guided request_guided_putaway handoff, so there is no
- * second agent-controlled path that can skip slot selection or placement HITL.
+ * Direct high-level putaway adapter.
  *
  * It is a three-line adapter on purpose. Every decision that matters — is the
  * scan valid, does it match exactly one catalog part, is that bin still free,
@@ -29,6 +24,7 @@ import { z } from "zod";
 import { runPutawayGraph } from "@/lib/warehouse/graphs/putaway-graph";
 import {
   getContextCatalogResolutionId,
+  getContextScanImageDataUrl,
   getContextScanResult,
   recordContextWorkflow,
 } from "../request-context";
@@ -44,14 +40,14 @@ export const executePutawayInputSchema = z.object({
     .max(20)
     .optional()
     .describe(
-      "Optional bin code such as \"B2-01\". Omit it to let the warehouse choose the first available bin. Whatever is supplied is revalidated before anything moves.",
+      "Optional bin code such as \"B2-01\". Omit it to return the matching checked-out bin, or otherwise choose the best compatible capacity-aware bin. Whatever is supplied is revalidated.",
     ),
 });
 
 export const executePutawayTool = tool({
   name: EXECUTE_PUTAWAY_TOOL_NAME,
   description:
-    "Put away the one scanned physical part currently at the INTAKE station. THIS TOOL CHANGES WAREHOUSE STATE AND RUNS A SIMULATED GANTRY OPERATION: it reserves a bin, moves the part, and increases inventory. Use it only when the operator has explicitly asked to store or put away the scanned part — never to answer an informational question such as where a part could go, which is what search_inventory, get_bin_status and list_available_bins are for. It independently revalidates the scan, the catalog match and the bin before acting, and refuses unless the deterministic matcher returns MATCHED. It returns ok:true only when the gantry completed and inventory was updated.",
+    "Put away the camera-verified part or parts attached to this request. THIS TOOL CHANGES WAREHOUSE STATE AND RUNS THE GANTRY. It uses the automatic camera count and photo, returns a matching CHECKED_OUT bin by default and reconciles its preserved quantity, safely relocates it to an explicitly selected empty AVAILABLE slot, or chooses a compatible capacity-aware shelf bin for new intake. Use only for an explicit physical putaway request. ok:true means both movement and database commit completed.",
   inputSchema: executePutawayInputSchema,
   callback: async ({ destinationBinCode }) => {
     // The scan the API validated — never one the model wrote.
@@ -74,6 +70,7 @@ export const executePutawayTool = tool({
       // the unchanged Milestone 7 contract, so nothing the agent sees changed.
       const run = await runPutawayGraph({
         scanResult,
+        imageDataUrl: getContextScanImageDataUrl() ?? undefined,
         destinationBinCode,
         // Supplied by the operator through the API, never by the model — see
         // request-context.ts. The service revalidates it regardless.

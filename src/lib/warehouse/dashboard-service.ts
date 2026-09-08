@@ -17,10 +17,12 @@ import { prisma } from "./db";
 import type {
   BinSnapshotView,
   BinView,
+  InventoryAuditView,
   InventoryRowView,
   MovementRowView,
   WarehouseOverview,
 } from "./dashboard-types";
+import { confidencePercent } from "./audit-types";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
 
 /** Enough history to read the last few operations at a glance, not an audit log. */
@@ -55,21 +57,35 @@ async function loadPutawayImages(): Promise<Map<string, string>> {
 
 /** Latest captured placement evidence per physical destination bin. */
 async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
-  const rows = await prisma.movement.findMany({
-    where: {
-      destinationBinId: { not: null },
-      verificationImageUrl: { not: null },
-      verificationCapturedAt: { not: null },
-    },
-    orderBy: { verificationCapturedAt: "desc" },
-    select: {
-      id: true,
-      destinationBinId: true,
-      verificationImageUrl: true,
-      verificationCapturedAt: true,
-      status: true,
-    },
-  });
+  const [rows, auditRows] = await Promise.all([
+    prisma.movement.findMany({
+      where: {
+        destinationBinId: { not: null },
+        verificationImageUrl: { not: null },
+        verificationCapturedAt: { not: null },
+      },
+      orderBy: { verificationCapturedAt: "desc" },
+      select: {
+        id: true,
+        destinationBinId: true,
+        verificationImageUrl: true,
+        verificationCapturedAt: true,
+        status: true,
+      },
+    }),
+    prisma.binAudit.findMany({
+      where: { evidenceUrl: { not: null }, capturedAt: { not: null } },
+      orderBy: { capturedAt: "desc" },
+      select: {
+        id: true,
+        binId: true,
+        evidenceUrl: true,
+        capturedAt: true,
+        status: true,
+        countConfidence: true,
+      },
+    }),
+  ]);
   const byBin = new Map<string, BinSnapshotView>();
   for (const row of rows) {
     if (
@@ -83,15 +99,30 @@ async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
     byBin.set(row.destinationBinId, {
       imageUrl: row.verificationImageUrl,
       capturedAt: row.verificationCapturedAt.getTime(),
-      movementId: row.id,
-      movementStatus: row.status as MovementStatus,
+      source: "PUTAWAY",
+      recordId: row.id,
+      status: row.status,
+    });
+  }
+  for (const row of auditRows) {
+    if (!row.evidenceUrl || !row.capturedAt) continue;
+    const existing = byBin.get(row.binId);
+    if (existing && existing.capturedAt >= row.capturedAt.getTime()) continue;
+    byBin.set(row.binId, {
+      imageUrl: row.evidenceUrl,
+      capturedAt: row.capturedAt.getTime(),
+      source: "INVENTORY_AUDIT",
+      recordId: row.id,
+      status: row.status,
+      confidencePercent:
+        row.countConfidence === null ? null : confidencePercent(row.countConfidence),
     });
   }
   return byBin;
 }
 
 export async function getWarehouseOverview(movementLimit?: number): Promise<WarehouseOverview> {
-  const [bins, inventoryRows, movements, putawayImages, latestBinSnapshots] = await Promise.all([
+  const [bins, inventoryRows, movements, putawayImages, latestBinSnapshots, latestAudit] = await Promise.all([
     prisma.bin.findMany({
       orderBy: { code: "asc" },
       include: { inventory: { include: { part: true }, orderBy: { part: { sku: "asc" } } } },
@@ -107,6 +138,15 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
     }),
     loadPutawayImages(),
     loadLatestBinSnapshots(),
+    prisma.inventoryAuditRun.findFirst({
+      orderBy: { createdAt: "desc" },
+      include: {
+        binAudits: {
+          orderBy: { createdAt: "asc" },
+          include: { bin: true, expectedPart: true },
+        },
+      },
+    }),
   ]);
 
   const binViews: BinView[] = bins.map((bin) => {
@@ -140,9 +180,15 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
   for (const row of inventoryRows) {
     if (row.quantity <= 0) continue;
     const existing = byPart.get(row.partId);
+    const checkedOut = row.bin.status === "CHECKED_OUT";
     if (existing) {
-      existing.totalQuantity += row.quantity;
-      existing.locations.push({ binCode: row.bin.code, quantity: row.quantity });
+      if (checkedOut) existing.checkedOutQuantity = (existing.checkedOutQuantity ?? 0) + row.quantity;
+      else if (row.bin.status === "OCCUPIED") existing.totalQuantity += row.quantity;
+      existing.locations.push({
+        binCode: row.bin.code,
+        binStatus: row.bin.status as BinStatus,
+        quantity: row.quantity,
+      });
       continue;
     }
     byPart.set(row.partId, {
@@ -150,8 +196,13 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       sku: row.part.sku,
       canonicalName: row.part.canonicalName,
       category: row.part.category,
-      totalQuantity: row.quantity,
-      locations: [{ binCode: row.bin.code, quantity: row.quantity }],
+      totalQuantity: row.bin.status === "OCCUPIED" ? row.quantity : 0,
+      checkedOutQuantity: checkedOut ? row.quantity : 0,
+      locations: [{
+        binCode: row.bin.code,
+        binStatus: row.bin.status as BinStatus,
+        quantity: row.quantity,
+      }],
     });
   }
   const inventory = [...byPart.values()];
@@ -170,11 +221,44 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
     completedAt: movement.completedAt?.getTime() ?? null,
   }));
 
+  const auditView: InventoryAuditView | null = latestAudit
+    ? {
+        auditRunId: latestAudit.id,
+        trigger: latestAudit.trigger,
+        status: latestAudit.status,
+        requestedBinCode: latestAudit.requestedBinCode,
+        binsPlanned: latestAudit.binsPlanned,
+        binsCompleted: latestAudit.binsCompleted,
+        verifiedBins: latestAudit.verifiedBins,
+        reconciledBins: latestAudit.reconciledBins,
+        reviewRequiredBins: latestAudit.reviewRequiredBins,
+        failedBins: latestAudit.failedBins,
+        startedAt: latestAudit.startedAt.getTime(),
+        completedAt: latestAudit.completedAt?.getTime() ?? null,
+        bins: latestAudit.binAudits.map((audit) => ({
+          binAuditId: audit.id,
+          binCode: audit.bin.code,
+          sku: audit.expectedPart?.sku ?? null,
+          status: audit.status,
+          expectedQuantity: audit.expectedQuantity,
+          observedQuantity: audit.observedQuantity,
+          confidencePercent:
+            audit.countConfidence === null ? null : confidencePercent(audit.countConfidence),
+          inventoryUpdated: audit.inventoryUpdated,
+          previousQuantity: audit.previousQuantity,
+          newQuantity: audit.newQuantity,
+          evidenceUrl: audit.evidenceUrl,
+          reason: audit.errorCode,
+        })),
+      }
+    : null;
+
   return {
     generatedAt: Date.now(),
     bins: binViews,
     inventory,
     movements: movementViews,
+    latestAudit: auditView,
     totals: {
       units: inventory.reduce((sum, row) => sum + row.totalQuantity, 0),
       distinctParts: inventory.length,

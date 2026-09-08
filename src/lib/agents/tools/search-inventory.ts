@@ -34,7 +34,7 @@ export const searchInventoryInputSchema = z.object({
 export const searchInventoryTool = tool({
   name: SEARCH_INVENTORY_TOOL_NAME,
   description:
-    "Search the authoritative warehouse inventory for a part using its SKU or human-readable text, and return the total quantity in stock plus the bin codes holding it. Use this for questions about how many of something there are or where it is stored. A known part with no stock returns totalQuantity 0; a part that is not in the catalog at all returns found:false. Read-only; it never adds, removes or moves inventory.",
+    "Search the authoritative warehouse inventory for a part using its SKU or human-readable text. Returns shelf-available quantity separately from the last verified quantity travelling in CHECKED_OUT bins, plus every bin location. Use this for questions about how many are available or where a part is stored. A known part with no shelf stock returns totalQuantity 0; a part absent from the catalog returns found:false. Read-only; it never changes inventory.",
   inputSchema: searchInventoryInputSchema,
   callback: async ({ query }) => {
     try {
@@ -71,6 +71,8 @@ export const searchInventoryTool = tool({
         found: true as const,
         part: toPartRef(resolution.part),
         totalQuantity: summary.totalQuantity,
+        checkedOutQuantity: summary.checkedOutQuantity,
+        recordedQuantity: summary.recordedQuantity,
         locations: summary.locations.map((location) => ({
           binCode: location.binCode,
           binStatus: location.binStatus,

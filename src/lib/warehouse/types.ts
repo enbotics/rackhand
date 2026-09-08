@@ -1,8 +1,8 @@
 /**
  * Shared vocabulary for the authoritative warehouse data layer.
  *
- * SQLite has no native enum type, so the status/type columns in
- * prisma/schema.prisma are plain String. These const tuples are the single
+ * The Prisma schema keeps status/type columns as plain String values for
+ * deployment portability. These const tuples are the single
  * source of allowed values: the validation layer checks against them and the
  * derived union types keep the service layer honest at compile time.
  *
@@ -10,7 +10,7 @@
  * catalog identity. Milestone 3 owns the mapping between them.
  */
 
-export const BIN_STATUSES = ["AVAILABLE", "RESERVED", "OCCUPIED", "DISABLED"] as const;
+export const BIN_STATUSES = ["AVAILABLE", "RESERVED", "OCCUPIED", "CHECKED_OUT", "AUDITING", "DISABLED"] as const;
 export type BinStatus = (typeof BIN_STATUSES)[number];
 
 /** ADJUSTMENT: a direct operator override of a bin's quantity — instantaneous, no gantry involved. */
@@ -195,6 +195,11 @@ export interface CreateMovementInput {
 /** Aggregated stock view for one part across every bin holding it. */
 export interface PartInventorySummary {
   part: { id: string; sku: string; canonicalName: string };
+  /** Units currently on a warehouse shelf and available for operations. */
   totalQuantity: number;
+  /** Last verified quantity travelling with bins currently at OUTPUT. */
+  checkedOutQuantity: number;
+  /** Every recorded unit across all bin states, including transient reservations. */
+  recordedQuantity: number;
   locations: Array<{ binCode: string; binStatus: BinStatus; quantity: number }>;
 }

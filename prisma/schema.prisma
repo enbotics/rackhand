@@ -41,6 +41,7 @@ model Part {
   resolutions   CatalogResolution[]
   inventory     Inventory[]
   movements     Movement[]
+  expectedBinAudits BinAudit[]
 
   @@index([category])
 }
@@ -50,7 +51,7 @@ model Part {
 model Bin {
   id                   String      @id @default(cuid())
   code                 String      @unique
-  /// BinStatus: AVAILABLE | RESERVED | OCCUPIED | DISABLED
+  /// BinStatus: AVAILABLE | RESERVED | OCCUPIED | CHECKED_OUT | AUDITING | DISABLED
   status               String      @default("AVAILABLE")
   /// Maximum total units this bin may hold.
   capacity             Int         @default(100)
@@ -59,6 +60,7 @@ model Bin {
   inventory            Inventory[]
   movementsToThisBin   Movement[]  @relation("MovementDestination")
   movementsFromThisBin Movement[]  @relation("MovementSource")
+  binAudits            BinAudit[]
 
   @@index([status])
 }
@@ -127,9 +129,9 @@ model Movement {
   /// `quantity` above holds the size of the change (always positive) to stay
   /// consistent with what every other movement type means by that field.
   previousQuantity       Int?
-  /// Fresh evidence captured only after the destination bin is presented and
-  /// the operator has placed the item. A successful upload is the human
-  /// verification gate that permits the gantry to return the bin.
+  /// Camera evidence authorising this putaway. Legacy guided flows capture it
+  /// after presentation; direct putaway records the automatic count photo.
+  /// Either path persists it before warehouse commit.
   verificationImageUrl   String?
   verificationCapturedAt DateTime?
   destinationBin         Bin?      @relation("MovementDestination", fields: [destinationBinId], references: [id])
@@ -276,4 +278,83 @@ model TraceEvent {
 
   @@unique([traceId, sequence])
   @@index([traceId])
+}
+
+/// One explicitly requested inventory-audit run. There is no nightly scheduler;
+/// runs are started by the Warehouse Agent or a trusted internal invocation.
+model InventoryAuditRun {
+  id                 String     @id @default(cuid())
+  trigger            String
+  status             String     @default("PENDING")
+  requestedBinCode   String?
+  /// "ACTIVE" while running, null when terminal. The unique constraint is the
+  /// cross-process lock that prevents two gantry audits from running together.
+  activeKey          String?    @unique
+  binsPlanned        Int        @default(0)
+  binsCompleted      Int        @default(0)
+  verifiedBins       Int        @default(0)
+  reconciledBins     Int        @default(0)
+  reviewRequiredBins Int        @default(0)
+  failedBins         Int        @default(0)
+  startedAt          DateTime   @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime   @default(now())
+  binAudits          BinAudit[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Persisted physical-vs-digital observation for one bin.
+model BinAudit {
+  id                     String             @id @default(cuid())
+  auditRunId             String
+  binId                  String
+  expectedPartId         String?
+  expectedQuantity       Int
+  observedQuantity       Int?
+  countConfidence        Float?
+  countable              Boolean?
+  expectedPartPresent    Boolean?
+  foreignObjectSuspected Boolean?
+  occlusion              String?
+  notes                  String?
+  status                 String             @default("PENDING")
+  evidenceUrl            String?
+  inventoryUpdated       Boolean            @default(false)
+  previousQuantity       Int?
+  newQuantity            Int?
+  errorCode              String?
+  errorMessage           String?
+  startedAt              DateTime            @default(now())
+  capturedAt             DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime            @default(now())
+  auditRun               InventoryAuditRun   @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  bin                    Bin                 @relation(fields: [binId], references: [id], onDelete: Restrict)
+  expectedPart           Part?               @relation(fields: [expectedPartId], references: [id], onDelete: Restrict)
+  capture                AuditCaptureRequest?
+
+  @@unique([auditRunId, binId])
+  @@index([binId, createdAt])
+  @@index([status])
+}
+
+/// Browser-camera handshake. Image bytes go straight to Supabase Storage;
+/// Prisma stores only the durable URL and structured Gemini result.
+model AuditCaptureRequest {
+  id               String   @id @default(cuid())
+  binAuditId       String   @unique
+  status           String   @default("WAITING_FOR_CAMERA")
+  evidenceUrl      String?
+  visionResultJson String?
+  imageWidth       Int?
+  imageHeight      Int?
+  errorCode        String?
+  createdAt        DateTime @default(now())
+  expiresAt        DateTime
+  capturedAt       DateTime?
+  binAudit         BinAudit @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
 }

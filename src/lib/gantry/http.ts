@@ -54,7 +54,7 @@ export function assertGantryDevRoute(): void {
   if (process.env.NODE_ENV === "production") {
     throw new GantryError(
       "gantry_dev_only",
-      "Direct gantry movement endpoints are development-only. Use the warehouse putaway/retrieval APIs, which validate, record and approve the operation.",
+      "Direct gantry movement endpoints are development-only. Use the Warehouse Agent, which validates, records and approves client operations.",
     );
   }
 }

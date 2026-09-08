@@ -17,14 +17,14 @@ import type { ScanResult } from "./scan-types";
 /**
  * What the caller asks for. Deliberately small.
  *
- * The scanner represents ONE physical item standing at the intake station, so
- * quantity is fixed at 1 and the source is fixed at INTAKE by the workflow —
- * neither is a caller's (or a model's) choice. Movement status and inventory
- * deltas are likewise absent: those are consequences the service derives, not
- * inputs it accepts.
+ * Quantity comes only from the validated camera result. The model cannot
+ * provide or override it. Movement status and inventory deltas are likewise
+ * consequences the service derives, not inputs it accepts.
  */
 export interface PutawayRequest {
   scanResult: ScanResult;
+  /** The automatic camera frame that produced the count. Required to move. */
+  imageDataUrl?: string;
   /** Optional. Omitted means the deterministic findAvailableBin policy picks one. */
   destinationBinCode?: string;
   /**
@@ -37,17 +37,25 @@ export interface PutawayRequest {
   catalogResolutionId?: string;
 }
 
+/** @deprecated Quantity now comes from the automatic camera count. */
 export const PUTAWAY_QUANTITY = 1;
 export const PUTAWAY_SOURCE = "INTAKE" as const;
+export const PUTAWAY_RETURN_SOURCE = "OUTPUT" as const;
+export const MIN_PUTAWAY_QUANTITY_CONFIDENCE = 0.8;
 
 export const PUTAWAY_FAILURE_REASONS = [
   "invalid_scan",
+  "photo_required",
+  "photo_upload_failed",
+  "quantity_confidence_low",
   "catalog_match_ambiguous",
   "catalog_no_match",
   "part_not_found",
   "no_available_bin",
   "bin_not_found",
   "bin_unavailable",
+  "bin_capacity_exceeded",
+  "inventory_conflict",
   "bin_reservation_conflict",
   "gantry_busy",
   "gantry_failed",
@@ -66,12 +74,19 @@ export interface PutawaySuccess {
   destinationBinCode: string;
   movementId: string;
   gantryOperationId: string;
-  /**
-   * 1 for a putaway this call performed; 0 when replaying an already-completed
-   * scan. Reporting 1 on a replay would misstate what happened — the point of
-   * idempotency is that the second call adds nothing.
-   */
-  inventoryQuantityAdded: 0 | 1;
+  /** Count produced by the automatic pre-putaway camera verification. */
+  observedQuantity: number;
+  inventoryQuantityBefore: number;
+  inventoryQuantityAfter: number;
+  /** Positive additions only; zero for a checkout reconciliation or replay. */
+  inventoryQuantityAdded: number;
+  /** Units consumed while a checked-out bin was with the client. */
+  inventoryQuantityRemoved: number;
+  /** Signed authoritative change: after minus before. */
+  inventoryQuantityDelta: number;
+  /** True when this operation returned and reconciled a CHECKED_OUT bin. */
+  reconciledCheckout: boolean;
+  imageUrl: string;
   status: "COMPLETED";
   /**
    * Whether this part's identity came from measurement or from a person

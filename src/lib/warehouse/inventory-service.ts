@@ -9,10 +9,10 @@
  * change and the service reports why. This matters more once a gantry is
  * issuing concurrent operations.
  *
- * Bin occupancy is kept in step with stock in the same transaction: a bin
- * flips AVAILABLE -> OCCUPIED when it gains stock and back when it empties.
- * RESERVED and DISABLED bins are never re-labelled automatically — those are
- * deliberate operator states.
+ * Bin occupancy is kept in step with stock in the same transaction for direct
+ * quantity adjustments. Physical retrieval is different: it preserves the
+ * last verified count and marks the whole bin CHECKED_OUT until photographed
+ * return reconciliation. RESERVED and DISABLED are deliberate operator states.
  */
 import { prisma } from "./db";
 import { WarehouseError } from "./errors";
@@ -96,8 +96,18 @@ export async function applyInventoryAddition(
   quantity: number,
 ): Promise<InventoryRecord> {
   {
-    if (bin.status === "DISABLED") {
-      throw new WarehouseError("bin_unavailable", `Bin "${bin.code}" is DISABLED and cannot take stock.`);
+    if (bin.status === "DISABLED" || bin.status === "AUDITING") {
+      throw new WarehouseError("bin_unavailable", `Bin "${bin.code}" is ${bin.status} and cannot take stock.`);
+    }
+    const locked = await tx.bin.updateMany({
+      where: { id: bin.id, status: bin.status },
+      data: { status: bin.status },
+    });
+    if (locked.count !== 1) {
+      throw new WarehouseError(
+        "bin_unavailable",
+        `Bin "${bin.code}" changed state before stock could be added.`,
+      );
     }
 
     const occupant = await tx.inventory.findFirst({ where: { binId: bin.id } });
@@ -160,9 +170,9 @@ export async function removeInventory(input: InventoryMutationInput): Promise<In
 /**
  * The stock-decrease itself, inside a caller-supplied transaction.
  *
- * The counterpart to applyInventoryAddition, extracted for the same reason:
- * Milestone 8 retrieval must decrement stock, free the bin and complete the
- * movement in ONE transaction, and Prisma forbids nesting `$transaction`.
+ * The counterpart to applyInventoryAddition for explicit inventory
+ * adjustments. Physical whole-bin retrieval no longer calls this function;
+ * it retains the recorded count until return reconciliation.
  * Duplicating the `gte` guard would mean two places that must agree about how
  * "never negative" is enforced.
  *
@@ -175,6 +185,22 @@ export async function applyInventoryRemoval(
   quantity: number,
 ): Promise<InventoryRecord> {
   {
+    if (bin.status === "AUDITING") {
+      throw new WarehouseError(
+        "bin_unavailable",
+        `Bin "${bin.code}" is being audited and its stock cannot be changed concurrently.`,
+      );
+    }
+    const locked = await tx.bin.updateMany({
+      where: { id: bin.id, status: bin.status },
+      data: { status: bin.status },
+    });
+    if (locked.count !== 1) {
+      throw new WarehouseError(
+        "bin_unavailable",
+        `Bin "${bin.code}" changed state before stock could be removed.`,
+      );
+    }
     const existing = await tx.inventory.findUnique({
       where: { partId_binId: { partId: part.id, binId: bin.id } },
     });
@@ -274,10 +300,14 @@ export async function getInventoryForPart(sku: string): Promise<PartInventorySum
     include: { bin: true },
     orderBy: { bin: { code: "asc" } },
   });
+  const availableRows = rows.filter((row) => row.bin.status === "OCCUPIED");
+  const checkedOutRows = rows.filter((row) => row.bin.status === "CHECKED_OUT");
 
   return {
     part: { id: part.id, sku: part.sku, canonicalName: part.canonicalName },
-    totalQuantity: rows.reduce((sum, row) => sum + row.quantity, 0),
+    totalQuantity: availableRows.reduce((sum, row) => sum + row.quantity, 0),
+    checkedOutQuantity: checkedOutRows.reduce((sum, row) => sum + row.quantity, 0),
+    recordedQuantity: rows.reduce((sum, row) => sum + row.quantity, 0),
     locations: rows.map((row) => ({
       binCode: row.bin.code,
       binStatus: row.bin.status as BinStatus,

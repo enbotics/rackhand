@@ -231,13 +231,13 @@ export function BinDetailModal({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={bin.latestSnapshot.imageUrl}
-              alt={`Latest placement verification for bin ${bin.code}`}
+              alt={`Latest warehouse snapshot for bin ${bin.code}`}
               className="max-h-80 w-full border-b border-line object-contain"
             />
             <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
               <div>
                 <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-accent">
-                  Latest bin snapshot
+                  Latest bin snapshot · {bin.latestSnapshot.source.replaceAll("_", " ")}
                 </p>
                 <time
                   dateTime={new Date(bin.latestSnapshot.capturedAt).toISOString()}
@@ -247,7 +247,10 @@ export function BinDetailModal({
                 </time>
               </div>
               <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
-                {bin.latestSnapshot.movementStatus.replaceAll("_", " ")}
+                {bin.latestSnapshot.status.replaceAll("_", " ")}
+                {bin.latestSnapshot.confidencePercent == null
+                  ? ""
+                  : ` · ${bin.latestSnapshot.confidencePercent}%`}
               </span>
             </div>
           </section>

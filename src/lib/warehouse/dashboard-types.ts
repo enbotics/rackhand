@@ -32,12 +32,14 @@ export interface BinContentView {
   imageUrl: string | null;
 }
 
-/** Most recent placement-verification photo captured for one physical bin. */
+/** Most recent placement-verification or inventory-audit photo for one bin. */
 export interface BinSnapshotView {
   imageUrl: string;
   capturedAt: number;
-  movementId: string;
-  movementStatus: MovementStatus;
+  source: "PUTAWAY" | "INVENTORY_AUDIT";
+  recordId: string;
+  status: string;
+  confidencePercent?: number | null;
 }
 
 /**
@@ -64,7 +66,8 @@ export interface InventoryRowView {
   canonicalName: string;
   category: string | null;
   totalQuantity: number;
-  locations: Array<{ binCode: string; quantity: number }>;
+  checkedOutQuantity?: number;
+  locations: Array<{ binCode: string; binStatus?: BinStatus; quantity: number }>;
 }
 
 /**
@@ -88,6 +91,38 @@ export interface MovementRowView {
   completedAt: number | null;
 }
 
+export interface BinAuditView {
+  binAuditId: string;
+  binCode: string;
+  sku: string | null;
+  status: string;
+  expectedQuantity: number;
+  observedQuantity: number | null;
+  confidencePercent: number | null;
+  inventoryUpdated: boolean;
+  previousQuantity: number | null;
+  newQuantity: number | null;
+  evidenceUrl: string | null;
+  reason: string | null;
+}
+
+/** Latest durable physical audit, including every per-bin database outcome. */
+export interface InventoryAuditView {
+  auditRunId: string;
+  trigger: string;
+  status: string;
+  requestedBinCode: string | null;
+  binsPlanned: number;
+  binsCompleted: number;
+  verifiedBins: number;
+  reconciledBins: number;
+  reviewRequiredBins: number;
+  failedBins: number;
+  startedAt: number;
+  completedAt: number | null;
+  bins: BinAuditView[];
+}
+
 /** One authoritative snapshot of warehouse state. */
 export interface WarehouseOverview {
   /** Epoch ms the server composed this snapshot. */
@@ -95,6 +130,8 @@ export interface WarehouseOverview {
   bins: BinView[];
   inventory: InventoryRowView[];
   movements: MovementRowView[];
+  /** Optional so an older cached overview remains renderable after deployment. */
+  latestAudit?: InventoryAuditView | null;
   totals: {
     /** Total units of stock held across every bin. */
     units: number;

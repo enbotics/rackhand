@@ -35,14 +35,25 @@ export async function POST(request: Request) {
       throw new AgentError("agent_invalid_request", ["body must be a JSON object"]);
     }
 
-    const { message, scanResult, catalogResolutionId } = body as {
+    const { message, scanResult, scanImageDataUrl, catalogResolutionId } = body as {
       message?: unknown;
       scanResult?: unknown;
+      scanImageDataUrl?: unknown;
       catalogResolutionId?: unknown;
     };
     if (catalogResolutionId !== undefined && typeof catalogResolutionId !== "string") {
       throw new AgentError("agent_invalid_request", [
         "catalogResolutionId must be a string when present",
+      ]);
+    }
+    if (
+      scanImageDataUrl !== undefined &&
+      (typeof scanImageDataUrl !== "string" ||
+        !/^data:image\/[a-z0-9.+-]+;base64,/i.test(scanImageDataUrl) ||
+        scanImageDataUrl.length > 7_000_000)
+    ) {
+      throw new AgentError("agent_invalid_request", [
+        "scanImageDataUrl must be a base64 image data URL no larger than 7 MB",
       ]);
     }
     // One HTTP request gets one id, which becomes the default idempotency key
@@ -53,6 +64,8 @@ export async function POST(request: Request) {
       scanResult,
       createRequestId(),
       catalogResolutionId,
+      undefined,
+      scanImageDataUrl as string | undefined,
     );
     return NextResponse.json(reply);
   } catch (err) {

@@ -40,6 +40,10 @@ export interface MeasurementResult {
   dimensionConfidence: number;
   /** Reprojection RMS (pixels) of the mat's 4-QR homography fit. */
   calibrationRmsPixels: number;
+  /** Gemini's visible count of matching units; absent only on legacy saved scans. */
+  observedQuantity?: number;
+  /** 0-1 confidence that the visible matching-unit count is complete. */
+  quantityConfidence?: number;
 }
 
 /** What the camera saw. A candidate description, not an identity. */
@@ -80,6 +84,8 @@ export interface ScanResult {
   dimensions: ScanDimensions;
   quality: ScanQuality;
   orientation: ScanOrientation;
+  /** Visual evidence only. Warehouse services validate and apply this count. */
+  quantity?: { observed: number; confidence: number };
 }
 
 /** Capture-side metadata the measurement itself does not carry. */

@@ -1,7 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentTurn } from "./state";
+import type { GantryStatus } from "@/lib/gantry/types";
+import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
+import type { InventoryAuditView, MovementRowView } from "@/lib/warehouse/dashboard-types";
+import type {
+  AgentTurn,
+  ApprovalOutcome,
+  ConfirmedIdentity,
+  PendingApprovalView,
+  PendingIdentification,
+} from "./state";
+import { ApprovalCard } from "./approval-card";
+import { CatalogResolutionCard } from "./catalog-resolution-card";
+import { WorkflowPanel } from "./workflow-panel";
+import { InventoryAuditPanel } from "./inventory-audit-panel";
 import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel } from "./ui";
 
 /**
@@ -11,6 +24,14 @@ import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel } from "./ui";
  * presentation animation, not fake transport streaming: the busy state stays
  * visible until the complete, server-authored answer arrives. Tool chips are
  * names only—never arguments, model reasoning, or fabricated progress.
+ *
+ * EVERY agent-driven state lives INSIDE this same scrollable transcript, not
+ * beside it — identification choices, HITL approval, workflow/gantry
+ * progress and audit results are the trailing "current state" cards below
+ * the message list, reusing ApprovalCard/CatalogResolutionCard/WorkflowPanel/
+ * InventoryAuditPanel exactly as they already are. Moving WHERE they mount
+ * was the whole refactor; none of their internal logic changed, so approval
+ * decisions still only ever send `{approvalId, decision}` to the server.
  */
 const SUGGESTIONS = [
   "Which bins are available?",
@@ -27,9 +48,10 @@ const TOOL_LABELS: Record<string, string> = {
   get_bin_status: "Bin status",
   list_available_bins: "Available slots",
   match_catalog: "Catalog match",
-  request_guided_putaway: "Guided putaway",
-  get_guided_putaway_status: "Putaway status",
+  execute_putaway: "Execute putaway",
   execute_retrieval: "Retrieval workflow",
+  inventory_auditor: "Inventory auditor agent",
+  execute_inventory_audit: "Physical inventory audit",
 };
 
 function usePrefersReducedMotion(): boolean {
@@ -249,6 +271,24 @@ export function AgentPanel({
   identityAttached,
   onSend,
   onRetry,
+  identification,
+  confirmed,
+  identityRejected,
+  identityBusy,
+  identityError,
+  onSelectIdentity,
+  onRejectIdentity,
+  onRegisterNewPart,
+  registeringPart,
+  registerError,
+  approval,
+  outcome,
+  onDecide,
+  gantry,
+  latestMovement,
+  workflow,
+  latestAudit,
+  detectedName,
 }: {
   turns: AgentTurn[];
   busy: boolean;
@@ -258,6 +298,26 @@ export function AgentPanel({
   identityAttached: boolean;
   onSend: (message: string) => void;
   onRetry: () => void;
+  /** Trailing "current state" cards — see the block comment above. Each is null/absent when it does not apply. */
+  identification: PendingIdentification | null;
+  confirmed: ConfirmedIdentity | null;
+  identityRejected: boolean;
+  identityBusy: boolean;
+  identityError: string | null;
+  onSelectIdentity: (partId: string) => void;
+  onRejectIdentity: () => void;
+  onRegisterNewPart: () => void;
+  registeringPart: boolean;
+  registerError: string | null;
+  approval: PendingApprovalView | null;
+  outcome: ApprovalOutcome | null;
+  onDecide: (decision: "APPROVE" | "DENY") => void;
+  gantry: GantryStatus | null;
+  latestMovement: MovementRowView | null;
+  workflow: WarehouseGraphResult | null;
+  latestAudit: InventoryAuditView | null;
+  /** The vision-detected name for the current scan, if any — used only in the identification card's "register as new" copy. */
+  detectedName: string | null;
 }) {
   const [draft, setDraft] = useState("");
   const [turnsPresentAtMount] = useState(() => new Set(turns.map((turn) => turn.id)));
@@ -268,10 +328,33 @@ export function AgentPanel({
     if (!transcript) return;
     const distanceFromBottom =
       transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
-    if (distanceFromBottom < 120) transcript.scrollTop = transcript.scrollHeight;
+    // Only follows the conversation when already near the bottom — an
+    // operator scrolled up to reread earlier history must never get yanked
+    // back down by a new card arriving. Explicit smooth behavior here rather
+    // than relying solely on the container's CSS scroll-behavior, so this
+    // animates reliably regardless of what triggered the call (a new turn, a
+    // reveal-in-progress reply, or a trailing card changing state).
+    if (distanceFromBottom < 120) {
+      transcript.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" });
+    }
   }, []);
 
-  useEffect(() => scrollToLatest(), [busy, scrollToLatest, turns.length]);
+  // A new trailing card (or an existing one changing state, e.g. approval ->
+  // executing -> settled) should bring itself into view exactly like a new
+  // turn does — this key changes whenever any of them meaningfully change.
+  const trailingKey = [
+    identification?.resolutionId,
+    confirmed?.resolutionId,
+    identityRejected,
+    approval?.approvalId,
+    outcome?.kind,
+    workflow?.workflow,
+    workflow?.status,
+    latestAudit?.auditRunId,
+    latestAudit?.status,
+  ].join("|");
+
+  useEffect(() => scrollToLatest(), [busy, scrollToLatest, turns.length, trailingKey]);
 
   const send = (text: string) => {
     const trimmed = text.trim();
@@ -283,7 +366,7 @@ export function AgentPanel({
   return (
     <Panel
       title="Warehouse agent"
-      className="min-h-[440px] overflow-hidden"
+      className="min-h-[440px] overflow-hidden xl:h-full xl:min-h-0"
       meta={
         scanAttached ? (
           <span className="inline-flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.08em] text-accent">
@@ -325,6 +408,54 @@ export function AgentPanel({
           )}
 
           {busy && <AgentWorking />}
+
+          {/* Trailing "current state" cards — the live tail of the conversation.
+              Each one is the SAME component that used to sit beside the chat as
+              its own panel; only where it mounts changed. They update in place
+              (e.g. an approval card moves pending -> executing -> settled)
+              rather than stacking a new card per state change. */}
+          {(identification || identityRejected) && (
+            <div className="animate-fade-up">
+              <CatalogResolutionCard
+                identification={identification}
+                confirmed={confirmed}
+                rejected={identityRejected}
+                busy={identityBusy}
+                error={identityError}
+                detectedName={detectedName}
+                onSelect={onSelectIdentity}
+                onReject={onRejectIdentity}
+                onRegisterNewPart={onRegisterNewPart}
+                registeringPart={registeringPart}
+                registerError={registerError}
+              />
+            </div>
+          )}
+
+          {(approval || outcome) && (
+            <div className="animate-fade-up">
+              <ApprovalCard
+                approval={approval}
+                outcome={outcome}
+                busy={busy}
+                latestMovement={latestMovement}
+                gantry={gantry}
+                onDecide={onDecide}
+              />
+            </div>
+          )}
+
+          {workflow && (
+            <div className="animate-fade-up">
+              <WorkflowPanel workflow={workflow} />
+            </div>
+          )}
+
+          {latestAudit && (
+            <div className="animate-fade-up">
+              <InventoryAuditPanel audit={latestAudit} />
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-1.5">

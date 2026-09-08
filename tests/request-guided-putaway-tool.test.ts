@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { matchScanToCatalog } from "@/lib/warehouse/catalog-matcher";
 import { resolveCatalogIdentity } from "@/lib/warehouse/catalog-identity";
-import { getPartById, listAvailableBins } from "@/lib/warehouse/repository";
+import { getPartById, listPutawayDestinations } from "@/lib/warehouse/repository";
 import { runWithRequestContext } from "@/lib/agents/request-context";
 import { requestGuidedPutawayTool } from "@/lib/agents/tools/request-guided-putaway";
 import type { ScanResult } from "@/lib/warehouse/scan-types";
@@ -10,7 +10,7 @@ vi.mock("@/lib/warehouse/catalog-matcher", () => ({ matchScanToCatalog: vi.fn() 
 vi.mock("@/lib/warehouse/catalog-identity", () => ({ resolveCatalogIdentity: vi.fn() }));
 vi.mock("@/lib/warehouse/repository", () => ({
   getPartById: vi.fn(),
-  listAvailableBins: vi.fn(),
+  listPutawayDestinations: vi.fn(),
 }));
 
 const SCAN: ScanResult = {
@@ -64,14 +64,18 @@ describe("request_guided_putaway tool", () => {
       createdAt: new Date(0),
       updatedAt: new Date(0),
     });
-    vi.mocked(listAvailableBins).mockResolvedValue([
+    vi.mocked(listPutawayDestinations).mockResolvedValue([
       {
         id: "bin_1",
         code: "B1-02",
         status: "AVAILABLE",
         capacity: 100,
-        createdAt: new Date(0),
-        updatedAt: new Date(0),
+        eligible: true,
+        currentQuantity: 0,
+        afterQuantity: 1,
+        remainingAfter: 99,
+        alreadyStoresPart: false,
+        reason: "COMPATIBLE",
       },
     ]);
 
@@ -83,9 +87,9 @@ describe("request_guided_putaway tool", () => {
       ok: true,
       status: "AWAITING_SLOT",
       scanId: SCAN.scanId,
-      availableBins: [{ code: "B1-02", capacity: 100 }],
+      compatibleBins: [{ code: "B1-02", capacity: 100 }],
     });
-    expect(listAvailableBins).toHaveBeenCalledOnce();
+    expect(listPutawayDestinations).toHaveBeenCalledWith("part_1");
   });
 
   it("cannot invent a putaway when no server-attached scan exists", async () => {

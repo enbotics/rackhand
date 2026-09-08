@@ -6,8 +6,8 @@
  * model.
  *
  * READ-ONLY EXCEPT ONE. Only `RetrievalExecuteNode` calls a mutating service.
- * Nothing else here creates a Movement, decrements inventory or commands the
- * gantry.
+ * Nothing else here creates a Movement, changes bin availability or commands
+ * the gantry.
  *
  * The distinction the brief cares most about is kept explicit: an unknown part
  * and a known part with no stock are different answers, produced by different
@@ -24,7 +24,6 @@ import {
 } from "../retrieval-service";
 import {
   RETRIEVAL_DESTINATION,
-  RETRIEVAL_QUANTITY,
   type RetrievalResult,
 } from "../retrieval-types";
 import { getGantryController } from "@/lib/gantry/factory";
@@ -41,7 +40,7 @@ import {
 export interface RetrievalGraphRequest {
   sku?: string;
   partId?: string;
-  /** How many the OPERATOR asked for. Anything but 1 is refused, not trimmed. */
+  /** Deprecated compatibility input. Retrieval checks out the entire bin. */
   quantity?: number;
   sourceBinCode?: string;
   requestId?: string;
@@ -53,8 +52,9 @@ export interface RetrievalGraphData {
   sku?: string;
   canonicalName?: string;
   sourceBinCode?: string;
-  /** Stock in the chosen bin before execution, so verify can prove one decrement. */
+  /** Last-known stock kept while the whole bin is checked out. */
   sourceQuantityBefore?: number;
+  duplicate?: boolean;
   movementId?: string;
   gantryOperationId?: string;
 }
@@ -92,7 +92,7 @@ export class RetrievalValidateNode extends WorkflowNode<
     });
   }
 
-  protected async run({ request }: RetrievalContext): Promise<NodeOutcome> {
+  protected async run({ request, data }: RetrievalContext): Promise<NodeOutcome> {
     const sku = typeof request?.sku === "string" ? request.sku.trim() : "";
     const partId = typeof request?.partId === "string" ? request.partId.trim() : "";
     if (Boolean(sku) === Boolean(partId)) {
@@ -100,19 +100,6 @@ export class RetrievalValidateNode extends WorkflowNode<
         kind: "BLOCKED",
         reason: "invalid_request",
         message: "Provide exactly one of sku or partId to identify the part to retrieve.",
-      };
-    }
-
-    // The gantry moves one item per operation. A request for three is refused
-    // outright rather than quietly fulfilled as one.
-    const quantity = request.quantity ?? RETRIEVAL_QUANTITY;
-    if (quantity !== RETRIEVAL_QUANTITY) {
-      return {
-        kind: "BLOCKED",
-        reason: "unsupported_quantity",
-        message:
-          `Retrieval moves one item per operation; ${quantity} were requested. ` +
-          "Ask the operator to confirm a single item, then retry.",
       };
     }
 
@@ -125,9 +112,16 @@ export class RetrievalValidateNode extends WorkflowNode<
       };
     }
 
+    const existing = await prisma.movement.findUnique({
+      where: { idempotencyKey: `${RETRIEVAL_IDEMPOTENCY_PREFIX}${data.requestId}` },
+    });
+    data.duplicate = existing?.status === "COMPLETED";
+
     return {
       kind: "PROCEED",
-      summary: `One ${sku || partId} requested for ${RETRIEVAL_DESTINATION}.`,
+      summary: data.duplicate
+        ? "This request already completed and will be replayed without movement."
+        : `The bin holding ${sku || partId} will be checked out to ${RETRIEVAL_DESTINATION}.`,
     };
   }
 }
@@ -179,6 +173,7 @@ export class RetrievalInventoryNode extends WorkflowNode<
   }
 
   protected async run({ data }: RetrievalContext): Promise<NodeOutcome> {
+    if (data.duplicate) return { kind: "PROCEED", summary: "Skipping live stock checks for an idempotent replay." };
     if (!data.sku) {
       return {
         kind: "BLOCKED",
@@ -196,7 +191,9 @@ export class RetrievalInventoryNode extends WorkflowNode<
       };
     }
 
-    const stocked = summary.locations.filter((location) => location.quantity > 0);
+    const stocked = summary.locations.filter(
+      (location) => location.quantity > 0 && location.binStatus === "OCCUPIED",
+    );
     return {
       kind: "PROCEED",
       summary: `${summary.totalQuantity} in ${stocked.map((l) => l.binCode).join(", ")}.`,
@@ -228,8 +225,20 @@ export class RetrievalSourceNode extends WorkflowNode<RetrievalGraphRequest, Ret
       };
     }
 
+    if (data.duplicate) {
+      const movement = await prisma.movement.findUnique({
+        where: { idempotencyKey: `${RETRIEVAL_IDEMPOTENCY_PREFIX}${data.requestId}` },
+        include: { sourceBin: true },
+      });
+      data.sourceBinCode = movement?.sourceBin?.code;
+      data.sourceQuantityBefore = movement?.quantity;
+      return { kind: "PROCEED", summary: "Original source restored from the completed movement." };
+    }
+
     const summary = await getInventoryForPart(data.sku);
-    const stocked = summary.locations.filter((location) => location.quantity > 0);
+    const stocked = summary.locations.filter(
+      (location) => location.quantity > 0 && location.binStatus === "OCCUPIED",
+    );
 
     let chosen: string | null;
     if (request.sourceBinCode !== undefined) {
@@ -290,6 +299,9 @@ export class RetrievalPreflightNode extends WorkflowNode<
   }
 
   protected async run({ data }: RetrievalContext): Promise<NodeOutcome> {
+    if (data.duplicate) {
+      return { kind: "PROCEED", summary: "No gantry preflight is needed for an idempotent replay." };
+    }
     const bin = data.sourceBinCode ? await getBinByCode(data.sourceBinCode) : null;
     if (!bin || !data.partId) {
       return {
@@ -299,10 +311,18 @@ export class RetrievalPreflightNode extends WorkflowNode<
       };
     }
 
+    if (bin.status !== "OCCUPIED") {
+      return {
+        kind: "BLOCKED",
+        reason: "inventory_conflict",
+        message: `Bin ${bin.code} is ${bin.status}, so it cannot be checked out.`,
+      };
+    }
+
     const stock = await prisma.inventory.findUnique({
       where: { partId_binId: { partId: data.partId, binId: bin.id } },
     });
-    if (!stock || stock.quantity < RETRIEVAL_QUANTITY) {
+    if (!stock || stock.quantity <= 0) {
       return {
         kind: "BLOCKED",
         reason: "source_inventory_mismatch",
@@ -362,7 +382,6 @@ export class RetrievalExecuteNode extends WorkflowNode<
       sku: request.sku,
       partId: request.partId,
       sourceBinCode: request.sourceBinCode,
-      quantity: request.quantity ?? RETRIEVAL_QUANTITY,
       // The id settled by the validate node, so the key preflight checked is
       // the key the service claims.
       requestId: data.requestId,
@@ -397,8 +416,8 @@ export class RetrievalExecuteNode extends WorkflowNode<
       kind: "PROCEED",
       summary: result.duplicate
         ? "Already completed for this request id; nothing was executed again."
-        : `${result.part.sku} moved ${result.sourceBinCode} → ${result.destination}, ` +
-          `${result.remainingQuantityInBin} left in the bin.`,
+        : `Bin ${result.sourceBinCode} moved to ${result.destination} with ` +
+          `${result.checkedOutQuantity} ${result.part.sku} recorded inside.`,
     };
   }
 }
@@ -408,10 +427,8 @@ export class RetrievalExecuteNode extends WorkflowNode<
 /**
  * Read-only coherence check. Reports, never repairs, and never retries.
  *
- * The decrement check is the interesting one: it proves stock fell by exactly
- * the amount the service says it removed — one, or zero for an idempotent
- * replay — which is how "decreased exactly once" is actually demonstrated
- * rather than assumed.
+ * A checkout deliberately keeps the last-known count. Verification therefore
+ * proves that the bin is marked CHECKED_OUT and its baseline was not mutated.
  */
 export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, RetrievalGraphData> {
   constructor() {
@@ -431,6 +448,16 @@ export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, Ret
       problems.push(`the movement is ${movement.status}, not COMPLETED`);
     }
 
+    if (result?.ok && result.duplicate) {
+      return problems.length > 0
+        ? {
+            kind: "FAILED",
+            reason: "verification_failed",
+            message: `The original movement cannot be replayed coherently: ${problems.join("; ")}.`,
+          }
+        : { kind: "PROCEED", summary: "Original completed retrieval replayed; no current state was changed." };
+    }
+
     const bin = data.sourceBinCode ? await getBinByCode(data.sourceBinCode) : null;
     if (!bin || !data.partId) {
       problems.push("the source bin is missing");
@@ -443,24 +470,20 @@ export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, Ret
       if (remaining < 0) {
         problems.push(`inventory in ${bin.code} is negative`);
       }
-      if (result?.ok && remaining !== result.remainingQuantityInBin) {
+      if (result?.ok && remaining !== result.checkedOutQuantity) {
         problems.push(
-          `${bin.code} holds ${remaining}, but the retrieval reported ${result.remainingQuantityInBin} remaining`,
+          `${bin.code} records ${remaining}, but the retrieval reported ${result.checkedOutQuantity} checked out`,
         );
       }
       if (result?.ok && data.sourceQuantityBefore !== undefined) {
-        const removed = data.sourceQuantityBefore - remaining;
-        if (removed !== result.inventoryQuantityRemoved) {
+        if (remaining !== data.sourceQuantityBefore) {
           problems.push(
-            `stock fell by ${removed} but the retrieval removed ${result.inventoryQuantityRemoved}`,
+            `the last-known count changed from ${data.sourceQuantityBefore} to ${remaining} during checkout`,
           );
         }
       }
-      // An emptied bin must become AVAILABLE again; one still holding stock
-      // must stay OCCUPIED. Either mismatch would strand a bin.
-      const expected = remaining > 0 ? "OCCUPIED" : "AVAILABLE";
-      if (bin.status !== expected) {
-        problems.push(`bin ${bin.code} is ${bin.status} but holds ${remaining}`);
+      if (bin.status !== "CHECKED_OUT") {
+        problems.push(`bin ${bin.code} is ${bin.status}, not CHECKED_OUT`);
       }
     }
 
@@ -479,7 +502,7 @@ export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, Ret
 
     return {
       kind: "PROCEED",
-      summary: `Movement COMPLETED, ${data.sourceBinCode} state coherent with remaining stock.`,
+      summary: `Movement COMPLETED; ${data.sourceBinCode} is CHECKED_OUT with its baseline count preserved.`,
     };
   }
 }

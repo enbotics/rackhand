@@ -1,6 +1,7 @@
 "use client";
 
 import type { MovementRowView } from "@/lib/warehouse/dashboard-types";
+import type { GantryStatus } from "@/lib/gantry/types";
 import { MOVEMENT_STATUS_PRESENTATION } from "@/lib/warehouse/dashboard-presentation";
 import type { ApprovalOutcome, PendingApprovalView } from "./state";
 import { BUTTON_VARIANTS, Field, Panel, StatusChip } from "./ui";
@@ -30,6 +31,7 @@ export function ApprovalCard({
   outcome,
   busy,
   latestMovement,
+  gantry,
   onDecide,
 }: {
   approval: PendingApprovalView | null;
@@ -37,6 +39,7 @@ export function ApprovalCard({
   busy: boolean;
   /** The newest Movement row, re-read from the database after a decision. */
   latestMovement: MovementRowView | null;
+  gantry?: GantryStatus | null;
   onDecide: (decision: "APPROVE" | "DENY") => void;
 }) {
   if (approval) {
@@ -50,23 +53,49 @@ export function ApprovalCard({
         <p className="mt-2 font-mono text-sm font-semibold tracking-wide text-ink">
           {summary.action}
         </p>
-        <p className="mt-1 text-sm">
-          <span className="font-mono text-accent">{summary.sku ?? "part not yet identified"}</span>
-          {summary.canonicalName && (
-            <span className="ml-2 text-ink-muted">{summary.canonicalName}</span>
-          )}
-        </p>
+        {summary.action === "INVENTORY_AUDIT" ? (
+          <p className="mt-1 text-sm text-ink-muted">
+            One camera frame per bin; confidence must be strictly above 80% for an automatic
+            inventory update.
+          </p>
+        ) : (
+          <p className="mt-1 text-sm">
+            <span className="font-mono text-accent">{summary.sku ?? "part not yet identified"}</span>
+            {summary.canonicalName && (
+              <span className="ml-2 text-ink-muted">{summary.canonicalName}</span>
+            )}
+          </p>
+        )}
 
         <div className="mt-3 border-t border-line-soft pt-2">
           <Field label="Route">
             {summary.source ?? "?"} → {summary.destination ?? "?"}
           </Field>
-          <Field label="Quantity">{summary.quantity}</Field>
+          <Field label="Scope">
+            {summary.scope === "AUDIT_BINS"
+              ? summary.source === "all auditable shelf bins"
+                ? "All auditable shelf bins, sequentially"
+                : `One physical bin (${summary.source})`
+              : summary.scope === "ENTIRE_BIN"
+              ? "Entire physical bin"
+              : `${summary.quantity ?? "Camera count pending"} counted unit${summary.quantity === 1 ? "" : "s"}`}
+          </Field>
+          {summary.scope === "ENTIRE_BIN" && summary.quantity !== null && (
+            <Field label="Recorded contents">
+              {summary.quantity} unit{summary.quantity === 1 ? "" : "s"} (last verified)
+            </Field>
+          )}
+          {summary.capacity && (
+            <Field label="Capacity">
+              {summary.capacity.before} → {summary.capacity.after}/{summary.capacity.limit}
+            </Field>
+          )}
         </div>
 
         <p className="mt-3 text-xs leading-relaxed text-ink-muted">
           Nothing has moved yet. No bin is reserved and no stock has changed. Approving authorises
-          the attempt; the warehouse service still validates it before executing.
+          the attempt; the warehouse service still validates it before executing. Counts at or
+          below 80% confidence remain unchanged for review.
         </p>
 
         <div className="mt-4 flex gap-2">
@@ -96,12 +125,50 @@ export function ApprovalCard({
   return (
     <Panel title="Approval">
       {outcome.kind === "EXECUTING" && (
-        <div className="flex items-center gap-3">
-          <div className="animate-spin-slow h-4 w-4 shrink-0 rounded-full border-2 border-line border-t-accent" />
-          <p className="text-xs text-ink-muted">
-            Executing… the warehouse service is validating and driving the gantry.
-          </p>
+        <div className="animate-stage-reveal space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="animate-spin-slow h-4 w-4 shrink-0 rounded-full border-2 border-line border-t-accent" />
+            <p className="text-xs text-ink-muted">
+              Executing… the warehouse service is validating and driving the gantry.
+            </p>
+          </div>
+          <div className="relative h-12 overflow-hidden rounded-lg border border-line bg-bg-elevated">
+            <div className="absolute left-5 right-5 top-1/2 h-px bg-line" />
+            <span className="absolute left-3 top-2 font-mono text-[8px] uppercase text-ink-faint">
+              {outcome.summary?.action === "INVENTORY_AUDIT"
+                ? "SCAN_STATION"
+                : outcome.summary?.action === "RETRIEVAL"
+                ? outcome.summary?.destination ?? "OUTPUT"
+                : outcome.summary?.source ?? "Station"}
+            </span>
+            <span className="absolute right-3 top-2 font-mono text-[8px] uppercase text-ink-faint">
+              {outcome.summary?.action === "INVENTORY_AUDIT"
+                ? outcome.summary?.source ?? "Shelf bins"
+                : outcome.summary?.action === "RETRIEVAL"
+                ? outcome.summary?.source ?? "Shelf"
+                : outcome.summary?.destination ?? "Slot"}
+            </span>
+            <div
+              className={`absolute top-6 h-4 w-8 rounded border border-accent bg-accent-tint shadow-[0_0_14px_rgba(91,157,217,0.4)] ${
+                outcome.summary?.action === "INVENTORY_AUDIT"
+                  ? "animate-bin-audit"
+                  : outcome.summary?.action === "RETRIEVAL"
+                    ? "animate-bin-fetch"
+                    : "animate-bin-return"
+              }`}
+            />
+          </div>
+          <div className="flex justify-between font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
+            <span>Gantry {gantry?.state ?? "STARTING"}</span>
+            <span>{gantry?.currentLocation ?? "HOME"}</span>
+          </div>
         </div>
+      )}
+
+      {outcome.kind === "DECIDING" && (
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-muted">
+          – Cancelling without moving the gantry
+        </p>
       )}
 
       {outcome.kind === "CANCELLED" && (
@@ -122,7 +189,7 @@ export function ApprovalCard({
         </p>
       )}
 
-      {outcome.kind !== "EXECUTING" && (
+      {outcome.kind !== "EXECUTING" && outcome.kind !== "DECIDING" && (
         <p className="mt-2 text-xs leading-relaxed text-ink">{outcome.message}</p>
       )}
 

@@ -5,6 +5,7 @@ import type { GantryStatus } from "@/lib/gantry/types";
 import type { Shot } from "@/lib/shots-db";
 import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { groupBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
+import { evaluatePutawayDestination } from "@/lib/warehouse/putaway-destination";
 import type {
   GuidedGantryStatus,
   GuidedPutawayResult,
@@ -67,6 +68,27 @@ function toneForStatus(status: GuidedGantryStatus) {
     return "border-warn/40 bg-warn-soft text-warn";
   }
   return "border-accent-soft/60 bg-accent-tint text-accent";
+}
+
+function destinationReasonLabel(
+  reason: ReturnType<typeof evaluatePutawayDestination>["reason"],
+): string {
+  switch (reason) {
+    case "FULL":
+      return "Full";
+    case "RESERVED":
+      return "Reserved";
+    case "CHECKED_OUT":
+      return "Checked out";
+    case "DISABLED":
+      return "Disabled";
+    case "DIFFERENT_PART":
+      return "Different item";
+    case "INCONSISTENT":
+      return "Needs review";
+    default:
+      return "Compatible";
+  }
 }
 
 function LiveStatus({
@@ -178,6 +200,7 @@ export function GuidedPutawayDialog({
   registeringPart,
   registerError,
   onCaptureVerification,
+  getCameraStream,
   onWarehouseChanged,
 }: {
   scanState: ScanState;
@@ -202,27 +225,64 @@ export function GuidedPutawayDialog({
   registerError: string | null;
   /** Captures the current live camera frame without starting a new scan. */
   onCaptureVerification: () => Shot | null;
+  /** The same live stream already open for scanning — for the placement-verification preview below. */
+  getCameraStream?: () => MediaStream | null;
   onWarehouseChanged: () => void;
 }) {
   const scanId = scanState.scan?.scanResult?.scanId ?? null;
+  // Kept temporarily for the identification UI above; physical guided
+  // putaway is disabled and client movement now goes through agent HITL.
+  const legacyGuidedPutawayEnabled = false;
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("CHOOSING");
   const [selectedBin, setSelectedBin] = useState<string | null>(null);
   const [operation, setOperation] = useState<PutawayOperation | null>(null);
   const [gantryStatus, setGantryStatus] = useState<GuidedGantryStatus>("IDLE");
   const [liveGantry, setLiveGantry] = useState<GantryStatus | null>(null);
-  const [placementPhoto, setPlacementPhoto] = useState<Shot | null>(null);
+  const [verifying, setVerifying] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const seenOpenRequest = useRef(0);
   const [lastSeenPhase, setLastSeenPhase] = useState(scanState.phase);
+  const placementVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  const availableBins = useMemo(
-    () => bins.filter((bin) => bin.status === "AVAILABLE"),
-    [bins],
-  );
   const shelfRows = useMemo(() => groupBinsInShelfOrder(bins), [bins]);
   const identityReady = identity === "MATCHED" || identity === "HUMAN_CONFIRMED";
+  const identifiedPartId =
+    confirmed?.partId ??
+    (scanState.scan?.match?.status === "MATCHED"
+      ? scanState.scan.match.matchedPart.id
+      : null);
+  const destinationChoices = useMemo(
+    () =>
+      shelfRows.flatMap((row) =>
+        row.bins.map((bin) => ({
+          bin,
+          evaluation: identifiedPartId
+            ? evaluatePutawayDestination(bin, identifiedPartId)
+            : null,
+        })),
+      ),
+    [identifiedPartId, shelfRows],
+  );
+  const choiceByBinId = useMemo(
+    () => new Map(destinationChoices.map((choice) => [choice.bin.binId, choice])),
+    [destinationChoices],
+  );
+  const compatibleChoices = destinationChoices.filter(
+    (choice) => choice.evaluation?.eligible,
+  );
+  const recommendedChoice =
+    compatibleChoices.find((choice) => choice.evaluation?.alreadyStoresPart) ??
+    compatibleChoices[0] ??
+    null;
+  const selectedChoice =
+    compatibleChoices.find((choice) => choice.bin.code === selectedBin) ??
+    recommendedChoice;
+  const fullExistingChoice = destinationChoices.find(
+    (choice) =>
+      choice.evaluation?.alreadyStoresPart && choice.evaluation.reason === "FULL",
+  );
   const blockedReason = putawayBlockedReason(
     identity,
     scanState.scan?.matchError != null,
@@ -248,7 +308,7 @@ export function GuidedPutawayDialog({
       setSelectedBin(null);
       setOperation(null);
       setGantryStatus("IDLE");
-      setPlacementPhoto(null);
+      setVerifying(false);
       setVerificationError(null);
       setError(null);
     }
@@ -259,6 +319,19 @@ export function GuidedPutawayDialog({
     seenOpenRequest.current = openRequestVersion;
     setOpen(true);
   }, [openRequestVersion, scanId]);
+
+  /**
+   * A second, read-only view of the SAME live stream already open for
+   * scanning — not a second camera device. Bound imperatively (not via
+   * React's `srcObject` prop, which does not exist) whenever this step is on
+   * screen, so the operator can see the item inside the bin before verifying,
+   * instead of aiming blind.
+   */
+  useEffect(() => {
+    if (phase !== "AWAITING_PLACEMENT") return;
+    const video = placementVideoRef.current;
+    if (video) video.srcObject = getCameraStream?.() ?? null;
+  }, [phase, getCameraStream]);
 
   useEffect(() => {
     if (phase !== "FETCHING" && phase !== "RETURNING") return;
@@ -297,7 +370,6 @@ export function GuidedPutawayDialog({
     setSelectedBin(destinationBinCode);
     setPhase("RESERVING");
     setGantryStatus("IDLE");
-    setPlacementPhoto(null);
     setVerificationError(null);
     setError(null);
 
@@ -343,13 +415,14 @@ export function GuidedPutawayDialog({
     }
   }, [applyFailure, confirmed, identityReady, onWarehouseChanged, scanState.scan, shots]);
 
+  /**
+   * `shot` carries the verification photo for placed=true — captured at the
+   * moment of the click, from the live preview above, rather than a photo
+   * taken and reviewed ahead of time. See `verify` below.
+   */
   const settle = useCallback(
-    async (placed: boolean) => {
+    async (placed: boolean, shot?: Shot) => {
       if (!operation) return;
-      if (placed && !placementPhoto) {
-        setVerificationError("Take a fresh photo of the item inside the bin before returning it.");
-        return;
-      }
       setPhase("RETURNING");
       setGantryStatus("RETURNING_BIN");
       setVerificationError(null);
@@ -361,8 +434,8 @@ export function GuidedPutawayDialog({
           placed
             ? {
                 placed: true,
-                verificationImageDataUrl: placementPhoto!.dataUrl,
-                verificationCapturedAt: placementPhoto!.createdAt,
+                verificationImageDataUrl: shot!.dataUrl,
+                verificationCapturedAt: shot!.createdAt,
               }
             : { placed: false },
         );
@@ -414,18 +487,29 @@ export function GuidedPutawayDialog({
         onWarehouseChanged();
       }
     },
-    [applyFailure, onWarehouseChanged, operation, placementPhoto],
+    [applyFailure, onWarehouseChanged, operation],
   );
 
-  const captureVerification = useCallback(() => {
+  /**
+   * One click: capture the live frame right now and go straight to
+   * verify+return. No separate "take photo, review, then confirm" step — the
+   * live preview above already lets the operator see the shot before
+   * clicking, so a second still-frame review added nothing but an extra click.
+   */
+  const verify = useCallback(async () => {
     const shot = onCaptureVerification();
     if (!shot) {
       setVerificationError("The camera is not ready. Start the live camera, then retry.");
       return;
     }
-    setPlacementPhoto(shot);
     setVerificationError(null);
-  }, [onCaptureVerification]);
+    setVerifying(true);
+    try {
+      await settle(true, shot);
+    } finally {
+      setVerifying(false);
+    }
+  }, [onCaptureVerification, settle]);
 
   // Nothing captured yet — genuinely nothing to show, not even a collapsed
   // reopen button. Every other phase (MEASURING, FAILED, MATCHING, READY) has
@@ -434,7 +518,7 @@ export function GuidedPutawayDialog({
   if (!open) {
     return (
       <button type="button" onClick={() => setOpen(true)} className={BUTTON_VARIANTS.secondary}>
-        {scanState.scan ? "Review latest scan and put away" : "Review scan status"}
+        {scanState.scan ? "Review latest scan" : "Review scan status"}
       </button>
     );
   }
@@ -442,12 +526,12 @@ export function GuidedPutawayDialog({
   const locked = ["RESERVING", "FETCHING", "AWAITING_PLACEMENT", "RETURNING", "SAVING"].includes(
     phase,
   );
-  const destination = operation?.destinationBinCode ?? selectedBin;
+  const destination = operation?.destinationBinCode ?? selectedChoice?.bin.code ?? null;
   const destinationBin = bins.find((bin) => bin.code === destination) ?? null;
 
   return (
     <Modal
-      title="Scanned item · guided putaway"
+      title="Scanned item"
       onClose={() => setOpen(false)}
       dismissible={!locked}
       maxWidthClassName="max-w-4xl"
@@ -543,7 +627,7 @@ export function GuidedPutawayDialog({
           </section>
         )}
 
-        {phase === "CHOOSING" && identityReady && (
+        {phase === "CHOOSING" && identityReady && legacyGuidedPutawayEnabled && (
           <section
             className="animate-stage-reveal rounded-xl border border-line bg-surface p-4"
             data-guided-step="slots"
@@ -551,7 +635,10 @@ export function GuidedPutawayDialog({
             {confirmed && (
               <button
                 type="button"
-                onClick={onReconsiderIdentity}
+                onClick={() => {
+                  setSelectedBin(null);
+                  onReconsiderIdentity();
+                }}
                 disabled={identityBusy}
                 className={`${BUTTON_VARIANTS.secondary} mb-4`}
               >
@@ -561,75 +648,149 @@ export function GuidedPutawayDialog({
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
-                  Step 2 · Available slots
+                  Step 2 · Choose destination
                 </p>
                 <p className="mt-1 text-xs text-ink-muted">
-                  Choose where this identified item will be stored.
+                  The suggested bin keeps identical items together when capacity allows. You may
+                  select any other compatible bin before continuing.
                 </p>
               </div>
               <span className="font-mono text-xs text-success">
-                {availableBins.length} available
+                {compatibleChoices.length} compatible
               </span>
             </div>
-            {availableBins.length > 0 ? (
-              <div
-                className="mt-4 flex flex-col gap-2"
-                role="group"
-                aria-label="Available slots in physical shelf order"
-              >
-                {shelfRows.map((row) => (
-                  <div
-                    key={row.bed ?? "unplaced"}
-                    className="flex items-stretch gap-2"
-                    data-shelf-bed={row.bed ?? "unplaced"}
-                  >
-                    <span className="flex w-10 shrink-0 items-center justify-end pr-1 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
-                      {row.bed === null ? "—" : `bed ${row.bed}`}
-                    </span>
-                    <div
-                      className="grid flex-1 gap-2"
-                      style={{
-                        gridTemplateColumns: `repeat(${row.bins.length}, minmax(0, 1fr))`,
-                      }}
-                    >
-                      {row.bins.map((bin) =>
-                        bin.status === "AVAILABLE" ? (
-                          <button
-                            key={bin.binId}
-                            type="button"
-                            onClick={() => void start(bin.code)}
-                            aria-pressed={selectedBin === bin.code}
-                            className={`min-h-12 rounded-lg border px-2 py-2 font-mono text-xs transition-all ${
-                              selectedBin === bin.code
-                                ? "border-accent bg-accent-tint text-accent shadow-[0_0_0_1px_rgba(91,157,217,0.25)]"
-                                : "border-line bg-bg-elevated text-ink-muted hover:border-accent-soft hover:text-ink"
-                            }`}
-                          >
-                            {bin.code}
-                          </button>
-                        ) : (
-                          <button
-                            key={bin.binId}
-                            type="button"
-                            disabled
-                            aria-label={`${bin.code}, ${bin.status.toLowerCase()}`}
-                            className="flex min-h-12 flex-col items-center justify-center rounded-lg border border-line/60 bg-bg-elevated/40 px-2 py-1 font-mono text-[10px] text-ink-faint opacity-55"
-                          >
-                            <span>{bin.code}</span>
-                            <span className="mt-0.5 text-[8px] uppercase tracking-[0.08em]">
-                              {bin.status.toLowerCase()}
-                            </span>
-                          </button>
-                        ),
-                      )}
-                    </div>
-                  </div>
-                ))}
+            {recommendedChoice && (
+              <div className="mt-4 rounded-lg border border-accent-soft/60 bg-accent-tint px-3 py-2.5">
+                <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-accent">
+                  Default destination · {recommendedChoice.bin.code}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                  {recommendedChoice.evaluation?.alreadyStoresPart
+                    ? `This bin already stores the identified item. Adding it here keeps matching stock together: ${recommendedChoice.evaluation.currentQuantity} + 1 = ${recommendedChoice.evaluation.afterQuantity} of ${recommendedChoice.bin.capacity}.`
+                    : fullExistingChoice?.evaluation
+                      ? `Its existing bin ${fullExistingChoice.bin.code} is full (${fullExistingChoice.evaluation.currentQuantity}/${fullExistingChoice.bin.capacity}), so ${recommendedChoice.bin.code} is the first compatible empty bin: ${recommendedChoice.evaluation?.currentQuantity} + 1 = ${recommendedChoice.evaluation?.afterQuantity}/${recommendedChoice.bin.capacity}.`
+                      : `No existing bin currently stores this item with free capacity, so ${recommendedChoice.bin.code} is the first compatible empty bin: ${recommendedChoice.evaluation?.currentQuantity} + 1 = ${recommendedChoice.evaluation?.afterQuantity}/${recommendedChoice.bin.capacity}.`}
+                </p>
               </div>
+            )}
+            {compatibleChoices.length > 0 ? (
+              <>
+                <div
+                  className="mt-4 flex flex-col gap-2 overflow-x-auto pb-1"
+                  role="group"
+                  aria-label="Putaway destinations in physical shelf order"
+                >
+                  {shelfRows.map((row) => (
+                    <div
+                      key={row.bed ?? "unplaced"}
+                      className="flex min-w-max items-stretch gap-2"
+                      data-shelf-bed={row.bed ?? "unplaced"}
+                    >
+                      <span className="flex w-10 shrink-0 items-center justify-end pr-1 font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">
+                        {row.bed === null ? "—" : `bed ${row.bed}`}
+                      </span>
+                      <div
+                        className="grid flex-1 gap-2"
+                        style={{
+                          gridTemplateColumns: `repeat(${row.bins.length}, minmax(7.5rem, 1fr))`,
+                        }}
+                      >
+                        {row.bins.map((bin) => {
+                          const choice = choiceByBinId.get(bin.binId);
+                          const evaluation = choice?.evaluation;
+                          const eligible = evaluation?.eligible === true;
+                          const chosen = selectedChoice?.bin.binId === bin.binId;
+                          const isDefault = recommendedChoice?.bin.binId === bin.binId;
+                          return (
+                            <button
+                              key={bin.binId}
+                              type="button"
+                              disabled={!eligible}
+                              onClick={() => setSelectedBin(bin.code)}
+                              aria-pressed={chosen}
+                              aria-label={`${bin.code}, ${
+                                evaluation ? destinationReasonLabel(evaluation.reason) : bin.status
+                              }, capacity ${evaluation?.currentQuantity ?? bin.totalQuantity} of ${bin.capacity}`}
+                              className={`flex min-h-[4.75rem] flex-col items-start justify-center rounded-lg border px-2.5 py-2 text-left transition-all ${
+                                chosen
+                                  ? "border-accent bg-accent-tint text-accent shadow-[0_0_0_1px_rgba(91,157,217,0.25)]"
+                                  : eligible
+                                    ? "border-line bg-bg-elevated text-ink-muted hover:border-accent-soft hover:text-ink"
+                                    : "border-line/60 bg-bg-elevated/40 text-ink-faint opacity-55"
+                              }`}
+                            >
+                              <span className="flex w-full items-center justify-between gap-1 font-mono text-[11px]">
+                                {bin.code}
+                                {isDefault && (
+                                  <span className="rounded bg-accent/15 px-1 py-0.5 text-[7px] uppercase tracking-[0.08em] text-accent">
+                                    Default
+                                  </span>
+                                )}
+                              </span>
+                              <span className="mt-1 text-[9px]">
+                                {evaluation?.alreadyStoresPart && eligible
+                                  ? "Same item"
+                                  : evaluation
+                                    ? destinationReasonLabel(evaluation.reason)
+                                    : bin.status.toLowerCase()}
+                              </span>
+                              <span className="mt-0.5 font-mono text-[9px]">
+                                {eligible && evaluation
+                                  ? `${evaluation.currentQuantity} + 1 = ${evaluation.afterQuantity}/${bin.capacity}`
+                                  : `${evaluation?.currentQuantity ?? bin.totalQuantity}/${bin.capacity} used`}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
+                  <p className="text-xs text-ink-muted">
+                    Selected: <strong className="text-ink">{selectedChoice?.bin.code}</strong>
+                    {selectedChoice?.evaluation &&
+                      ` · ${selectedChoice.evaluation.currentQuantity} + 1 = ${selectedChoice.evaluation.afterQuantity}/${selectedChoice.bin.capacity}`}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => selectedChoice && void start(selectedChoice.bin.code)}
+                    disabled={!selectedChoice}
+                    className={BUTTON_VARIANTS.primary}
+                  >
+                    Continue with {selectedChoice?.bin.code ?? "selected bin"} →
+                  </button>
+                </div>
+              </>
             ) : (
               <div className="mt-4">
-                <ErrorNote>No slots are currently available for putaway.</ErrorNote>
+                <ErrorNote>
+                  No bin can accept this item. Existing matching bins are full, and no compatible
+                  empty bin is currently available.
+                </ErrorNote>
               </div>
+            )}
+          </section>
+        )}
+
+        {phase === "CHOOSING" && identityReady && !legacyGuidedPutawayEnabled && (
+          <section className="animate-stage-reveal rounded-xl border border-success/35 bg-success-soft p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-success">
+              Identification complete
+            </p>
+            <p className="mt-2 text-sm text-ink">
+              The camera result and photo are ready. Ask the Warehouse Agent to put this item away;
+              the physical action will appear as a separate approval with gantry status.
+            </p>
+            {confirmed && (
+              <button
+                type="button"
+                onClick={onReconsiderIdentity}
+                disabled={identityBusy}
+                className={`${BUTTON_VARIANTS.secondary} mt-4`}
+              >
+                ← {identityBusy ? "Opening identity choices…" : "Choose a different identity"}
+              </button>
             )}
           </section>
         )}
@@ -659,7 +820,7 @@ export function GuidedPutawayDialog({
             </p>
             <p className="mt-2 text-sm text-ink">
               Place <strong>{operation.part.sku}</strong> ({operation.part.canonicalName}) into bin{" "}
-              <strong>{operation.destinationBinCode}</strong>, then capture the bin before returning it.
+              <strong>{operation.destinationBinCode}</strong>, then verify while it&apos;s visible below.
             </p>
             {destinationBin && (
               <p className="mt-1 font-mono text-[10px] text-ink-muted">
@@ -667,36 +828,18 @@ export function GuidedPutawayDialog({
               </p>
             )}
 
-            <div className="mt-4 overflow-hidden rounded-xl border border-line bg-bg-elevated">
-              {placementPhoto ? (
-                <div className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                  {/* A just-captured local data URL; it is uploaded only when the operator verifies it. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={placementPhoto.dataUrl}
-                    alt={`Verification photo for bin ${operation.destinationBinCode}`}
-                    className="max-h-64 w-full rounded-lg border border-line object-contain"
-                  />
-                  <div className="space-y-1 sm:w-44">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-success">
-                      Photo ready
-                    </p>
-                    <p className="text-xs leading-relaxed text-ink-muted">
-                      Check that the item and remaining bin space are clearly visible.
-                    </p>
-                    <p className="font-mono text-[9px] text-ink-faint">
-                      {new Date(placementPhoto.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="px-4 py-7 text-center">
-                  <p className="text-xs text-ink-muted">No placement photo captured yet.</p>
-                  <p className="mt-1 text-[11px] text-ink-faint">
-                    Use the live camera to show the item inside the presented bin.
-                  </p>
-                </div>
-              )}
+            {/* Live view of the same camera used to scan — not a captured
+                still. The operator lines up the shot here and Verify captures
+                it at the moment of the click, so there is nothing to review
+                or retake afterward. */}
+            <div className="relative mt-4 aspect-video w-full overflow-hidden rounded-xl border border-line bg-black/40">
+              <video
+                ref={placementVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="h-full w-full object-cover"
+              />
             </div>
 
             {verificationError && (
@@ -706,26 +849,22 @@ export function GuidedPutawayDialog({
             )}
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-              <button type="button" onClick={() => void settle(false)} className={BUTTON_VARIANTS.secondary}>
-                No, return empty bin
+              <button
+                type="button"
+                onClick={() => void settle(false)}
+                disabled={verifying}
+                className={BUTTON_VARIANTS.secondary}
+              >
+                No item placed · return bin
               </button>
-              <div className="flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={captureVerification}
-                  className={BUTTON_VARIANTS.secondary}
-                >
-                  {placementPhoto ? "Retake photo" : "Take verification photo"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void settle(true)}
-                  disabled={!placementPhoto}
-                  className={BUTTON_VARIANTS.approve}
-                >
-                  Verify photo &amp; return bin
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => void verify()}
+                disabled={verifying}
+                className={BUTTON_VARIANTS.approve}
+              >
+                {verifying ? "Verifying…" : "Verify"}
+              </button>
             </div>
           </section>
         )}
@@ -742,7 +881,7 @@ export function GuidedPutawayDialog({
 
         {phase === "CANCELLED" && (
           <div className="rounded-xl border border-line bg-bg-elevated p-4 text-ink-muted">
-            The empty bin was returned and its reservation was released. No inventory was saved.
+            The bin was returned and its reservation was released. No inventory was changed.
           </div>
         )}
 

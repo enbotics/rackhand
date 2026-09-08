@@ -21,6 +21,13 @@ import { AlertIcon, CameraIcon, ChevronDownIcon, FlipIcon } from "@/components/i
 export interface CameraStageHandle {
   /** Captures the current live frame without starting the measurement pipeline. */
   captureFrame: () => Shot | null;
+  /**
+   * The same live MediaStream already open for scanning — for a second,
+   * read-only `<video>` preview elsewhere (e.g. the guided putaway dialog's
+   * placement-verification step) without opening a second camera device.
+   * Null whenever the camera itself is not live.
+   */
+  getStream: () => MediaStream | null;
 }
 
 export const CameraStage = forwardRef<CameraStageHandle, {
@@ -97,7 +104,12 @@ export const CameraStage = forwardRef<CameraStageHandle, {
     return shot;
   }, [camera.activeDeviceLabel, camera.mirrored, camera.status]);
 
-  useImperativeHandle(ref, () => ({ captureFrame }), [captureFrame]);
+  const getStream = useCallback(
+    () => (camera.status === "live" ? camera.stream : null),
+    [camera.status, camera.stream],
+  );
+
+  useImperativeHandle(ref, () => ({ captureFrame, getStream }), [captureFrame, getStream]);
 
   const capture = () => {
     const shot = captureFrame();

@@ -6,27 +6,25 @@
  *     the agent REQUESTS a retrieval
  *     this service VALIDATES and EXECUTES it
  *     the simulator MOVES
- *     the database COMMITS only after the movement succeeded
+ *     the database marks the entire bin CHECKED_OUT only after movement succeeds
  *
  * Nothing here trusts the caller. It does not trust that the agent already
  * called search_inventory and saw two in B2-01 — inventory is re-queried, and
- * the decrement itself is a conditional UPDATE, so stock cannot go negative
- * even if the world changed underneath the model's recollection.
+ * the source bin is claimed conditionally, so concurrent operations cannot
+ * move it twice even if the world changed underneath the model's recollection.
  *
  * It is callable directly: a route, a demo script and the test suite all use
  * it with no LLM in the picture.
  *
- * THE INVARIANT THAT MATTERS MOST: inventory decreases only after the gantry
- * reports COMPLETED. The database must never say an item left the shelf
- * before it did.
+ * THE INVARIANT THAT MATTERS MOST: checking out a whole bin does not guess how
+ * many items a client removes. The last verified quantity remains recorded but
+ * unavailable until photographed return putaway reconciles it.
  */
 import { prisma } from "./db";
-import { applyInventoryRemoval, getInventoryForPart } from "./inventory-service";
+import { getInventoryForPart } from "./inventory-service";
 import { getBinByCode, getPartById, getPartBySku, updateMovementStatus } from "./repository";
-import { isWarehouseError } from "./errors";
 import {
   RETRIEVAL_DESTINATION,
-  RETRIEVAL_QUANTITY,
   type RetrievalFailure,
   type RetrievalFailureReason,
   type RetrievalRequest,
@@ -37,6 +35,7 @@ import { getGantryController } from "@/lib/gantry/factory";
 import { isGantryError } from "@/lib/gantry/errors";
 import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Movement } from "@/generated/prisma/client";
+import { compareBinsInShelfOrder } from "./bin-layout";
 
 /**
  * Retrieval and putaway share one `Movement.idempotencyKey` column, so the
@@ -53,16 +52,16 @@ export function createRetrievalRequestId(): string {
 }
 
 /**
- * POLICY: lowest bin code with stock.
- *
- * `getInventoryForPart` already orders locations by bin code ascending, so
- * this is the first stocked entry. Deterministic on purpose — neither the
- * model nor the graph ever picks a source bin by any other rule.
+ * POLICY: first stocked bin in the warehouse's physical shelf order.
+ * Deterministic on purpose — neither the model nor the graph picks a source
+ * bin by a different ordering rule.
  */
 export function chooseRetrievalSourceBinCode(
   stocked: readonly { binCode: string; quantity: number }[],
 ): string | null {
-  return stocked[0]?.binCode ?? null;
+  return [...stocked].sort((left, right) =>
+    compareBinsInShelfOrder({ code: left.binCode }, { code: right.binCode }),
+  )[0]?.binCode ?? null;
 }
 
 /** One line per state transition. Never logs credentials, images or reasoning. */
@@ -98,18 +97,6 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     );
   }
 
-  /* 1b — quantity. Refused before the idempotency claim, so an unsupported
-     request never consumes a request id or creates a movement. */
-  const quantity = input?.quantity ?? RETRIEVAL_QUANTITY;
-  if (quantity !== RETRIEVAL_QUANTITY) {
-    return fail(
-      requestId,
-      "unsupported_quantity",
-      `Retrieval moves one item per operation; ${quantity} were requested. ` +
-        "Ask the operator to confirm a single item, then retry.",
-    );
-  }
-
   /* 2 — idempotency. One request id, one physical retrieval. */
   const claimed = await prisma.movement.findUnique({ where: { idempotencyKey } });
   if (claimed) {
@@ -139,7 +126,9 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   }
 
   /* 6 — source bin. Supplied bins are validated exactly like chosen ones. */
-  const stocked = summary.locations.filter((location) => location.quantity > 0);
+  const stocked = summary.locations.filter(
+    (location) => location.quantity > 0 && location.binStatus === "OCCUPIED",
+  );
   let sourceBinCode: string;
 
   if (input.sourceBinCode !== undefined) {
@@ -183,6 +172,16 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   if (!sourceBin) {
     return fail(requestId, "source_bin_not_found", `No bin has code "${source}".`);
   }
+  if (sourceBin.status !== "OCCUPIED") {
+    return fail(
+      requestId,
+      "inventory_conflict",
+      `Bin ${source} is ${sourceBin.status}; only a bin physically on the shelf can be checked out.`,
+      { partId: part.id, sourceBinCode: source },
+    );
+  }
+  const sourceQuantityBefore =
+    stocked.find((location) => location.binCode === source)?.quantity ?? 0;
 
   /* 7 — gantry pre-check. Advisory: the authoritative guard is the
      controller's own synchronous claim, handled at step 9. */
@@ -197,26 +196,45 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     );
   }
 
-  /* 8 — claim the request id and record intent. No bin reservation: retrieval
-     takes stock out of a bin that is already OCCUPIED, and the gantry itself
-     serialises physical access. */
+  /* 8 — atomically claim the bin and record the full last-verified count. */
   let movement: Movement;
   try {
-    movement = await prisma.movement.create({
-      data: {
-        type: "RETRIEVAL",
-        partId: part.id,
-        quantity: RETRIEVAL_QUANTITY,
-        status: "VALIDATED",
-        sourceBinId: sourceBin.id,
-        destinationLocation: RETRIEVAL_DESTINATION,
-        idempotencyKey,
-      },
+    movement = await prisma.$transaction(async (tx) => {
+      const reserved = await tx.bin.updateMany({
+        where: { id: sourceBin.id, status: "OCCUPIED" },
+        data: { status: "RESERVED" },
+      });
+      if (reserved.count !== 1) throw new Error("bin_checkout_conflict");
+      const stock = await tx.inventory.findUnique({
+        where: { partId_binId: { partId: part.id, binId: sourceBin.id } },
+      });
+      if (!stock || stock.quantity !== sourceQuantityBefore) {
+        throw new Error("bin_checkout_conflict");
+      }
+      return tx.movement.create({
+        data: {
+          type: "RETRIEVAL",
+          partId: part.id,
+          quantity: sourceQuantityBefore,
+          status: "VALIDATED",
+          sourceBinId: sourceBin.id,
+          destinationLocation: RETRIEVAL_DESTINATION,
+          idempotencyKey,
+        },
+      });
     });
   } catch (err) {
     if (isUniqueViolation(err)) {
       const existing = await prisma.movement.findUnique({ where: { idempotencyKey } });
       if (existing) return replayOrReject(existing, requestId);
+    }
+    if (err instanceof Error && err.message === "bin_checkout_conflict") {
+      return fail(
+        requestId,
+        "inventory_conflict",
+        `Bin ${source} changed before it could be checked out. Nothing moved.`,
+        { partId: part.id, sourceBinCode: source },
+      );
     }
     throw err;
   }
@@ -233,7 +251,7 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     operation = await gantry.retrieve({ source, destination: RETRIEVAL_DESTINATION });
   } catch (err) {
     const busy = isGantryError(err) && err.code === "gantry_busy";
-    await releaseClaim(movement.id);
+    await releaseClaim(movement.id, sourceBin.id);
     if (busy) {
       return fail(
         requestId,
@@ -242,12 +260,18 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
         { movementId: movement.id, partId: part.id, sourceBinCode: source },
       );
     }
-    throw err;
+    console.error(`[retrieval] gantry failed request=${requestId} movement=${movement.id}`, err);
+    return fail(requestId, "gantry_failed", "The gantry could not complete the retrieval.", {
+      movementId: movement.id,
+      partId: part.id,
+      sourceBinCode: source,
+      error: isGantryError(err) ? err.message : undefined,
+    });
   }
 
   if (operation.status !== "COMPLETED") {
     // The item is still assumed to be where it was: nothing left the bin.
-    await releaseClaim(movement.id, operation.operationId);
+    await releaseClaim(movement.id, sourceBin.id, operation.operationId);
     logRetrieval(
       `movement=${movement.id} gantry=${operation.operationId} status=FAILED reason=${operation.error ?? "unknown"}`,
     );
@@ -260,14 +284,21 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     });
   }
 
-  /* 10 — COMMIT TRANSACTION. Stock decreases, the bin frees itself if it just
-     emptied, and the movement completes — together or not at all. The `gte`
-     guard inside applyInventoryRemoval is what makes negative stock
-     unrepresentable even under concurrency. */
-  let remainingQuantityInBin: number;
+  /* 10 — COMMIT TRANSACTION. Inventory stays at its last verified baseline;
+     only its physical availability changes until return putaway recounts it. */
   try {
-    remainingQuantityInBin = await prisma.$transaction(async (tx) => {
-      const record = await applyInventoryRemoval(tx, part, sourceBin, RETRIEVAL_QUANTITY);
+    await prisma.$transaction(async (tx) => {
+      const stock = await tx.inventory.findUnique({
+        where: { partId_binId: { partId: part.id, binId: sourceBin.id } },
+      });
+      if (!stock || stock.quantity !== sourceQuantityBefore) {
+        throw new Error("checked-out inventory baseline changed during movement");
+      }
+      const checkedOut = await tx.bin.updateMany({
+        where: { id: sourceBin.id, status: "RESERVED" },
+        data: { status: "CHECKED_OUT" },
+      });
+      if (checkedOut.count !== 1) throw new Error("retrieval reservation was lost during movement");
       await tx.movement.update({
         where: { id: movement.id },
         data: {
@@ -276,7 +307,6 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
           gantryOperationId: operation.operationId,
         },
       });
-      return record.quantity;
     });
   } catch (err) {
     // The part HAS physically left the bin. Claiming failure outright would be
@@ -284,21 +314,15 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     // neither: the movement stays RUNNING, every id is preserved, and a human
     // reconciles. This also covers stock that vanished mid-flight, which is a
     // conflict the gantry has already acted on.
-    const conflict =
-      isWarehouseError(err) &&
-      (err.code === "insufficient_inventory" || err.code === "inventory_not_found");
     console.error(
       `[retrieval] INCONSISTENT movement=${movement.id} gantry=${operation.operationId} ` +
-        `bin=${source} sku=${part.sku} — gantry completed but the database commit failed` +
-        (conflict ? " (stock changed underneath the operation)" : "") +
-        `. The part has left the bin; inventory does NOT reflect it.`,
+        `bin=${source} sku=${part.sku} — gantry completed but CHECKED_OUT state could not be saved.`,
       err,
     );
     return fail(
       requestId,
       "retrieval_commit_failed",
-      "The gantry completed the move but the warehouse database could not be updated. " +
-        "The part has left the bin; inventory has not been updated. This needs manual reconciliation.",
+      "The gantry moved the bin to OUTPUT, but the warehouse could not save its CHECKED_OUT state. Reconciliation is required.",
       {
         movementId: movement.id,
         gantryOperationId: operation.operationId,
@@ -309,7 +333,7 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   }
 
   logRetrieval(
-    `movement=${movement.id} gantry=${operation.operationId} status=COMPLETED remaining=${remainingQuantityInBin}`,
+    `movement=${movement.id} gantry=${operation.operationId} status=COMPLETED checkedOut=${sourceQuantityBefore}`,
   );
 
   return {
@@ -320,8 +344,10 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     destination: RETRIEVAL_DESTINATION,
     movementId: movement.id,
     gantryOperationId: operation.operationId,
-    inventoryQuantityRemoved: RETRIEVAL_QUANTITY,
-    remainingQuantityInBin,
+    checkedOutQuantity: sourceQuantityBefore,
+    inventoryQuantityRemoved: 0,
+    remainingQuantityInBin: sourceQuantityBefore,
+    binStatus: "CHECKED_OUT",
     status: "COMPLETED",
   };
 }
@@ -352,11 +378,7 @@ async function replayOrReject(
     });
   }
 
-  const remaining = bin
-    ? ((await prisma.inventory.findUnique({
-        where: { partId_binId: { partId: part.id, binId: bin.id } },
-      })) ?? { quantity: 0 }).quantity
-    : 0;
+  const checkedOutQuantity = claimed.quantity;
 
   logRetrieval(`request=${requestId} movement=${claimed.id} status=DUPLICATE`);
   return {
@@ -367,8 +389,10 @@ async function replayOrReject(
     destination: RETRIEVAL_DESTINATION,
     movementId: claimed.id,
     gantryOperationId: claimed.gantryOperationId ?? "",
+    checkedOutQuantity,
     inventoryQuantityRemoved: 0,
-    remainingQuantityInBin: remaining,
+    remainingQuantityInBin: checkedOutQuantity,
+    binStatus: "CHECKED_OUT",
     status: "COMPLETED",
     duplicate: true,
   } satisfies RetrievalSuccess;
@@ -381,21 +405,30 @@ function isUniqueViolation(value: unknown): boolean {
 }
 
 /**
- * Undoes a claim that never removed stock: the movement becomes FAILED and the
- * request id is released.
+ * Undoes a claim that never moved the bin: the movement becomes FAILED, the
+ * source returns to OCCUPIED, and the request id is released.
  *
  * The idempotency key is cleared so the operator can retry the same request
- * after a failure, exactly as putaway does. No bin status is touched — a
- * failed retrieval never took anything out, so the bin is still as it was.
+ * after a failure, exactly as putaway does.
  */
-async function releaseClaim(movementId: string, gantryOperationId?: string): Promise<void> {
-  await prisma.movement.update({
-    where: { id: movementId },
-    data: {
-      status: "FAILED",
-      completedAt: new Date(),
-      idempotencyKey: null,
-      ...(gantryOperationId ? { gantryOperationId } : {}),
-    },
+async function releaseClaim(
+  movementId: string,
+  binId: string,
+  gantryOperationId?: string,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.movement.update({
+      where: { id: movementId },
+      data: {
+        status: "FAILED",
+        completedAt: new Date(),
+        idempotencyKey: null,
+        ...(gantryOperationId ? { gantryOperationId } : {}),
+      },
+    });
+    await tx.bin.updateMany({
+      where: { id: binId, status: "RESERVED" },
+      data: { status: "OCCUPIED" },
+    });
   });
 }

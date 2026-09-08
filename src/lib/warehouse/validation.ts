@@ -169,13 +169,15 @@ export interface ValidatedBin {
   capacity: number;
 }
 
+const OPERATOR_BIN_STATUSES = BIN_STATUSES.filter((status) => status !== "AUDITING");
+
 export function validateCreateBin(input: CreateBinInput): ValidatedBin {
   const c = new IssueCollector();
   const bin: ValidatedBin = {
     code: c.requireText("code", input?.code, 32).toUpperCase(),
     status: input?.status === undefined
       ? "AVAILABLE"
-      : c.oneOf("status", input.status, BIN_STATUSES, "AVAILABLE"),
+      : c.oneOf("status", input.status, OPERATOR_BIN_STATUSES, "AVAILABLE"),
     capacity: input?.capacity === undefined ? 100 : c.positiveInteger("capacity", input.capacity),
   };
   c.throwIfInvalid("bin");
@@ -200,7 +202,7 @@ export function validateUpdateBin(input: UpdateBinInput): ValidatedBinUpdate {
   const patch: ValidatedBinUpdate = {};
 
   if (input?.status !== undefined) {
-    patch.status = c.oneOf("status", input.status, BIN_STATUSES, "AVAILABLE");
+    patch.status = c.oneOf("status", input.status, OPERATOR_BIN_STATUSES, "AVAILABLE");
   }
   if (input?.capacity !== undefined) {
     const capacity = c.optionalPositiveInteger("capacity", input.capacity);

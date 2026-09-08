@@ -38,7 +38,7 @@
  *     and no calibration fixes that. Settle it before measuring anything.
  */
 import { parseBinCode, SLOTS_PER_BED, STORAGE_BEDS, type BinCode } from "@/lib/warehouse/types";
-import type { GantryLocation, GantryStation } from "./types";
+import { isGantryStation, type GantryLocation, type GantryStation } from "./types";
 
 /**
  * False until every number here has been measured on the real rack.
@@ -108,6 +108,7 @@ export const BIN_CORRECTIONS: Partial<Record<BinCode, Partial<GantryPosition>>> 
 export const STATION_POSITIONS: Record<GantryStation, GantryPosition> = {
   INTAKE: { xMM: 900, yMM: 120, zMM: 240 },
   OUTPUT: { xMM: 900, yMM: 120, zMM: 240 },
+  SCAN_STATION: { xMM: 900, yMM: 120, zMM: 240 },
 };
 
 /**
@@ -171,7 +172,7 @@ export function resolveBinPosition(code: string): GantryPosition | null {
 
 /** Where any gantry location is — a storage bin or a station. Null if unknown. */
 export function resolvePosition(location: GantryLocation): GantryPosition | null {
-  if (location === "INTAKE" || location === "OUTPUT") return STATION_POSITIONS[location];
+  if (isGantryStation(location)) return STATION_POSITIONS[location];
   return resolveBinPosition(location);
 }
 

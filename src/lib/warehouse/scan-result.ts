@@ -95,6 +95,15 @@ export function measurementToScanResult(
     issues.push("orientation.angleDegrees must be a finite number");
   }
 
+  const observedQuantity = finiteNumber(measurement?.observedQuantity ?? 1);
+  const quantityConfidence = finiteNumber(measurement?.quantityConfidence ?? 1);
+  if (observedQuantity === null || !Number.isInteger(observedQuantity) || observedQuantity < 1) {
+    issues.push("quantity.observed must be an integer greater than 0");
+  }
+  if (quantityConfidence === null || quantityConfidence < 0 || quantityConfidence > 1) {
+    issues.push("quantity.confidence must be a finite number between 0 and 1");
+  }
+
   if (issues.length > 0) return { ok: false, issues };
 
   return {
@@ -117,6 +126,10 @@ export function measurementToScanResult(
       },
       orientation: {
         angleDegrees: angleDegrees!,
+      },
+      quantity: {
+        observed: observedQuantity!,
+        confidence: quantityConfidence!,
       },
     },
   };
@@ -174,6 +187,22 @@ export function collectScanResultIssues(value: unknown): string[] {
       const heightMM = finiteNumber(dimensions.heightMM);
       if (heightMM === null || heightMM <= 0) {
         issues.push("dimensions.heightMM must be null or a finite number greater than 0");
+      }
+    }
+  }
+
+  if (scan.quantity !== undefined) {
+    const quantity = scan.quantity as Record<string, unknown> | undefined;
+    if (typeof quantity !== "object" || quantity === null) {
+      issues.push("quantity must be an object when present");
+    } else {
+      const observed = finiteNumber(quantity.observed);
+      if (observed === null || !Number.isInteger(observed) || observed < 1) {
+        issues.push("quantity.observed must be an integer greater than 0");
+      }
+      const confidence = finiteNumber(quantity.confidence);
+      if (confidence === null || confidence < 0 || confidence > 1) {
+        issues.push("quantity.confidence must be a finite number between 0 and 1");
       }
     }
   }

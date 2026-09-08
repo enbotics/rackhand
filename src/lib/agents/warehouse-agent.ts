@@ -1,18 +1,19 @@
 /**
- * The Warehouse Agent — the single Strands agent in this system.
+ * The Warehouse Agent — the client-facing orchestrator in this system.
  *
- * One agent by design: no vision/inventory/gantry/supervisor/planner split.
- * It is constructed in exactly one place so no route can quietly hand it a
- * different tool list or a different model.
+ * It owns the deterministic warehouse tools and mounts the focused Inventory
+ * Auditor as an Agent-as-Tool. The auditor is not another client endpoint and
+ * cannot widen the orchestrator's authority.
  *
- * STATELESS: a fresh agent is built per invocation. There is no conversation
- * memory, no session store and no long-term memory in this milestone — the
- * goal is reliable invocation, and a fresh message history also makes the
- * per-request tool trace unambiguous.
+ * REQUEST-STATELESS: a fresh orchestrator is built per invocation and there
+ * is no conversational session. The Inventory Auditor's Strands memory is a
+ * read-only projection of durable, completed audit history; it cannot retain
+ * arbitrary prompt text or grant authority across requests.
  *
  * The agent runs server-side only. It never receives a database handle, a
  * Prisma client, filesystem access, a shell, or arbitrary HTTP — its entire
- * capability surface is WAREHOUSE_AGENT_TOOLS.
+ * capability surface is WAREHOUSE_AGENT_TOOLS plus the deliberately wrapped
+ * Inventory Auditor tool constructed below.
  */
 import { Agent, InterruptResponseContent } from "@strands-agents/sdk";
 import type { BaseModelConfig, Message, Model, Snapshot } from "@strands-agents/sdk";
@@ -21,6 +22,7 @@ import { WAREHOUSE_AGENT_PROMPT } from "./warehouse-prompt";
 import {
   APPROVAL_FREE_TOOL_NAMES,
   APPROVAL_REQUIRED_TOOL_NAMES,
+  EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
   WAREHOUSE_AGENT_TOOLS,
 } from "./tools";
 import {
@@ -34,6 +36,10 @@ import {
 import { matchScanToCatalog } from "@/lib/warehouse/catalog-matcher";
 import { getCatalogResolution } from "@/lib/warehouse/catalog-resolution-service";
 import { prisma } from "@/lib/warehouse/db";
+import { listPutawayDestinations } from "@/lib/warehouse/repository";
+import { getInventoryForPart } from "@/lib/warehouse/inventory-service";
+import { chooseRetrievalSourceBinCode } from "@/lib/warehouse/retrieval-service";
+import { compareBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import { createWarehouseModel, getBedrockModelId } from "./model";
 import { AgentError, classifyAgentFailure } from "./errors";
 import { createRequestId, getContextWorkflows, runWithRequestContext } from "./request-context";
@@ -53,34 +59,66 @@ import type { TraceStatus } from "@/lib/observability/types";
 import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
 import { collectScanResultIssues } from "@/lib/warehouse/scan-result";
 import type { ScanResult } from "@/lib/warehouse/scan-types";
+import {
+  createInventoryAuditorAgent,
+  INVENTORY_AUDITOR_TOOL_NAME,
+} from "./inventory-auditor-agent";
 
 export const WAREHOUSE_AGENT_NAME = "warehouse-agent";
+export type WarehouseApprovalMode = "CLIENT" | "TRUSTED_INTERNAL";
 
 /** Documented MVP cap on a single operator message. */
 export const MAX_AGENT_MESSAGE_LENGTH = 4000;
 
 /**
- * Builds the one Warehouse Agent.
+ * Builds the main Warehouse Agent and its scoped Inventory Auditor tool.
  *
  * `model` exists as a seam so tests can drive the REAL tool list and the REAL
  * intervention configuration with a scripted model instead of Bedrock. Nothing
  * in production passes it.
  */
-export function createWarehouseAgent(model: Model<BaseModelConfig> = createWarehouseModel()): Agent {
+export function createWarehouseAgent(
+  model: Model<BaseModelConfig> = createWarehouseModel(),
+  approvalMode: WarehouseApprovalMode = "CLIENT",
+): Agent {
+  const inventoryAuditor = createInventoryAuditorAgent({
+    model,
+    // This mode is selected by trusted server code, never by prompt text.
+    // Client delegation stays read-only; physical client audits must pass
+    // through execute_inventory_audit and the main agent's HITL gate.
+    allowExecution: approvalMode === "TRUSTED_INTERNAL",
+  });
+  const inventoryAuditorTool = inventoryAuditor.asTool({
+    name: INVENTORY_AUDITOR_TOOL_NAME,
+    description:
+      "Ask the specialist Inventory Auditor to explain the latest audit or, in trusted internal mode only, run a sequential physical bin audit. Client physical audit requests must use execute_inventory_audit so human approval cannot be bypassed.",
+    preserveContext: false,
+  });
+  const orchestratorTools =
+    approvalMode === "TRUSTED_INTERNAL"
+      ? WAREHOUSE_AGENT_TOOLS.filter(
+          (candidate) => candidate.name !== EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+        )
+      : WAREHOUSE_AGENT_TOOLS;
+
   const agent = new Agent({
     name: WAREHOUSE_AGENT_NAME,
     model,
     systemPrompt: WAREHOUSE_AGENT_PROMPT,
-    tools: WAREHOUSE_AGENT_TOOLS,
+    tools: [...orchestratorTools, inventoryAuditorTool],
     /**
      * Human-in-the-loop (Milestone 9). Read-only tools are listed and run
-     * freely; everything else — which today means execute_retrieval — pauses
+     * freely; execute_putaway, execute_retrieval and
+     * execute_inventory_audit pause
      * the agent with `stopReason: "interrupt"`
      * before the tool callback runs, so no warehouse state can change until a
      * person answers. The default (no classifier) is "approval required", so a
      * tool added later is gated unless someone deliberately allows it.
      */
-    interventions: [new HumanInTheLoop({ allowedTools: [...APPROVAL_FREE_TOOL_NAMES] })],
+    interventions:
+      approvalMode === "CLIENT"
+        ? [new HumanInTheLoop({ allowedTools: [...APPROVAL_FREE_TOOL_NAMES] })]
+        : [],
     // SDK console printing off: this runs behind an API, and application logs
     // should stay clean and free of prompt content.
     printer: false,
@@ -94,6 +132,39 @@ export function createWarehouseAgent(model: Model<BaseModelConfig> = createWareh
    */
   attachTraceHooks(agent);
   return agent;
+}
+
+/**
+ * Explicit server-only construction path for trusted Agent-as-Tool execution.
+ * The caller chooses this path in code; neither user text nor the model can
+ * switch a client invocation into it.
+ */
+export function createTrustedWarehouseAgent(
+  model: Model<BaseModelConfig> = createWarehouseModel(),
+): Agent {
+  return createWarehouseAgent(model, "TRUSTED_INTERNAL");
+}
+
+const TRUSTED_ACTIVITY_OBSERVATION_PROMPT =
+  "Review the current rolling 24-hour warehouse activity. If the gantry is idle and exactly one shelf bin is currently eligible for a useful audit, choose the strongest candidate from the observed database evidence and delegate that exact bin to the Inventory Auditor. Otherwise perform no physical action and briefly report why.";
+
+/**
+ * Server-only, event-invoked observation entry point.
+ *
+ * Nothing in this module schedules it. A trusted warehouse runtime may call it
+ * while the main agent is already active/idle; browser text cannot select this
+ * construction path or turn off HITL for an ordinary client request.
+ */
+export function invokeTrustedWarehouseObservation(
+  requestId: string = createRequestId(),
+): Promise<WarehouseAgentReply> {
+  return invokeWarehouseAgent(
+    TRUSTED_ACTIVITY_OBSERVATION_PROMPT,
+    undefined,
+    requestId,
+    null,
+    createTrustedWarehouseAgent,
+  );
 }
 
 /**
@@ -232,6 +303,21 @@ export function validateAgentScanResult(value: unknown): ScanResult | null {
   return value as ScanResult;
 }
 
+/** Validates the camera evidence that may authorize a later putaway. */
+export function validateScanImageDataUrl(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== "string" ||
+    !/^data:image\/[a-z0-9.+-]+;base64,/i.test(value) ||
+    value.length > 7_000_000
+  ) {
+    throw new AgentError("agent_invalid_request", [
+      "scanImageDataUrl must be a base64 image data URL no larger than 7 MB",
+    ]);
+  }
+  return value;
+}
+
 /**
  * Server-authored, constant. It tells the model a scan exists without putting
  * one byte of scan-derived text into the conversation — no detectedName, no
@@ -240,7 +326,7 @@ export function validateAgentScanResult(value: unknown): ScanResult | null {
  * out-of-band via request-context.ts.
  */
 export const IDENTITY_RESOLVED_NOTICE =
-  "[system: the operator has already confirmed which catalog part this scan is. The confirmed identity is attached to this request and request_guided_putaway will use it. Do not ask them to identify it again, and do not treat the ambiguous match as a blocker.]";
+  "[system: the operator has already confirmed which catalog part this scan is. The confirmed identity is attached to this request and execute_putaway will revalidate it. Do not ask them to identify it again, and do not treat the ambiguous match as a blocker.]";
 
 export const SCAN_ATTACHED_NOTICE =
   "[system: a validated ScanResult is attached to this request. Use the match_catalog tool to compare it against the catalog. Do not ask the operator to paste scan data.]";
@@ -327,7 +413,7 @@ function extractToolCalls(messages: readonly Message[]): string[] {
  * option, so the fallback is fixed text that promises nothing.
  */
 export const EMPTY_REPLY_FALLBACK =
-  "I could not produce an answer for that. I can look up catalog parts, inventory quantities, bin state, catalog matches for a scan, and gantry status; anything that changes warehouse state is outside the tools available to me.";
+  "I could not produce an answer for that. I can inspect catalog, inventory, bins, scans, gantry and audit state, and I can request approved putaway, whole-bin retrieval or physical inventory-audit operations.";
 
 /**
  * Runs one stateless Warehouse Agent turn.
@@ -342,10 +428,12 @@ export async function invokeWarehouseAgent(
   catalogResolutionId?: string | null,
   /** Test seam: build the agent with a scripted model instead of Bedrock. */
   createAgent: () => Agent = createWarehouseAgent,
+  rawScanImageDataUrl?: unknown,
 ): Promise<WarehouseAgentReply> {
   // Validated independently, and both before the model is constructed.
   const message = validateAgentMessage(rawMessage);
   const scanResult = validateAgentScanResult(rawScanResult);
+  const scanImageDataUrl = validateScanImageDataUrl(rawScanImageDataUrl);
 
   // Milestone 12. Server-generated: a browser may not choose its own trace id,
   // and the summary is the operator's own words, truncated — never the system
@@ -387,7 +475,7 @@ export async function invokeWarehouseAgent(
     // still exists — outside it, the store is gone and the graphs' progress
     // with it.
     const { result, workflows } = await runWithRequestContext(
-      { scanResult, requestId, catalogResolutionId, traceId },
+      { scanResult, scanImageDataUrl, requestId, catalogResolutionId, traceId },
       async () => {
         const invocation = await agent.invoke(prompt, { invocationState });
         return { result: invocation, workflows: getContextWorkflows() };
@@ -408,6 +496,7 @@ export async function invokeWarehouseAgent(
         interruptReason: result.interrupts[0].reason,
         requestId,
         scanResult,
+        scanImageDataUrl,
         catalogResolutionId: catalogResolutionId ?? null,
         traceId,
       });
@@ -487,10 +576,22 @@ export async function invokeWarehouseAgent(
 
 /** Operator-facing sentence for an approval card. Never model text. */
 function approvalPrompt(summary: ApprovalSummary): string {
+  if (summary.action === "INVENTORY_AUDIT") {
+    return (
+      `Approval required: physically audit ${summary.source ?? "the auditable shelf bins"}. ` +
+      "Each bin will travel to SCAN_STATION, receive one camera count, and return before any safe reconciliation. " +
+      "Nothing has been moved and no inventory has changed yet."
+    );
+  }
   const what = summary.sku ? `${summary.sku}${summary.canonicalName ? ` (${summary.canonicalName})` : ""}` : "this part";
+  const capacity = summary.capacity
+    ? ` Capacity ${summary.capacity.before} → ${summary.capacity.after}/${summary.capacity.limit}.`
+    : "";
   return (
     `Approval required: ${summary.action} of ${what}, ` +
-    `${summary.source ?? "?"} \u2192 ${summary.destination ?? "?"}, quantity ${summary.quantity}. ` +
+    `${summary.source ?? "?"} \u2192 ${summary.destination ?? "?"}, ` +
+    `${summary.scope === "ENTIRE_BIN" ? "entire physical bin" : `camera-counted quantity ${summary.quantity ?? "pending"}`}. ` +
+    capacity +
     "Nothing has been moved yet."
   );
 }
@@ -544,19 +645,118 @@ async function summarizeToolCall(
 ): Promise<ApprovalSummary> {
   const args = (input ?? {}) as Record<string, unknown>;
 
+  if (toolName === "execute_inventory_audit") {
+    const requestedBin =
+      typeof args.binCode === "string" && args.binCode.trim() !== ""
+        ? args.binCode.trim().toUpperCase()
+        : null;
+    return {
+      action: "INVENTORY_AUDIT",
+      sku: null,
+      canonicalName: null,
+      source: requestedBin ?? "all auditable shelf bins",
+      destination: "SCAN_STATION → original slot",
+      quantity: null,
+      scope: "AUDIT_BINS",
+      capacity: null,
+    };
+  }
+
   if (toolName === "execute_retrieval") {
+    const part =
+      typeof args.sku === "string"
+        ? await prisma.part.findUnique({ where: { sku: args.sku.trim().toUpperCase() } })
+        : typeof args.partId === "string"
+          ? await prisma.part.findUnique({ where: { id: args.partId.trim() } })
+          : null;
+    const inventory = part ? await getInventoryForPart(part.sku) : null;
+    const stocked =
+      inventory?.locations.filter(
+        (location) => location.binStatus === "OCCUPIED" && location.quantity > 0,
+      ) ?? [];
+    const source =
+      typeof args.sourceBinCode === "string"
+        ? args.sourceBinCode.trim().toUpperCase()
+        : chooseRetrievalSourceBinCode(stocked) ?? "(chosen at execution)";
+    const recordedQuantity = stocked.find((location) => location.binCode === source)?.quantity ?? null;
     return {
       action: "RETRIEVAL",
-      sku: typeof args.sku === "string" ? args.sku : null,
-      canonicalName: null,
-      source: typeof args.sourceBinCode === "string" ? args.sourceBinCode : "(chosen at execution)",
+      sku: part?.sku ?? (typeof args.sku === "string" ? args.sku : null),
+      canonicalName: part?.canonicalName ?? null,
+      source,
       destination: "OUTPUT",
-      quantity: 1,
+      quantity: recordedQuantity,
+      scope: "ENTIRE_BIN",
+      capacity: null,
     };
   }
 
   let sku: string | null = null;
   let canonicalName: string | null = null;
+  let resolvedPartId: string | null = null;
+
+  const putawayRoute = async (
+    partId: string,
+    quantity: number,
+  ): Promise<{
+    source: string;
+    destination: string;
+    capacity: { before: number; after: number; limit: number } | null;
+  }> => {
+    const checkedOutBins = await prisma.bin.findMany({
+      where: { status: "CHECKED_OUT", inventory: { some: { partId, quantity: { gt: 0 } } } },
+      include: { inventory: { where: { partId, quantity: { gt: 0 } } } },
+    });
+    const checkedOut = checkedOutBins.sort(compareBinsInShelfOrder)[0] ?? null;
+
+    if (typeof args.destinationBinCode === "string") {
+      const requested = await prisma.bin.findUnique({
+        where: { code: args.destinationBinCode.toUpperCase() },
+        include: { inventory: { where: { quantity: { gt: 0 } } } },
+      });
+      const before = requested?.inventory.reduce((sum, row) => sum + row.quantity, 0) ?? 0;
+      return {
+        source: checkedOut || requested?.status === "CHECKED_OUT" ? "OUTPUT" : "INTAKE",
+        destination: args.destinationBinCode,
+        capacity: requested
+          ? {
+              before,
+              after: requested.status === "CHECKED_OUT" ? quantity : before + quantity,
+              limit: requested.capacity,
+            }
+          : null,
+      };
+    }
+    if (checkedOut && quantity <= checkedOut.capacity) {
+      const before = checkedOut.inventory.reduce((sum, row) => sum + row.quantity, 0);
+      return {
+        source: "OUTPUT",
+        destination: checkedOut.code,
+        capacity: { before, after: quantity, limit: checkedOut.capacity },
+      };
+    }
+    const destinations = await listPutawayDestinations(partId, quantity);
+    const chosen = checkedOut
+      ? destinations.find(
+          (candidate) =>
+            candidate.eligible &&
+            candidate.status === "AVAILABLE" &&
+            candidate.currentQuantity === 0,
+        )
+      : destinations.find((candidate) => candidate.eligible && candidate.alreadyStoresPart) ??
+        destinations.find((candidate) => candidate.eligible);
+    return chosen
+      ? {
+          source: checkedOut ? "OUTPUT" : "INTAKE",
+          destination: chosen.code,
+          capacity: {
+            before: chosen.currentQuantity,
+            after: chosen.afterQuantity,
+            limit: chosen.capacity,
+          },
+        }
+      : { source: "INTAKE", destination: "(no compatible bin)", capacity: null };
+  };
 
   // A confirmed human identity wins: for an ambiguous scan the matcher has no
   // single answer, and a card reading "PUTAWAY of this part" tells the
@@ -565,17 +765,17 @@ async function summarizeToolCall(
     const resolution = await getCatalogResolution(catalogResolutionId);
     if (resolution?.status === "CONFIRMED" && resolution.selectedPartId) {
       const part = await prisma.part.findUnique({ where: { id: resolution.selectedPartId } });
-      if (part) return {
-        action: "PUTAWAY",
-        sku: part.sku,
-        canonicalName: part.canonicalName,
-        source: "INTAKE",
-        destination:
-          typeof args.destinationBinCode === "string"
-            ? args.destinationBinCode
-            : "(chosen at execution)",
-        quantity: 1,
-      };
+      if (part) {
+        const route = await putawayRoute(part.id, scanResult?.quantity?.observed ?? 1);
+        return {
+          action: "PUTAWAY",
+          sku: part.sku,
+          canonicalName: part.canonicalName,
+          ...route,
+          quantity: scanResult?.quantity?.observed ?? 1,
+          scope: "COUNTED_UNITS",
+        };
+      }
     }
   }
 
@@ -585,20 +785,23 @@ async function summarizeToolCall(
       if (match.status === "MATCHED") {
         sku = match.matchedPart.sku;
         canonicalName = match.matchedPart.canonicalName;
+        resolvedPartId = match.matchedPart.id;
       }
     } catch {
       // A card without a name is still safe; the service revalidates anyway.
     }
   }
 
+  const route = resolvedPartId
+    ? await putawayRoute(resolvedPartId, scanResult?.quantity?.observed ?? 1)
+    : { source: "INTAKE", destination: "(chosen at execution)", capacity: null };
   return {
     action: "PUTAWAY",
     sku,
     canonicalName,
-    source: "INTAKE",
-    destination:
-      typeof args.destinationBinCode === "string" ? args.destinationBinCode : "(chosen at execution)",
-    quantity: 1,
+    ...route,
+    quantity: scanResult?.quantity?.observed ?? 1,
+    scope: "COUNTED_UNITS",
   };
 }
 
@@ -608,6 +811,7 @@ async function parkForApproval(input: {
   interruptReason: unknown;
   requestId: string;
   scanResult: ScanResult | null;
+  scanImageDataUrl: string | null;
   catalogResolutionId: string | null;
   traceId: string | null;
 }): Promise<PendingApprovalView> {
@@ -634,6 +838,7 @@ async function parkForApproval(input: {
     snapshot,
     requestId: input.requestId,
     scanResult: input.scanResult,
+    scanImageDataUrl: input.scanImageDataUrl,
     catalogResolutionId: input.catalogResolutionId,
     traceId: input.traceId,
   });
@@ -734,6 +939,7 @@ export async function resumeWarehouseAgent(
     const { result, workflows } = await runWithRequestContext(
       {
         scanResult: parked.scanResult,
+        scanImageDataUrl: parked.scanImageDataUrl,
         requestId: parked.requestId,
         catalogResolutionId: parked.catalogResolutionId,
         // The SAME trace as the interrupted request. Clicking APPROVE
@@ -790,6 +996,7 @@ export async function resumeWarehouseAgent(
         interruptReason: result.interrupts[0].reason,
         requestId: parked.requestId,
         scanResult: parked.scanResult,
+        scanImageDataUrl: parked.scanImageDataUrl,
         catalogResolutionId: parked.catalogResolutionId,
         traceId,
       });

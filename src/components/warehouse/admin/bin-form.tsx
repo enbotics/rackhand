@@ -4,6 +4,9 @@ import { useState } from "react";
 import { BIN_STATUSES, type BinStatus } from "@/lib/warehouse/types";
 import { BUTTON_VARIANTS, ErrorNote, NumberField, SelectField, TextField } from "../ui";
 
+/** AUDITING is an internal lock owned by the physical audit service. */
+const OPERATOR_BIN_STATUSES = BIN_STATUSES.filter((status) => status !== "AUDITING");
+
 /** Create a single bin — a bare code + starting status/capacity. */
 export function CreateBinForm({
   busy,
@@ -28,7 +31,7 @@ export function CreateBinForm({
     >
       <TextField id="new-bin-code" label="Bin code" value={code} onChange={setCode} placeholder="e.g. B7-01" disabled={busy} />
       <div className="grid grid-cols-2 gap-3">
-        <SelectField id="new-bin-status" label="Status" value={status} options={BIN_STATUSES} onChange={setStatus} disabled={busy} />
+        <SelectField id="new-bin-status" label="Status" value={status} options={OPERATOR_BIN_STATUSES} onChange={setStatus} disabled={busy} />
         <NumberField id="new-bin-capacity" label="Capacity" value={capacity} onChange={setCapacity} disabled={busy} />
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}
@@ -70,7 +73,7 @@ export function EditBinForm({
     >
       <p className="font-mono text-[11px] font-semibold tracking-wider text-ink">Editing {code}</p>
       <div className="grid grid-cols-2 gap-3">
-        <SelectField id={`edit-${code}-status`} label="Status" value={status} options={BIN_STATUSES} onChange={setStatus} disabled={busy} />
+        <SelectField id={`edit-${code}-status`} label="Status" value={status} options={OPERATOR_BIN_STATUSES} onChange={setStatus} disabled={busy} />
         <NumberField id={`edit-${code}-capacity`} label="Capacity" value={capacity} onChange={setCapacity} disabled={busy} />
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}

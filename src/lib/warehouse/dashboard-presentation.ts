@@ -34,6 +34,8 @@ export const BIN_STATUS_PRESENTATION: Record<BinStatus, StatusPresentation> = {
   AVAILABLE: { label: "AVAILABLE", tone: "ok", symbol: "○" },
   OCCUPIED: { label: "OCCUPIED", tone: "accent", symbol: "●" },
   RESERVED: { label: "RESERVED", tone: "warn", symbol: "◐" },
+  CHECKED_OUT: { label: "CHECKED OUT", tone: "warn", symbol: "↗" },
+  AUDITING: { label: "AUDITING", tone: "accent", symbol: "◎" },
   DISABLED: { label: "DISABLED", tone: "muted", symbol: "⊘" },
 };
 
@@ -238,10 +240,14 @@ export function filterInventory(rows: InventoryRowView[], query: string): Invent
 }
 
 /** "B2-01" for one bin, "B1-02 (1), B2-01 (2)" when a part is split across several. */
-export function formatLocations(locations: Array<{ binCode: string; quantity: number }>): string {
+export function formatLocations(
+  locations: Array<{ binCode: string; quantity: number; binStatus?: BinStatus }>,
+): string {
   if (locations.length === 0) return "—";
-  if (locations.length === 1) return locations[0].binCode;
-  return locations.map((location) => `${location.binCode} (${location.quantity})`).join(", ");
+  const label = (location: (typeof locations)[number]) =>
+    `${location.binCode}${location.binStatus === "CHECKED_OUT" ? " [OUT]" : ""}`;
+  if (locations.length === 1) return label(locations[0]);
+  return locations.map((location) => `${label(location)} (${location.quantity})`).join(", ");
 }
 
 /** Local wall-clock time for a movement row. Formatted in the operator's timezone. */

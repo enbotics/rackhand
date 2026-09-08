@@ -79,6 +79,11 @@ export function InventoryPanel({
               </div>
               <div className="shrink-0 text-right">
                 <p className="font-mono text-sm font-semibold text-ink">Qty {row.totalQuantity}</p>
+                {(row.checkedOutQuantity ?? 0) > 0 && (
+                  <p className="font-mono text-[10px] text-warn">
+                    {row.checkedOutQuantity ?? 0} checked out
+                  </p>
+                )}
                 <p className="font-mono text-[10px] text-ink-muted">
                   {formatLocations(row.locations)}
                 </p>

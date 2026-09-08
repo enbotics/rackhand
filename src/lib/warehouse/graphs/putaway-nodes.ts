@@ -22,12 +22,17 @@
 import { prisma } from "../db";
 import { matchScanToCatalog } from "../catalog-matcher";
 import { resolveCatalogIdentity } from "../catalog-identity";
-import { findAvailableBin, getBinByCode } from "../repository";
+import { getBinByCode, listPutawayDestinations } from "../repository";
 import { collectScanResultIssues } from "../scan-result";
 import { executePutaway } from "../putaway-service";
-import { PUTAWAY_SOURCE, type PutawayResult } from "../putaway-types";
+import {
+  MIN_PUTAWAY_QUANTITY_CONFIDENCE,
+  PUTAWAY_SOURCE,
+  type PutawayResult,
+} from "../putaway-types";
 import { getGantryController } from "@/lib/gantry/factory";
 import type { ScanResult } from "../scan-types";
+import { compareBinsInShelfOrder } from "../bin-layout";
 import { PUTAWAY_NODE_IDS } from "./workflow-types";
 import {
   createWorkflowRun,
@@ -41,6 +46,7 @@ import {
 export interface PutawayGraphRequest {
   /** Untrusted until the validate node checks it against the Milestone 1 contract. */
   scanResult: unknown;
+  imageDataUrl?: string;
   destinationBinCode?: string;
   catalogResolutionId?: string;
 }
@@ -60,6 +66,12 @@ export interface PutawayGraphData {
   identitySource?: "DETERMINISTIC_MATCH" | "HUMAN_RESOLUTION";
   catalogResolutionId?: string;
   destinationBinCode?: string;
+  observedQuantity?: number;
+  quantityBefore?: number;
+  quantityAfter?: number;
+  checkedOutReturn?: boolean;
+  checkedOutSourceBinCode?: string;
+  duplicate?: boolean;
   movementId?: string;
   gantryOperationId?: string;
 }
@@ -136,7 +148,37 @@ export class PutawayValidateNode extends WorkflowNode<PutawayGraphRequest, Putaw
     }
 
     data.scanId = (request.scanResult as ScanResult).scanId;
-    return { kind: "PROCEED", summary: `Scan ${data.scanId} accepted at ${PUTAWAY_SOURCE}.` };
+    const existing = await prisma.movement.findUnique({ where: { idempotencyKey: data.scanId } });
+    if (existing?.status === "COMPLETED") {
+      data.duplicate = true;
+      data.observedQuantity = existing.quantity;
+      return {
+        kind: "PROCEED",
+        summary: "This scan already completed and will be replayed without movement.",
+      };
+    }
+
+    if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(request.imageDataUrl ?? "")) {
+      return {
+        kind: "BLOCKED",
+        reason: "photo_required",
+        message: "A fresh automatic camera photo is required before putaway.",
+      };
+    }
+
+    data.observedQuantity = (request.scanResult as ScanResult).quantity?.observed ?? 1;
+    const confidence = (request.scanResult as ScanResult).quantity?.confidence ?? 1;
+    if (confidence < MIN_PUTAWAY_QUANTITY_CONFIDENCE) {
+      return {
+        kind: "BLOCKED",
+        reason: "quantity_confidence_low",
+        message: `Quantity confidence must be at least ${Math.round(MIN_PUTAWAY_QUANTITY_CONFIDENCE * 100)}%.`,
+      };
+    }
+    return {
+      kind: "PROCEED",
+      summary: `Scan ${data.scanId} accepted at ${PUTAWAY_SOURCE}.`,
+    };
   }
 }
 
@@ -156,6 +198,21 @@ export class PutawayIdentityNode extends WorkflowNode<PutawayGraphRequest, Putaw
   }
 
   protected async run({ request, data }: PutawayContext): Promise<NodeOutcome> {
+    if (data.duplicate) {
+      const movement = await prisma.movement.findUnique({
+        where: { idempotencyKey: data.scanId },
+        include: { part: true },
+      });
+      if (!movement) {
+        return { kind: "BLOCKED", reason: "putaway_in_progress", message: "The original movement is unavailable." };
+      }
+      data.partId = movement.part.id;
+      data.sku = movement.part.sku;
+      data.canonicalName = movement.part.canonicalName;
+      data.identitySource = "DETERMINISTIC_MATCH";
+      return { kind: "PROCEED", summary: "Original catalog identity restored for replay." };
+    }
+
     const scanResult = request.scanResult as ScanResult;
     const match = await matchScanToCatalog(scanResult);
     const resolved = await resolveCatalogIdentity({
@@ -208,6 +265,32 @@ export class PutawayDestinationNode extends WorkflowNode<PutawayGraphRequest, Pu
   }
 
   protected async run({ request, data }: PutawayContext): Promise<NodeOutcome> {
+    if (!data.partId || !data.observedQuantity) {
+      return { kind: "BLOCKED", reason: "part_not_found", message: "The part or count was not resolved." };
+    }
+
+    if (data.duplicate) {
+      const movement = await prisma.movement.findUnique({
+        where: { idempotencyKey: data.scanId },
+        include: { destinationBin: true, sourceBin: true },
+      });
+      data.destinationBinCode = movement?.destinationBin?.code;
+      data.quantityBefore = movement?.previousQuantity ?? 0;
+      data.quantityAfter = movement?.newQuantity ?? movement?.quantity;
+      data.checkedOutReturn = movement?.sourceLocation === "OUTPUT";
+      data.checkedOutSourceBinCode = movement?.sourceBin?.code ?? movement?.destinationBin?.code;
+      return { kind: "PROCEED", summary: "Original destination restored from the completed movement." };
+    }
+
+    const checkedOutBins = await prisma.bin.findMany({
+      where: {
+        status: "CHECKED_OUT",
+        inventory: { some: { partId: data.partId, quantity: { gt: 0 } } },
+      },
+      include: { inventory: { where: { partId: data.partId, quantity: { gt: 0 } } } },
+    });
+    const checkedOut = checkedOutBins.sort(compareBinsInShelfOrder)[0] ?? null;
+
     if (request.destinationBinCode !== undefined) {
       const bin = await getBinByCode(request.destinationBinCode);
       if (!bin) {
@@ -217,32 +300,82 @@ export class PutawayDestinationNode extends WorkflowNode<PutawayGraphRequest, Pu
           message: `No bin has code "${request.destinationBinCode}".`,
         };
       }
-      if (bin.status !== "AVAILABLE") {
-        return {
-          kind: "BLOCKED",
-          reason: "bin_unavailable",
-          message: `Bin ${bin.code} is ${bin.status}; a putaway target must be AVAILABLE.`,
-        };
+      const contents = await prisma.inventory.findMany({
+        where: { binId: bin.id, quantity: { gt: 0 } },
+        select: { partId: true, quantity: true },
+      });
+      const before = contents.reduce((sum, row) => sum + row.quantity, 0);
+      if (bin.status === "CHECKED_OUT") {
+        if (
+          contents.length === 0 ||
+          contents.some((row) => row.partId !== data.partId) ||
+          data.observedQuantity > bin.capacity
+        ) {
+          return { kind: "BLOCKED", reason: "bin_unavailable", message: `Checked-out bin ${bin.code} is not compatible with this return.` };
+        }
+        data.checkedOutReturn = true;
+        data.checkedOutSourceBinCode = bin.code;
+        data.quantityBefore = before;
+        data.quantityAfter = data.observedQuantity;
+      } else if (checkedOut) {
+        const checkoutBefore = checkedOut.inventory.reduce((sum, row) => sum + row.quantity, 0);
+        if (bin.status !== "AVAILABLE" || before !== 0 || data.observedQuantity > bin.capacity) {
+          return {
+            kind: "BLOCKED",
+            reason: data.observedQuantity > bin.capacity ? "bin_capacity_exceeded" : "bin_unavailable",
+            message: `Alternate return slot ${bin.code} must be empty, AVAILABLE and able to hold ${data.observedQuantity} units.`,
+          };
+        }
+        data.checkedOutReturn = true;
+        data.checkedOutSourceBinCode = checkedOut.code;
+        data.quantityBefore = checkoutBefore;
+        data.quantityAfter = data.observedQuantity;
+      } else {
+        const destinations = await listPutawayDestinations(data.partId, data.observedQuantity);
+        const candidate = destinations.find((item) => item.code === bin.code);
+        if (!candidate?.eligible) {
+          return { kind: "BLOCKED", reason: candidate?.reason === "FULL" ? "bin_capacity_exceeded" : "bin_unavailable", message: `Bin ${bin.code} is not compatible (${candidate?.reason ?? bin.status}).` };
+        }
+        data.checkedOutReturn = false;
+        data.quantityBefore = candidate.currentQuantity;
+        data.quantityAfter = candidate.afterQuantity;
       }
-      // No separate "is this reachable" check: bin was just loaded from the
-      // Bin table above, so bin.code is by definition a real, current code.
       data.destinationBinCode = bin.code;
-      return { kind: "PROCEED", summary: `${bin.code} requested and currently AVAILABLE.` };
+      return { kind: "PROCEED", summary: `${bin.code}: ${data.quantityBefore} → ${data.quantityAfter}.` };
     }
 
-    // The SAME policy the service uses when no bin is named: first AVAILABLE
-    // bin by code. The graph never invents a different strategy.
-    const chosen = await findAvailableBin();
+    if (checkedOut && data.observedQuantity <= checkedOut.capacity) {
+      const before = checkedOut.inventory.reduce((sum, row) => sum + row.quantity, 0);
+      data.destinationBinCode = checkedOut.code;
+      data.checkedOutReturn = true;
+      data.checkedOutSourceBinCode = checkedOut.code;
+      data.quantityBefore = before;
+      data.quantityAfter = data.observedQuantity;
+      return { kind: "PROCEED", summary: `${checkedOut.code} is the checked-out home bin; camera reconciliation ${before} → ${data.observedQuantity}.` };
+    }
+
+    const destinations = await listPutawayDestinations(data.partId, data.observedQuantity);
+    const chosen = checkedOut
+      ? destinations.find(
+          (item) => item.eligible && item.status === "AVAILABLE" && item.currentQuantity === 0,
+        )
+      : destinations.find((item) => item.eligible && item.alreadyStoresPart) ??
+        destinations.find((item) => item.eligible);
     if (!chosen) {
       return {
         kind: "BLOCKED",
         reason: "no_available_bin",
-        message: "No bin is currently AVAILABLE for putaway.",
+        message: `No compatible bin has capacity for ${data.observedQuantity} units.`,
       };
     }
-    // Same reasoning: chosen was just loaded from the Bin table by findAvailableBin.
     data.destinationBinCode = chosen.code;
-    return { kind: "PROCEED", summary: `${chosen.code} chosen as the first AVAILABLE bin.` };
+    data.checkedOutReturn = Boolean(checkedOut);
+    data.checkedOutSourceBinCode = checkedOut?.code;
+    data.quantityBefore = checkedOut
+      ? checkedOut.inventory.reduce((sum, row) => sum + row.quantity, 0)
+      : chosen.currentQuantity;
+    data.quantityAfter = checkedOut ? data.observedQuantity : chosen.afterQuantity;
+    return { kind: "PROCEED", summary: `${chosen.code} chosen; capacity ${chosen.currentQuantity} → ${chosen.afterQuantity}/${chosen.capacity}.` };
   }
 }
 
@@ -261,6 +394,9 @@ export class PutawayPreflightNode extends WorkflowNode<PutawayGraphRequest, Puta
   }
 
   protected async run({ data }: PutawayContext): Promise<NodeOutcome> {
+    if (data.duplicate) {
+      return { kind: "PROCEED", summary: "No gantry preflight is needed for an idempotent replay." };
+    }
     const part = data.partId ? await prisma.part.findUnique({ where: { id: data.partId } }) : null;
     if (!part) {
       return {
@@ -278,12 +414,32 @@ export class PutawayPreflightNode extends WorkflowNode<PutawayGraphRequest, Puta
         message: `No bin has code "${data.destinationBinCode}".`,
       };
     }
-    if (bin.status !== "AVAILABLE") {
+    const relocatingCheckout =
+      data.checkedOutReturn && data.checkedOutSourceBinCode !== data.destinationBinCode;
+    if (
+      data.checkedOutReturn
+        ? relocatingCheckout
+          ? bin.status !== "AVAILABLE"
+          : bin.status !== "CHECKED_OUT"
+        : !["AVAILABLE", "OCCUPIED"].includes(bin.status)
+    ) {
       return {
         kind: "BLOCKED",
         reason: "bin_unavailable",
-        message: `Bin ${bin.code} is ${bin.status}; a putaway target must be AVAILABLE.`,
+        message: `Bin ${bin.code} changed to ${bin.status} before execution.`,
       };
+    }
+    if (relocatingCheckout) {
+      const source = data.checkedOutSourceBinCode
+        ? await getBinByCode(data.checkedOutSourceBinCode)
+        : null;
+      if (!source || source.status !== "CHECKED_OUT") {
+        return {
+          kind: "BLOCKED",
+          reason: "bin_unavailable",
+          message: `The checked-out source ${data.checkedOutSourceBinCode ?? "bin"} is no longer ready to return.`,
+        };
+      }
     }
 
     // A conflicting workflow already holds this scan. A COMPLETED one is NOT a
@@ -338,7 +494,8 @@ export class PutawayExecuteNode extends WorkflowNode<PutawayGraphRequest, Putawa
     const { request, data } = context;
     const result: PutawayResult = await executePutaway({
       scanResult: request.scanResult as ScanResult,
-      destinationBinCode: request.destinationBinCode,
+      imageDataUrl: request.imageDataUrl,
+      destinationBinCode: data.destinationBinCode,
       catalogResolutionId: request.catalogResolutionId,
     });
 
@@ -369,6 +526,15 @@ export class PutawayExecuteNode extends WorkflowNode<PutawayGraphRequest, Putawa
     data.partId = result.part.partId;
     data.sku = result.part.sku;
     data.identitySource = result.identity.source;
+    if (result.reconciledCheckout) {
+      const committedMovement = await prisma.movement.findUnique({
+        where: { id: result.movementId },
+        include: { sourceBin: true, destinationBin: true },
+      });
+      data.checkedOutReturn = true;
+      data.checkedOutSourceBinCode =
+        committedMovement?.sourceBin?.code ?? committedMovement?.destinationBin?.code;
+    }
 
     return {
       kind: "PROCEED",
@@ -394,7 +560,8 @@ export class PutawayVerifyNode extends WorkflowNode<PutawayGraphRequest, Putaway
     super(PUTAWAY_NODE_IDS.verify, "Confirm the committed state is coherent. Read-only.");
   }
 
-  protected async run({ data }: PutawayContext): Promise<NodeOutcome> {
+  protected async run({ data, invocationState }: PutawayContext): Promise<NodeOutcome> {
+    const result = invocationState[PUTAWAY_SERVICE_RESULT_KEY] as PutawayResult | undefined;
     const problems: string[] = [];
 
     const movement = data.movementId
@@ -404,6 +571,16 @@ export class PutawayVerifyNode extends WorkflowNode<PutawayGraphRequest, Putaway
       problems.push("the movement record is missing");
     } else if (movement.status !== "COMPLETED") {
       problems.push(`the movement is ${movement.status}, not COMPLETED`);
+    }
+
+    if (result?.ok && result.duplicate) {
+      return problems.length > 0
+        ? {
+            kind: "FAILED",
+            reason: "verification_failed",
+            message: `The original movement cannot be replayed coherently: ${problems.join("; ")}.`,
+          }
+        : { kind: "PROCEED", summary: "Original completed putaway replayed; no current state was changed." };
     }
 
     const bin = data.destinationBinCode ? await getBinByCode(data.destinationBinCode) : null;
@@ -417,8 +594,26 @@ export class PutawayVerifyNode extends WorkflowNode<PutawayGraphRequest, Putaway
       const stock = await prisma.inventory.findUnique({
         where: { partId_binId: { partId: data.partId, binId: bin.id } },
       });
-      if (!stock || stock.quantity < 1) {
-        problems.push(`no stock of ${data.sku} is recorded in ${bin.code}`);
+      if (!stock || (result?.ok && stock.quantity !== result.inventoryQuantityAfter)) {
+        problems.push(
+          `inventory in ${bin.code} does not equal the committed count ${result?.ok ? result.inventoryQuantityAfter : "unknown"}`,
+        );
+      }
+    }
+
+    if (
+      data.checkedOutReturn &&
+      data.checkedOutSourceBinCode &&
+      data.checkedOutSourceBinCode !== data.destinationBinCode
+    ) {
+      const source = await getBinByCode(data.checkedOutSourceBinCode);
+      const sourceStock = source
+        ? await prisma.inventory.findUnique({
+            where: { partId_binId: { partId: data.partId!, binId: source.id } },
+          })
+        : null;
+      if (!source || source.status !== "AVAILABLE" || sourceStock) {
+        problems.push(`the old slot ${data.checkedOutSourceBinCode} was not released cleanly`);
       }
     }
 
@@ -437,7 +632,7 @@ export class PutawayVerifyNode extends WorkflowNode<PutawayGraphRequest, Putaway
 
     return {
       kind: "PROCEED",
-      summary: `Movement COMPLETED, ${data.sku} present in ${data.destinationBinCode}.`,
+      summary: `Movement COMPLETED; ${data.destinationBinCode} holds ${result?.ok ? result.inventoryQuantityAfter : "verified"} ${data.sku}.`,
     };
   }
 }

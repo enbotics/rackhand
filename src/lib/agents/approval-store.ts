@@ -8,14 +8,17 @@
  *    restart as something resumable: a snapshot that outlives the process it
  *    was taken in would let a stale plan execute against a warehouse that has
  *    moved on.
- *  - The DECISION is persisted to `ActionApproval` in SQLite. Who approved
+ *  - The DECISION is persisted to `ActionApproval` in the authoritative
+ *    Supabase-backed database. Who approved
  *    what, when, and what it was approved to do is auditable warehouse
  *    history, and outlives everything.
  *
  * Approval ids are `randomUUID`, not sequential: an approval id IS the
  * authorization to execute a physical action, so it must not be guessable.
  *
- * Neither store ever holds model reasoning, prompts, credentials or images.
+ * Neither store holds model reasoning, prompts or credentials. The bounded,
+ * in-process snapshot entry retains the scan photo only until an approval is
+ * settled or expires; the persisted ActionApproval audit row never stores it.
  */
 import { randomUUID } from "node:crypto";
 import type { Snapshot } from "@strands-agents/sdk";
@@ -33,12 +36,14 @@ export type ApprovalDecision = "APPROVE" | "DENY";
 
 /** What the browser is allowed to see. No reasoning, no raw model output. */
 export interface ApprovalSummary {
-  action: "PUTAWAY" | "RETRIEVAL";
+  action: "PUTAWAY" | "RETRIEVAL" | "INVENTORY_AUDIT";
   sku: string | null;
   canonicalName: string | null;
   source: string | null;
   destination: string | null;
-  quantity: number;
+  quantity: number | null;
+  scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS";
+  capacity?: { before: number; after: number; limit: number } | null;
 }
 
 export interface PendingApprovalView {
@@ -60,6 +65,7 @@ interface PendingApproval {
   /** Reused on resume, so approving twice cannot execute the operation twice. */
   requestId: string;
   scanResult: ScanResult | null;
+  scanImageDataUrl: string | null;
   /** The operator's confirmed identity decision, restored on resume. */
   catalogResolutionId: string | null;
   /**
@@ -97,6 +103,7 @@ export async function createPendingApproval(input: {
   snapshot: Snapshot;
   requestId: string;
   scanResult: ScanResult | null;
+  scanImageDataUrl: string | null;
   catalogResolutionId: string | null;
   traceId: string | null;
 }): Promise<PendingApprovalView> {

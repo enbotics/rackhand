@@ -2,7 +2,7 @@
  * Human-guided putaway for the scan-result dialog.
  *
  * Unlike executePutaway's single INTAKE -> slot movement, this workflow brings
- * the selected empty bin to the operator, waits for an explicit placement
+ * the selected compatible bin to the operator, waits for an explicit placement
  * decision, then returns the bin. Inventory is committed only after that
  * return succeeds. The database and gantry therefore have separate, truthful
  * statuses throughout the workflow.
@@ -11,9 +11,14 @@ import { prisma } from "./db";
 import { matchScanToCatalog } from "./catalog-matcher";
 import { resolveCatalogIdentity } from "./catalog-identity";
 import { applyInventoryAddition } from "./inventory-service";
+import {
+  evaluatePutawayDestination,
+  type PutawayDestinationEvaluation,
+} from "./putaway-destination";
 import { collectScanResultIssues } from "./scan-result";
 import { getBinByCode } from "./repository";
 import { uploadBinVerificationPhoto, uploadPutawayPhoto } from "./storage";
+import type { BinStatus } from "./types";
 import { getGantryController } from "@/lib/gantry/factory";
 import { isGantryError } from "@/lib/gantry/errors";
 import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
@@ -27,6 +32,42 @@ import type {
 } from "./guided-putaway-types";
 
 const QUANTITY = 1;
+
+function destinationFailure(
+  binCode: string,
+  capacity: number,
+  evaluation: PutawayDestinationEvaluation,
+  scanId: string,
+): GuidedPutawayResult {
+  switch (evaluation.reason) {
+    case "FULL":
+      return failure(
+        "bin_capacity_exceeded",
+        `Bin ${binCode} is full (${evaluation.currentQuantity}/${capacity}). Choose another compatible bin.`,
+        { scanId },
+      );
+    case "DIFFERENT_PART":
+      return failure(
+        "inventory_conflict",
+        `Bin ${binCode} stores a different item. Choose the identified item's existing bin or an empty bin.`,
+        { scanId },
+      );
+    case "RESERVED":
+      return failure("bin_unavailable", `Bin ${binCode} is reserved by another operation.`, {
+        scanId,
+      });
+    case "CHECKED_OUT":
+      return failure("bin_unavailable", `Bin ${binCode} is currently checked out.`, { scanId });
+    case "DISABLED":
+      return failure("bin_unavailable", `Bin ${binCode} is disabled.`, { scanId });
+    default:
+      return failure(
+        "bin_unavailable",
+        `Bin ${binCode} has inconsistent status and inventory data and needs review.`,
+        { scanId },
+      );
+  }
+}
 
 function failure(
   reason: string,
@@ -154,7 +195,7 @@ const ABANDONED_WITH_BIN_OFF_SHELF = [
 ] as const;
 
 export interface GuidedPutawaySweepResult {
-  /** Bin codes handed back to AVAILABLE because nothing had physically happened. */
+  /** Bin codes restored to their inventory-derived status because nothing physically happened. */
   released: string[];
   /** Bin codes left RESERVED because the machine cannot know what is inside them. */
   reconciliationRequired: string[];
@@ -200,17 +241,16 @@ export async function sweepAbandonedGuidedPutaways(
         if (claimed.count !== 1) return false;
         if (!releasable || !movement.destinationBin) return true;
 
-        // Only an empty, still-RESERVED slot goes back. A bin that acquired
-        // inventory in the meantime is somebody else's truth.
+        // Nothing moved, so the reservation can be released. Restore the
+        // inventory-derived status: an empty destination is AVAILABLE, while
+        // a same-item destination remains truthfully OCCUPIED.
         const held = await tx.inventory.count({
           where: { binId: movement.destinationBin.id, quantity: { gt: 0 } },
         });
-        if (held === 0) {
-          await tx.bin.updateMany({
-            where: { id: movement.destinationBin.id, status: "RESERVED" },
-            data: { status: "AVAILABLE" },
-          });
-        }
+        await tx.bin.updateMany({
+          where: { id: movement.destinationBin.id, status: "RESERVED" },
+          data: { status: held > 0 ? "OCCUPIED" : "AVAILABLE" },
+        });
         return true;
       });
       if (!swept) continue;
@@ -283,8 +323,17 @@ export async function prepareGuidedPutaway(
   ]);
   if (!part) return failure("part_not_found", "The identified part is no longer in the catalog.", { scanId });
   if (!bin) return failure("bin_not_found", `No bin has code "${input.destinationBinCode}".`, { scanId });
-  if (bin.status !== "AVAILABLE") {
-    return failure("bin_unavailable", `Bin ${bin.code} is ${bin.status}, not AVAILABLE.`, { scanId });
+  const contents = await prisma.inventory.findMany({
+    where: { binId: bin.id, quantity: { gt: 0 } },
+    select: { partId: true, quantity: true },
+  });
+  const destination = evaluatePutawayDestination(
+    { ...bin, status: bin.status as BinStatus, contents },
+    part.id,
+    QUANTITY,
+  );
+  if (!destination.eligible) {
+    return destinationFailure(bin.code, bin.capacity, destination, scanId);
   }
   if (gantryStatus.state !== "IDLE" || gantryStatus.activeOperationId !== null) {
     return failure("gantry_busy", `The gantry is ${gantryStatus.state}.`, {
@@ -297,12 +346,26 @@ export async function prepareGuidedPutaway(
   try {
     movement = await prisma.$transaction(async (tx) => {
       const reserved = await tx.bin.updateMany({
-        where: { id: bin.id, status: "AVAILABLE" },
+        where: { id: bin.id, status: bin.status },
         data: { status: "RESERVED" },
       });
       if (reserved.count !== 1) throw new Error("bin_reservation_conflict");
-      const occupied = await tx.inventory.count({ where: { binId: bin.id } });
-      if (occupied > 0) throw new Error("bin_unavailable");
+      const freshContents = await tx.inventory.findMany({
+        where: { binId: bin.id, quantity: { gt: 0 } },
+        select: { partId: true, quantity: true },
+      });
+      const freshDestination = evaluatePutawayDestination(
+        {
+          ...bin,
+          status: bin.status as BinStatus,
+          contents: freshContents,
+        },
+        part.id,
+        QUANTITY,
+      );
+      if (!freshDestination.eligible) {
+        throw new Error(`destination_${freshDestination.reason}`);
+      }
       return tx.movement.create({
         data: {
           type: "PUTAWAY",
@@ -323,8 +386,29 @@ export async function prepareGuidedPutaway(
     if (error instanceof Error && error.message === "bin_reservation_conflict") {
       return failure("bin_reservation_conflict", `Bin ${bin.code} was just reserved by another operation.`, { scanId });
     }
-    if (error instanceof Error && error.message === "bin_unavailable") {
-      return failure("bin_unavailable", `Bin ${bin.code} still contains inventory.`, { scanId });
+    if (error instanceof Error && error.message.startsWith("destination_")) {
+      const reason = error.message.slice("destination_".length) as PutawayDestinationEvaluation["reason"];
+      const freshContents = await prisma.inventory.findMany({
+        where: { binId: bin.id, quantity: { gt: 0 } },
+        select: { partId: true, quantity: true },
+      });
+      const freshEvaluation = evaluatePutawayDestination(
+        {
+          ...bin,
+          status: bin.status as BinStatus,
+          contents: freshContents,
+        },
+        part.id,
+        QUANTITY,
+      );
+      return destinationFailure(
+        bin.code,
+        bin.capacity,
+        freshEvaluation.reason === "COMPATIBLE"
+          ? { ...freshEvaluation, eligible: false, reason }
+          : freshEvaluation,
+        scanId,
+      );
     }
     throw error;
   }
@@ -351,7 +435,7 @@ export async function prepareGuidedPutaway(
   };
 }
 
-/** Move the reserved empty bin from its shelf to the operator. */
+/** Move the reserved compatible bin from its shelf to the operator. */
 export async function presentGuidedPutawayBin(movementId: string): Promise<GuidedPutawayResult> {
   const loaded = await movementWithContext(movementId);
   if (!loaded || !loaded.destinationBin || loaded.type !== "PUTAWAY") {
@@ -619,9 +703,12 @@ export async function commitGuidedPutaway(movementId: string): Promise<GuidedPut
           data: { status: "RETURNING" },
         });
         if (claimed.count !== 1) throw new Error("commit_already_claimed");
+        const held = await tx.inventory.count({
+          where: { binId: loaded.destinationBin!.id, quantity: { gt: 0 } },
+        });
         await tx.bin.update({
           where: { id: loaded.destinationBin!.id },
-          data: { status: "AVAILABLE" },
+          data: { status: held > 0 ? "OCCUPIED" : "AVAILABLE" },
         });
         await tx.movement.update({
           where: { id: loaded.id },
