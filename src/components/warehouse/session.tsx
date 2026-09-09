@@ -555,10 +555,6 @@ export function WarehouseSessionProvider({
        * → COMPLETED
        */
       const completed = await waitForCameraCapture<MeasurementResult>(created.captureJobId, {
-        pollIntervalMs: 1000,
-
-        timeoutMs: 120_000,
-
         onStatus: (job) => {
           setPiCapture(job);
         },

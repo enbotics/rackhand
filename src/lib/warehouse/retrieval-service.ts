@@ -36,6 +36,7 @@ import { isGantryError } from "@/lib/gantry/errors";
 import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Movement } from "@/generated/prisma/client";
 import { compareBinsInShelfOrder } from "./bin-layout";
+import { isOutOfSimulationScope, SIMULATION_ELIGIBLE_BINS } from "./audit-capture-mode";
 
 /**
  * Retrieval and putaway share one `Movement.idempotencyKey` column, so the
@@ -167,6 +168,19 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   // No separate "is this reachable" check: sourceBinCode always comes from a
   // Bin row (or a stocked location derived from one) just read above.
   const source: WarehouseBinCode = sourceBinCode;
+
+  // Refuse before touching bin/gantry state: Simulation mode must never
+  // silently run a real retrieval on a bin it doesn't cover, same guard as
+  // audit and putaway verification.
+  if (isOutOfSimulationScope(source)) {
+    return fail(
+      requestId,
+      "simulation_scope_violation",
+      `Bin ${source} is not simulation-eligible (only ${SIMULATION_ELIGIBLE_BINS.join(", ")} are). ` +
+        "Switch Audit Capture Mode to Prod to retrieve from this bin.",
+      { partId: part.id, sourceBinCode: source },
+    );
+  }
 
   const sourceBin = await getBinByCode(source);
   if (!sourceBin) {

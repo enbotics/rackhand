@@ -50,3 +50,43 @@ export const SIMULATION_ELIGIBLE_BINS = ["B1-01", "B2-02"];
 export function isSimulationEligibleBin(binCode: string): boolean {
   return SIMULATION_ELIGIBLE_BINS.includes(binCode.toUpperCase());
 }
+
+/**
+ * True when the global toggle is SIMULATION but this specific bin is NOT on
+ * the eligible list — meaning an operation here would silently fall through
+ * to the real Raspberry Pi camera and a real inventory write, even though
+ * the operator believes the app is in a safe demo mode. Callers must refuse
+ * the operation in this case (see SimulationScopeError) rather than let it
+ * proceed unannounced.
+ */
+export function isOutOfSimulationScope(binCode: string): boolean {
+  return getAuditCaptureMode() === "SIMULATION" && !isSimulationEligibleBin(binCode);
+}
+
+export class SimulationScopeError extends Error {
+  constructor(binCode: string) {
+    super(
+      `Bin ${binCode} is not simulation-eligible (only ${SIMULATION_ELIGIBLE_BINS.join(", ")} are). ` +
+        "Switch Audit Capture Mode to Prod to operate on this bin.",
+    );
+    this.name = "SimulationScopeError";
+  }
+}
+
+/**
+ * Simulation resolves from a cached demo photo plus one Gemini call — often
+ * under a second — and no capture popup ever opens for it (simulation skips
+ * creating that row entirely, see SIMULATION_ELIGIBLE_BINS above), so an
+ * instant result reads as "nothing happened" rather than "the demo camera
+ * has no UI." Padding it out to a believable capture-and-analyze duration is
+ * purely cosmetic — callers should time from just before the simulated work
+ * starts and await this before returning the result.
+ */
+export const SIMULATED_CAPTURE_MIN_DURATION_MS = 3_000;
+
+export async function waitOutSimulatedCaptureDuration(startedAt: number): Promise<void> {
+  const remaining = SIMULATED_CAPTURE_MIN_DURATION_MS - (Date.now() - startedAt);
+  if (remaining > 0) {
+    await new Promise((resolve) => setTimeout(resolve, remaining));
+  }
+}

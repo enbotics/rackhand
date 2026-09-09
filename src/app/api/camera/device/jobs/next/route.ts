@@ -36,7 +36,7 @@ export async function GET(request: Request) {
       jobId: job.id,
       purpose: job.purpose,
       requestedAt: job.requestedAt.toISOString(),
-      expiresAt: job.expiresAt.toISOString(),
+      expiresAt: job.expiresAt?.toISOString() ?? null,
     });
   } catch (error) {
     console.error("[camera] Failed to claim next job:", error);

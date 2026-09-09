@@ -16,7 +16,7 @@ export async function POST(
       captureJobId: job.id,
       status: job.status,
       requestedAt: job.requestedAt.toISOString(),
-      expiresAt: job.expiresAt.toISOString(),
+      expiresAt: job.expiresAt?.toISOString() ?? null,
     }, { status: 201 });
   } catch (error) {
     return NextResponse.json({

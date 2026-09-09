@@ -5,6 +5,7 @@ const ACTIVE_AUDIT_KEY = "ACTIVE";
 const RECOVERY_GRACE_MS = 30_000;
 const NO_CAPTURE_RECOVERY_MS = 120_000;
 const PROCESSING_RECOVERY_MS = 5 * 60_000;
+const ABANDONED_HUMAN_WORKFLOW_MS = 24 * 60 * 60_000;
 
 const UNFINISHED_AUDIT_STATUSES = ["PENDING", "RUNNING"];
 const ACTIVE_CAPTURE_STATUSES = [
@@ -127,7 +128,18 @@ async function isRecoverableAudit(
       }
       continue;
     }
-    if (capture.expiresAt.getTime() > now.getTime() - RECOVERY_GRACE_MS) continue;
+    // Human-facing states own no short lease. Only a full day without any
+    // progress qualifies them for abandonment recovery.
+    if (capture.status !== "CAPTURING") {
+      if (capture.updatedAt.getTime() <= now.getTime() - ABANDONED_HUMAN_WORKFLOW_MS) {
+        return true;
+      }
+      continue;
+    }
+
+    // CAPTURING is server-owned work and must keep renewing its lease.
+    if (!capture.expiresAt
+      || capture.expiresAt.getTime() > now.getTime() - RECOVERY_GRACE_MS) continue;
 
     const processingJob = await prisma.cameraCaptureJob.findFirst({
       where: {

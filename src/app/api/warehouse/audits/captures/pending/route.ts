@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 /** Read-only poll used by the already-open Warehouse Command Center camera. */
 export async function GET() {
   const capture = await prisma.auditCaptureRequest.findFirst({
-    where: { status: "WAITING_FOR_CAMERA", expiresAt: { gt: new Date() } },
+    where: { status: "WAITING_FOR_CAMERA" },
     orderBy: { createdAt: "asc" },
     include: { binAudit: { include: { bin: true } } },
   });
@@ -19,7 +19,7 @@ export async function GET() {
           binAuditId: capture.binAuditId,
           binCode: capture.binAudit.bin.code,
           status: capture.status,
-          expiresAt: capture.expiresAt.toISOString(),
+          expiresAt: capture.expiresAt?.toISOString() ?? null,
         }
       : { captureId: null },
   );

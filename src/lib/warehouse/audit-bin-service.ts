@@ -1,11 +1,20 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { createCaptureJob } from "@/lib/camera/capture-job-service";
+import {
+  captureProcessingHeartbeatMilliseconds,
+  createCaptureJob,
+} from "@/lib/camera/capture-job-service";
 import { prisma } from "./db";
 import { getGantryController } from "@/lib/gantry/factory";
 import { countAuditImage, type AuditExpectedContext } from "@/lib/geminiAuditCount";
 import { setInventoryQuantity } from "./inventory-service";
-import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
+import {
+  getAuditCaptureMode,
+  isOutOfSimulationScope,
+  isSimulationEligibleBin,
+  waitOutSimulatedCaptureDuration,
+} from "./audit-capture-mode";
+import { captureProcessingDeadline } from "./capture-deadlines";
 import { scheduleSimulationRevert } from "./simulation-revert";
 import {
   AUDIT_CAPTURE_CONFIDENCE_THRESHOLD,
@@ -14,7 +23,6 @@ import {
   type AuditCaptureView,
 } from "./audit-capture-types";
 import {
-  AUDIT_CAPTURE_TIMEOUT_MS,
   confidencePercent,
   type AuditVisionResult,
   type BinAuditOutcomeStatus,
@@ -22,8 +30,6 @@ import {
 } from "./audit-types";
 
 const CAPTURE_POLL_MS = 400;
-/** ACCEPTED terminal statuses executeBinAudit's poll is waiting for. */
-const TERMINAL_CAPTURE_STATUSES = ["ACCEPTED", "FAILED"];
 /**
  * Statuses a legitimate retry may reset from. PENDING_ACK is deliberately
  * excluded — its write already happened (VERIFIED/AUTO_RECONCILED), so
@@ -365,8 +371,7 @@ async function applyAuditOutcome(input: {
 }
 
 async function waitForTerminalCapture(captureId: string, isTrusted: boolean): Promise<CaptureWaitResult> {
-  const deadline = Date.now() + AUDIT_CAPTURE_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  while (true) {
     const capture = await prisma.auditCaptureRequest.findUnique({ where: { id: captureId } });
     if (!capture) return { ok: false, reason: "capture_request_missing" };
     if (capture.status === "FAILED") return { ok: false, reason: capture.errorCode ?? "capture_failed" };
@@ -390,13 +395,25 @@ async function waitForTerminalCapture(captureId: string, isTrusted: boolean): Pr
     if (isTrusted && (capture.status === "REVIEW_DECREASE" || capture.status === "RETRY_REQUIRED")) {
       return { ok: true, finalized: false, evidenceUrl: capture.evidenceUrl ?? "", vision: visionFromCaptureRow(capture) };
     }
+
+    const now = new Date();
+    if (capture.status === "CAPTURING" && capture.expiresAt
+      && now.getTime() >= capture.expiresAt.getTime()) {
+      const expired = await prisma.auditCaptureRequest.updateMany({
+        where: {
+          id: captureId,
+          status: "CAPTURING",
+          expiresAt: { lte: now },
+        },
+        data: { status: "FAILED", errorCode: "capture_station_unavailable" },
+      });
+      // A concurrent phase transition may have renewed expiresAt. In that
+      // case this stale read cannot fail the new phase.
+      if (expired.count === 0) continue;
+      return { ok: false, reason: "capture_station_unavailable" };
+    }
     await wait(CAPTURE_POLL_MS);
   }
-  await prisma.auditCaptureRequest.updateMany({
-    where: { id: captureId, status: { notIn: TERMINAL_CAPTURE_STATUSES } },
-    data: { status: "FAILED", errorCode: "capture_station_unavailable" },
-  });
-  return { ok: false, reason: "capture_station_unavailable" };
 }
 
 /** Audits exactly one bin. The caller guarantees sequential execution. */
@@ -409,6 +426,11 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   const { bin } = audit;
   const originalStatus = bin.status;
   const isTrusted = audit.auditRun.trigger === "TRUSTED_INTERNAL";
+  // Refuse before touching bin/gantry state: Simulation mode must never
+  // silently fall through to a real capture on a bin it doesn't cover.
+  if (isOutOfSimulationScope(bin.code)) {
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "simulation_scope_violation");
+  }
   if (!["AVAILABLE", "OCCUPIED"].includes(originalStatus)) {
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "bin_audit_conflict");
   }
@@ -450,7 +472,7 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   try {
     if (simulated) {
       // No AuditCaptureRequest row is ever created for this run — the
-      // Warehouse Command Center's camera polls for exactly that row to
+      // Warehouse Command Center's Realtime capture stream watches for that row to
       // decide whether to open its capture popup, so skipping it entirely is
       // what keeps simulation invisible to the browser. There is no operator
       // to retry or confirm, so a simulated capture is finalized in one shot
@@ -463,7 +485,9 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
           ? { lengthMM: audit.expectedPart.lengthMM, widthMM: audit.expectedPart.widthMM, heightMM: audit.expectedPart.heightMM }
           : null,
       };
+      const startedAt = Date.now();
       const result = await simulateCapture(bin, expected);
+      await waitOutSimulatedCaptureDuration(startedAt);
       captured = result.ok ? { ok: true, finalized: false, evidenceUrl: result.evidenceUrl, vision: result.vision } : result;
     } else {
       const previousImageUrl = await findLatestAcceptedSnapshot(bin.id);
@@ -473,7 +497,7 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
           status: "WAITING_FOR_CAMERA",
           expectedQuantity: audit.expectedQuantity,
           previousImageUrl,
-          expiresAt: new Date(Date.now() + AUDIT_CAPTURE_TIMEOUT_MS),
+          expiresAt: null,
         },
       });
       // Trusted idle-assistance has no operator present to press the capture
@@ -596,6 +620,7 @@ export async function classifyAndPersistAuditCapture(input: {
   vision: AuditVisionResult;
   evidenceUrl: string;
   capturedAt?: Date;
+  workflowAttempt: number;
 }): Promise<{ outcome: AuditCaptureOutcome | "UNEXPECTED_STOCK"; status: string }> {
   const outcome = classifyAuditVision(input.vision, {
     quantity: input.expectedQuantity,
@@ -607,8 +632,8 @@ export async function classifyAndPersistAuditCapture(input: {
 
   if (outcome === "REVIEW_DECREASE" || outcome === "LOW_CONFIDENCE" || outcome === "CAPACITY_EXCEEDED" || outcome === "FOREIGN_OBJECTS") {
     const status = outcome === "REVIEW_DECREASE" ? "REVIEW_DECREASE" : "RETRY_REQUIRED";
-    await prisma.auditCaptureRequest.update({
-      where: { id: input.captureId },
+    const persisted = await prisma.auditCaptureRequest.updateMany({
+      where: { id: input.captureId, status: "CAPTURING", attempt: input.workflowAttempt },
       data: {
         status,
         observedQuantity: input.vision.observedCount,
@@ -621,8 +646,10 @@ export async function classifyAndPersistAuditCapture(input: {
         notes: input.vision.notes,
         evidenceUrl: input.evidenceUrl,
         capturedAt,
+        expiresAt: null,
       },
     });
+    if (persisted.count !== 1) throw new Error("audit_capture_attempt_superseded");
     return { outcome, status };
   }
 
@@ -647,8 +674,8 @@ export async function classifyAndPersistAuditCapture(input: {
   // the comparison before the bin is considered safe to move (PENDING_ACK),
   // even though the write itself already happened.
   const status = outcome === "UNEXPECTED_STOCK" ? "ACCEPTED" : "PENDING_ACK";
-  await prisma.auditCaptureRequest.update({
-    where: { id: input.captureId },
+  const persisted = await prisma.auditCaptureRequest.updateMany({
+    where: { id: input.captureId, status: "CAPTURING", attempt: input.workflowAttempt },
     data: {
       status,
       observedQuantity: input.vision.observedCount,
@@ -661,8 +688,10 @@ export async function classifyAndPersistAuditCapture(input: {
       notes: input.vision.notes,
       evidenceUrl: input.evidenceUrl,
       capturedAt,
+      expiresAt: null,
     },
   });
+  if (persisted.count !== 1) throw new Error("audit_capture_attempt_superseded");
   return { outcome, status };
 }
 
@@ -681,12 +710,11 @@ const DISPLAY_CAPTURE_OUTCOME: Record<
 
 /** Request one physical Raspberry Pi frame for a pending inventory audit. */
 export async function requestAuditCameraCapture(id: string) {
-  const now = new Date();
   const capture = await prisma.auditCaptureRequest.findUnique({
     where: { id },
     include: { binAudit: { include: { bin: true } } },
   });
-  if (!capture || capture.status !== "WAITING_FOR_CAMERA" || capture.expiresAt <= now) {
+  if (!capture || capture.status !== "WAITING_FOR_CAMERA") {
     throw new Error("This audit capture is stale or no longer pending.");
   }
   if (capture.binAudit.status !== "RUNNING" || capture.binAudit.bin.status !== "AUDITING") {
@@ -702,7 +730,6 @@ export async function requestAuditCameraCapture(id: string) {
       purpose: "INVENTORY_AUDIT",
       workflowCaptureId: id,
       status: { in: ["PENDING", "CLAIMED", "UPLOADED", "PROCESSING"] },
-      expiresAt: { gt: now },
     },
     orderBy: { requestedAt: "desc" },
   });
@@ -710,6 +737,7 @@ export async function requestAuditCameraCapture(id: string) {
     purpose: "INVENTORY_AUDIT",
     binAuditId: capture.binAuditId,
     workflowCaptureId: id,
+    workflowAttempt: capture.attempt,
   });
 }
 
@@ -720,6 +748,8 @@ export async function processAuditCameraCapture(id: string, input: {
   imageWidth: number;
   imageHeight: number;
   capturedAt: Date;
+  requestedAt: Date;
+  workflowAttempt: number;
 }): Promise<AuditCaptureView> {
   if (!Buffer.isBuffer(input.imageBuffer) || input.imageBuffer.length === 0
     || !input.evidenceUrl
@@ -729,8 +759,11 @@ export async function processAuditCameraCapture(id: string, input: {
     throw new Error("A fresh Raspberry Pi frame and valid metadata are required.");
   }
   const claimed = await prisma.auditCaptureRequest.updateMany({
-    where: { id, status: "WAITING_FOR_CAMERA", expiresAt: { gt: new Date() } },
-    data: { status: "CAPTURING" },
+    where: { id, status: "WAITING_FOR_CAMERA", attempt: input.workflowAttempt },
+    data: {
+      status: "CAPTURING",
+      expiresAt: captureProcessingDeadline(),
+    },
   });
   if (claimed.count !== 1) throw new Error("This audit capture is no longer pending.");
 
@@ -745,19 +778,38 @@ export async function processAuditCameraCapture(id: string, input: {
     binAuditId = capture.binAuditId;
     const { binAudit } = capture;
     if (binAudit.status !== "RUNNING" || binAudit.bin.status !== "AUDITING"
-      || input.capturedAt.getTime() < capture.createdAt.getTime()
+      || capture.attempt !== input.workflowAttempt
+      || input.capturedAt.getTime() < input.requestedAt.getTime()
       || input.capturedAt.getTime() > Date.now() + 60_000) {
       throw new Error("This audit capture is stale or no longer pending.");
     }
     const part = binAudit.expectedPart;
-    const vision = await countAuditImage(input.imageBuffer, {
-      binCode: binAudit.bin.code,
-      sku: part?.sku ?? null,
-      canonicalName: part?.canonicalName ?? null,
-      dimensions: part
-        ? { lengthMM: part.lengthMM, widthMM: part.widthMM, heightMM: part.heightMM }
-        : null,
+    const leaseHeartbeat = setInterval(() => {
+      void prisma.auditCaptureRequest.updateMany({
+        where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
+        data: { expiresAt: captureProcessingDeadline() },
+      }).catch(() => {});
+    }, captureProcessingHeartbeatMilliseconds());
+    let vision: AuditVisionResult;
+    try {
+      vision = await countAuditImage(input.imageBuffer, {
+        binCode: binAudit.bin.code,
+        sku: part?.sku ?? null,
+        canonicalName: part?.canonicalName ?? null,
+        dimensions: part
+          ? { lengthMM: part.lengthMM, widthMM: part.widthMM, heightMM: part.heightMM }
+          : null,
+      });
+    } finally {
+      clearInterval(leaseHeartbeat);
+    }
+    const processingRenewed = await prisma.auditCaptureRequest.updateMany({
+      where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
+      data: { expiresAt: captureProcessingDeadline() },
     });
+    if (processingRenewed.count !== 1) {
+      throw new Error("This audit capture stopped being processable during image analysis.");
+    }
     const { outcome, status } = await classifyAndPersistAuditCapture({
       captureId: id,
       binAuditId: binAudit.id,
@@ -770,6 +822,7 @@ export async function processAuditCameraCapture(id: string, input: {
       vision,
       evidenceUrl: input.evidenceUrl,
       capturedAt: input.capturedAt,
+      workflowAttempt: input.workflowAttempt,
     });
     await prisma.auditCaptureRequest.update({
       where: { id },
@@ -793,12 +846,13 @@ export async function processAuditCameraCapture(id: string, input: {
   } catch (error) {
     console.error(`[inventory-audit] Raspberry Pi capture failed id=${id}`, error);
     await prisma.auditCaptureRequest.updateMany({
-      where: { id, status: "CAPTURING" },
+      where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
       data: {
         status: "RETRY_REQUIRED",
         evidenceUrl: input.evidenceUrl,
         errorCode: "capture_failed",
         notes: "The image could not be analyzed. Request a fresh Raspberry Pi photo.",
+        expiresAt: null,
       },
     });
     if (binAuditId) {
@@ -832,8 +886,7 @@ export async function processAuditCameraCapture(id: string, input: {
  * already-applied automatic result (PENDING_ACK) so the bin can be returned,
  * or explicitly confirms a REVIEW_DECREASE (which writes Inventory only
  * now). RETRY resets the same row for a fresh photo — reused, never
- * duplicated — and renews its expiry so a legitimate retry is never cut off
- * mid-attempt.
+ * duplicated. Human capture/review states deliberately carry no short expiry.
  */
 export async function decideAuditCapture(captureId: string, decision: AuditCaptureDecision): Promise<void> {
   const capture = await prisma.auditCaptureRequest.findUnique({
@@ -844,28 +897,43 @@ export async function decideAuditCapture(captureId: string, decision: AuditCaptu
 
   if (decision === "RETRY") {
     if (!RETRYABLE_CAPTURE_STATUSES.includes(capture.status)) throw new Error("audit_capture_not_retryable");
-    const reset = await prisma.auditCaptureRequest.updateMany({
-      where: { id: captureId, status: capture.status },
-      data: {
-        status: "WAITING_FOR_CAMERA",
-        observedQuantity: null,
-        countConfidence: null,
-        countable: null,
-        expectedPartPresent: null,
-        foreignObjectSuspected: null,
-        foreignObjectsJson: null,
-        occlusion: null,
-        notes: null,
-        evidenceUrl: null,
-        imageWidth: null,
-        imageHeight: null,
-        capturedAt: null,
-        errorCode: null,
-        attempt: { increment: 1 },
-        expiresAt: new Date(Date.now() + AUDIT_CAPTURE_TIMEOUT_MS),
-      },
+    await prisma.$transaction(async (tx) => {
+      const reset = await tx.auditCaptureRequest.updateMany({
+        where: { id: captureId, status: capture.status },
+        data: {
+          status: "WAITING_FOR_CAMERA",
+          observedQuantity: null,
+          countConfidence: null,
+          countable: null,
+          expectedPartPresent: null,
+          foreignObjectSuspected: null,
+          foreignObjectsJson: null,
+          occlusion: null,
+          notes: null,
+          evidenceUrl: null,
+          imageWidth: null,
+          imageHeight: null,
+          capturedAt: null,
+          errorCode: null,
+          attempt: { increment: 1 },
+          expiresAt: null,
+        },
+      });
+      if (reset.count !== 1) throw new Error("audit_capture_not_retryable");
+      await tx.cameraCaptureJob.updateMany({
+        where: {
+          workflowCaptureId: captureId,
+          status: { in: ["PENDING", "CLAIMED", "UPLOADED", "PROCESSING"] },
+        },
+        data: {
+          status: "CANCELLED",
+          completedAt: new Date(),
+          errorCode: "camera_job_superseded",
+          errorMessage: "A newer audit capture attempt replaced this capture.",
+          updatedAt: new Date(),
+        },
+      });
     });
-    if (reset.count !== 1) throw new Error("audit_capture_not_retryable");
     return;
   }
 
@@ -887,37 +955,79 @@ export async function decideAuditCapture(captureId: string, decision: AuditCaptu
   // give-up nobody actually decided.
   const { binAudit } = capture;
   if (!binAudit.expectedPartId || !binAudit.expectedPart) throw new Error("audit_capture_not_confirmable");
-  const current = await prisma.inventory.findUnique({
-    where: { partId_binId: { partId: binAudit.expectedPartId, binId: binAudit.binId } },
-  });
-  const currentQuantity = current?.quantity ?? 0;
-
-  if (currentQuantity !== capture.observedQuantity) {
-    await setInventoryQuantity({
-      sku: binAudit.expectedPart.sku,
-      binCode: binAudit.bin.code,
-      quantity: capture.observedQuantity,
-    }).catch(() => {
-      // Bin state changed since the flagged audit (checked out, disabled,
-      // deleted) — leave BinAudit as-is; the operator sees the failure below.
-      throw new Error("audit_capture_stale_bin");
+  await prisma.$transaction(async (tx) => {
+    // Claim the human decision before changing inventory. This row lock also
+    // prevents the deadline watcher from expiring a confirmation in flight.
+    const claimed = await tx.auditCaptureRequest.updateMany({
+      where: { id: captureId, status: "REVIEW_DECREASE" },
+      data: { status: "ACCEPTED" },
     });
-  }
-  await prisma.binAudit.update({
-    where: { id: binAudit.id },
-    data: {
-      status: "CONFIRMED",
-      inventoryUpdated: currentQuantity !== capture.observedQuantity,
-      previousQuantity: currentQuantity,
-      newQuantity: capture.observedQuantity,
-      completedAt: new Date(),
-    },
+    if (claimed.count !== 1) throw new Error("audit_capture_not_pending");
+
+    const current = await tx.inventory.findUnique({
+      where: { partId_binId: { partId: binAudit.expectedPartId!, binId: binAudit.binId } },
+    });
+    const currentQuantity = current?.quantity ?? 0;
+    if (currentQuantity !== capture.expectedQuantity) {
+      throw new Error("audit_inventory_stale");
+    }
+
+    const observedQuantity = capture.observedQuantity!;
+    const inventoryUpdated = currentQuantity !== observedQuantity;
+    if (inventoryUpdated) {
+      if (!current) throw new Error("audit_inventory_stale");
+      if (observedQuantity === 0) {
+        await tx.inventory.delete({ where: { id: current.id } });
+      } else {
+        const updated = await tx.inventory.updateMany({
+          where: { id: current.id, quantity: currentQuantity },
+          data: { quantity: observedQuantity },
+        });
+        if (updated.count !== 1) throw new Error("audit_inventory_stale");
+      }
+      await tx.movement.create({
+        data: {
+          type: "ADJUSTMENT",
+          partId: binAudit.expectedPartId!,
+          quantity: Math.abs(currentQuantity - observedQuantity),
+          status: "COMPLETED",
+          destinationBinId: binAudit.binId,
+          previousQuantity: currentQuantity,
+          newQuantity: observedQuantity,
+          completedAt: new Date(),
+        },
+      });
+    }
+
+    const released = await tx.bin.updateMany({
+      where: { id: binAudit.binId, status: "AUDITING" },
+      data: { status: observedQuantity > 0 ? "OCCUPIED" : "AVAILABLE" },
+    });
+    if (released.count !== 1) throw new Error("audit_lock_lost");
+
+    await tx.binAudit.update({
+      where: { id: binAudit.id },
+      data: {
+        status: "CONFIRMED",
+        observedQuantity,
+        countConfidence: capture.countConfidence,
+        countable: capture.countable,
+        expectedPartPresent: capture.expectedPartPresent,
+        foreignObjectSuspected: capture.foreignObjectSuspected,
+        occlusion: capture.occlusion,
+        notes: capture.notes,
+        evidenceUrl: capture.evidenceUrl,
+        priorEvidenceUrl: capture.previousImageUrl,
+        capturedAt: capture.capturedAt,
+        inventoryUpdated,
+        previousQuantity: currentQuantity,
+        newQuantity: observedQuantity,
+        errorCode: null,
+        errorMessage: null,
+        completedAt: new Date(),
+      },
+    });
   });
-  const accepted = await prisma.auditCaptureRequest.updateMany({
-    where: { id: captureId, status: "REVIEW_DECREASE" },
-    data: { status: "ACCEPTED" },
-  });
-  if (accepted.count !== 1) throw new Error("audit_capture_not_pending");
 }
 
 export type ConfirmBinAuditDecision = "APPLY" | "DISMISS";

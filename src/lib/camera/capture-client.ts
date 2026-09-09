@@ -7,6 +7,7 @@ export type CameraCaptureStatus =
   | "PROCESSING"
   | "COMPLETED"
   | "FAILED"
+  | "CANCELLED"
   | "EXPIRED";
 
 export interface CameraCaptureJobView<TResult = unknown> {
@@ -32,6 +33,8 @@ export interface CameraCaptureJobView<TResult = unknown> {
 
   completedAt: string | null;
 
+  expiresAt: string | null;
+
   result: TResult | null;
 
   error: {
@@ -44,7 +47,7 @@ interface CreateCaptureResponse {
   captureJobId: string;
   status: CameraCaptureStatus;
   requestedAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
 }
 
 export class CameraCaptureClientError extends Error {
@@ -110,86 +113,92 @@ export async function getCameraCapture<TResult = unknown>(
   return body as CameraCaptureJobView<TResult>;
 }
 
-function sleep(milliseconds: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(resolve, milliseconds);
-
-    if (!signal) {
-      return;
-    }
-
-    const abort = () => {
-      window.clearTimeout(timer);
-
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-
-    if (signal.aborted) {
-      abort();
-      return;
-    }
-
-    signal.addEventListener("abort", abort, {
-      once: true,
-    });
-  });
-}
-
 export async function waitForCameraCapture<TResult = unknown>(
   captureJobId: string,
   options?: {
     signal?: AbortSignal;
-
-    pollIntervalMs?: number;
-
     timeoutMs?: number;
-
     onStatus?: (job: CameraCaptureJobView<TResult>) => void;
   },
 ): Promise<CameraCaptureJobView<TResult>> {
   const {
     signal,
-    pollIntervalMs = 1000,
-    timeoutMs = 120_000,
+    timeoutMs,
     onStatus,
   } = options ?? {};
 
-  const startedAt = Date.now();
-
-  while (true) {
+  return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
     }
 
-    const job = await getCameraCapture<TResult>(captureJobId);
+    const source = new EventSource(
+      `/api/camera/captures/${encodeURIComponent(captureJobId)}/events`,
+    );
+    let settled = false;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      source.close();
+      signal?.removeEventListener("abort", abort);
+    };
+    const fail = (error: unknown) => {
+      cleanup();
+      reject(error);
+    };
+    const abort = () => fail(new DOMException("Aborted", "AbortError"));
+    const timer = timeoutMs === undefined ? undefined : window.setTimeout(() => {
+      fail(new CameraCaptureClientError(
+        "camera_capture_timeout",
+        "Timed out waiting for the camera Realtime stream.",
+      ));
+    }, timeoutMs);
 
-    onStatus?.(job);
+    source.addEventListener("status", (event) => {
+      let job: CameraCaptureJobView<TResult>;
+      try {
+        job = JSON.parse((event as MessageEvent<string>).data) as CameraCaptureJobView<TResult>;
+      } catch {
+        fail(new CameraCaptureClientError(
+          "camera_status_invalid",
+          "The camera Realtime stream returned invalid status data.",
+        ));
+        return;
+      }
 
-    switch (job.status) {
-      case "COMPLETED":
-        return job;
-
-      case "FAILED":
-        throw new CameraCaptureClientError(
+      onStatus?.(job);
+      if (job.status === "COMPLETED") {
+        cleanup();
+        resolve(job);
+      } else if (job.status === "FAILED") {
+        fail(new CameraCaptureClientError(
           job.error?.code ?? "camera_capture_failed",
-
           job.error?.message ?? "Camera capture failed.",
-        );
-
-      case "EXPIRED":
-        throw new CameraCaptureClientError(
+        ));
+      } else if (job.status === "CANCELLED") {
+        fail(new CameraCaptureClientError(
+          job.error?.code ?? "camera_capture_cancelled",
+          job.error?.message ?? "Camera capture was cancelled.",
+        ));
+      } else if (job.status === "EXPIRED") {
+        fail(new CameraCaptureClientError(
           "camera_job_expired",
           "The camera capture request expired.",
-        );
-    }
-
-    if (Date.now() - startedAt > timeoutMs) {
-      throw new CameraCaptureClientError(
-        "camera_capture_timeout",
-        "Timed out waiting for the camera.",
-      );
-    }
-
-    await sleep(pollIntervalMs, signal);
-  }
+        ));
+      }
+    });
+    source.addEventListener("stream-error", (event) => {
+      let message = "The camera Realtime status stream failed.";
+      try {
+        const payload = JSON.parse((event as MessageEvent<string>).data) as { message?: string };
+        if (payload.message) message = payload.message;
+      } catch { /* Use the safe fallback. */ }
+      fail(new CameraCaptureClientError("camera_status_stream_failed", message));
+    });
+    // Native EventSource errors reconnect automatically. The durable current
+    // status is emitted again after every successful reconnection.
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }

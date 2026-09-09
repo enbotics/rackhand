@@ -5,10 +5,12 @@ import { authenticateCameraDevice } from "@/lib/camera/device-auth";
 
 import {
   CameraCaptureJobError,
+  captureProcessingHeartbeatMilliseconds,
   claimCaptureForProcessing,
   completeCaptureJob,
   failCaptureJob,
   markCaptureUploaded,
+  renewCaptureProcessingLease,
   requireDeviceCaptureJob,
 } from "@/lib/camera/capture-job-service";
 
@@ -28,7 +30,7 @@ export const dynamic = "force-dynamic";
  * Gives post-response measurement work enough time on platforms
  * that honor Next.js maxDuration.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MAX_UPLOAD_BYTES =
   Number(process.env.CAMERA_MAX_UPLOAD_MB ?? 12) * 1024 * 1024;
@@ -53,6 +55,12 @@ async function processUploadedCapture(jobId: string, imageBuffer: Buffer) {
 
   console.info(`[camera] Processing capture ${jobId}`);
 
+  const leaseHeartbeat = setInterval(() => {
+    void renewCaptureProcessingLease(jobId).catch((error) => {
+      console.warn(`[camera] Could not renew processing lease ${jobId}:`, error);
+    });
+  }, captureProcessingHeartbeatMilliseconds());
+
   try {
     let result: unknown;
     const captureInput = {
@@ -68,22 +76,30 @@ async function processUploadedCapture(jobId: string, imageBuffer: Buffer) {
         result = await measureImageBuffer(imageBuffer);
         break;
       case "PUTAWAY_VERIFICATION":
-        if (!processingJob.workflowCaptureId) {
-          throw new Error("Putaway camera job has no workflow capture id.");
+        if (!processingJob.workflowCaptureId || processingJob.workflowAttempt === null) {
+          throw new Error("Putaway camera job has no workflow capture attempt.");
         }
         result = await processPutawayCameraCapture(
           processingJob.workflowCaptureId,
-          captureInput,
+          {
+            ...captureInput,
+            requestedAt: processingJob.requestedAt,
+            workflowAttempt: processingJob.workflowAttempt,
+          },
         );
         break;
       case "INVENTORY_AUDIT":
       case "RECOUNT":
-        if (!processingJob.workflowCaptureId) {
-          throw new Error("Audit camera job has no workflow capture id.");
+        if (!processingJob.workflowCaptureId || processingJob.workflowAttempt === null) {
+          throw new Error("Audit camera job has no workflow capture attempt.");
         }
         result = await processAuditCameraCapture(
           processingJob.workflowCaptureId,
-          captureInput,
+          {
+            ...captureInput,
+            requestedAt: processingJob.requestedAt,
+            workflowAttempt: processingJob.workflowAttempt,
+          },
         );
         break;
       default:
@@ -119,6 +135,8 @@ async function processUploadedCapture(jobId: string, imageBuffer: Buffer) {
         failError,
       );
     }
+  } finally {
+    clearInterval(leaseHeartbeat);
   }
 }
 
@@ -247,29 +265,6 @@ export async function POST(
         },
         {
           status,
-        },
-      );
-    }
-
-    /*
-     * Extra early expiry check.
-     *
-     * markCaptureUploaded() remains authoritative, but this prevents us
-     * from unnecessarily writing a JPEG that is obviously already expired.
-     */
-    if (
-      existingJob.status === "CLAIMED" &&
-      existingJob.expiresAt.getTime() <= Date.now()
-    ) {
-      return NextResponse.json(
-        {
-          error: {
-            code: "camera_job_expired",
-            message: "The camera capture job has expired.",
-          },
-        },
-        {
-          status: 410,
         },
       );
     }
