@@ -64,6 +64,7 @@ describe("warehouse agent reply animation", () => {
       latestMovement: null,
       workflow: null,
       latestAudit: null,
+      onAuditChanged: vi.fn(),
     };
     const { container, rerender } = render(<AgentPanel {...baseProps} turns={[]} />);
     const turn: AgentTurn = {
