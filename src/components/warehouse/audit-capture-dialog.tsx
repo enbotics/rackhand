@@ -1,8 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { useSharedCamera } from "@/lib/camera-context";
-import type { Shot } from "@/lib/shots-db";
+import { waitForCameraCapture } from "@/lib/camera/capture-client";
 import type { PutawayCaptureDecision, PutawayCaptureView } from "@/lib/warehouse/putaway-capture-types";
 import type { AuditCaptureDecision, AuditCaptureView } from "@/lib/warehouse/audit-capture-types";
 import { CapturePopup } from "./capture-popup";
@@ -21,8 +20,7 @@ interface CaptureState {
   analysis: CaptureAnalysis | null;
   deciding: boolean;
   error: string | null;
-  imageDataUrl: string | null;
-  capture: (shot?: Shot) => Promise<void>;
+  capture: () => Promise<void>;
   decide: (decision: CaptureDecision) => Promise<void>;
   close: () => void;
 }
@@ -33,19 +31,16 @@ export function useAuditCapture() {
   return value;
 }
 
-/** Single request owner above navigation. The scene and fallback UI share it. */
+/** Single Pi-capture request owner above navigation. */
 export function AuditCaptureProvider({ children }: { children: ReactNode }) {
-  const camera = useSharedCamera();
   const [pending, setPending] = useState<PendingCapture | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<CaptureState["result"]>(null);
   const [analysis, setAnalysis] = useState<CaptureAnalysis | null>(null);
   const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const inFlight = useRef(false);
   const handledId = useRef<string | null>(null);
-  const autoStartedFor = useRef<string | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -78,35 +73,34 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     return () => { stopped = true; controller.abort(); clearTimeout(timer); };
   }, [result]);
 
-  useEffect(() => {
-    if (!pending || camera.status !== "idle" || autoStartedFor.current === pending.captureId) return;
-    autoStartedFor.current = pending.captureId;
-    void camera.start();
-  }, [camera, pending]);
-
-  async function capture(providedShot?: Shot) {
+  async function capture() {
     if (!pending || inFlight.current || result !== null) return;
-    const shot = providedShot ?? camera.captureFrame();
-    if (!shot) { setError("Start the camera, then capture again."); return; }
     inFlight.current = true;
     setSubmitting(true);
-    setImageDataUrl(shot.dataUrl);
     setError(null);
     try {
       const kind = pending.purpose === "PUTAWAY" ? "putaway" : "audits";
       const response = await fetch(`/api/warehouse/${kind}/captures/${pending.captureId}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageDataUrl: shot.dataUrl, imageWidth: shot.width, imageHeight: shot.height, capturedAt: shot.createdAt }),
+        method: "POST",
       });
-      const data = await response.json() as CaptureAnalysis;
+      const requested = await response.json() as {
+        captureJobId?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok || !requested.captureJobId) {
+        throw new Error(requested.error?.message ?? "The Raspberry Pi capture could not be requested.");
+      }
+      const completed = await waitForCameraCapture<CaptureAnalysis>(requested.captureJobId, {
+        pollIntervalMs: 1_000,
+        timeoutMs: 120_000,
+      });
+      if (!completed.result) throw new Error("The Raspberry Pi capture completed without an analysis result.");
       handledId.current = pending.captureId;
-      // Both purposes now get the same rich comparison treatment — only a
-      // bare success/failure fallback (below) has nothing to compare.
-      if (response.ok) setAnalysis(data);
-      setResult(response.ok ? "success" : "failure");
-    } catch {
-      handledId.current = pending.captureId;
-      setResult("failure");
+      setAnalysis(completed.result);
+      setResult("success");
+    } catch (captureError) {
+      setError(captureError instanceof Error ? captureError.message : "The Raspberry Pi capture failed.");
+      setResult(null);
     } finally { inFlight.current = false; setSubmitting(false); }
   }
 
@@ -124,10 +118,8 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
       if (!response.ok) throw new Error("decision failed");
       if (decision === "RETRY") {
         handledId.current = null;
-        autoStartedFor.current = null;
         setResult(null);
         setAnalysis(null);
-        setImageDataUrl(null);
       } else {
         setResult(null);
         setAnalysis(null);
@@ -145,7 +137,7 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     setResult(null); setAnalysis(null); setPending(null); setError(null);
   }
 
-  return <CaptureContext.Provider value={{ pending, submitting, result, analysis, deciding, error, imageDataUrl, capture, decide, close }}>
+  return <CaptureContext.Provider value={{ pending, submitting, result, analysis, deciding, error, capture, decide, close }}>
     {children}
     <AuditCaptureDialog />
   </CaptureContext.Provider>;
@@ -248,7 +240,7 @@ export function AuditCaptureDialog() {
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <ComparisonImage label="Previous snapshot" src={result?.previousImageUrl ?? null} />
-            <ComparisonImage label="Current verification" src={result?.currentImageUrl ?? audit.imageDataUrl} />
+            <ComparisonImage label="Current verification" src={result?.currentImageUrl ?? null} />
           </div>
           <div className="grid grid-cols-3 gap-2">
             <Metric label="Recorded qty" value={result?.expectedQuantity ?? "—"} />
@@ -297,7 +289,7 @@ export function AuditCaptureDialog() {
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <ComparisonImage label="Previous accepted snapshot" src={result.previousImageUrl} />
-            <ComparisonImage label="Newly captured snapshot" src={result.currentImageUrl ?? audit.imageDataUrl} />
+            <ComparisonImage label="Newly captured snapshot" src={result.currentImageUrl} />
           </div>
           <div className="grid grid-cols-3 gap-2">
             <Metric label="Recorded qty" value={result.expectedQuantity} />
@@ -349,7 +341,7 @@ export function AuditCaptureDialog() {
   return (
     <CapturePopup key={audit.pending.captureId} title={`${audit.pending.purpose === "PUTAWAY" ? "Putaway snapshot" : "Audit capture"} · ${audit.pending.binCode}`}
       onClose={audit.close} dismissible={false} disabled={!!session.gantry?.activeOperationId}
-      onCapture={(shot) => void audit.capture(shot)} captureLabel={audit.pending.purpose === "PUTAWAY" ? "Verify · take photo" : "Capture bin for audit"} error={audit.error} />
+      onCapture={() => void audit.capture()} captureLabel={audit.pending.purpose === "PUTAWAY" ? "Verify with Pi camera" : "Capture bin with Pi camera"} error={audit.error} />
   );
 }
 

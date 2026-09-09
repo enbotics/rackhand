@@ -5,16 +5,14 @@ import {
   requireCaptureJob,
 } from "@/lib/camera/capture-job-service";
 
-import type { MeasurementResult } from "@/lib/warehouse/scan-types";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function parseResult(value: string | null): MeasurementResult | null {
+function parseResult(value: string | null): unknown {
   if (!value) return null;
 
   try {
-    return JSON.parse(value) as MeasurementResult;
+    return JSON.parse(value) as unknown;
   } catch {
     return null;
   }

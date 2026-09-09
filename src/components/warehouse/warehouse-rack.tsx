@@ -380,7 +380,7 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
             </g>;
           }))}
           <CameraRig scanning={scanning} dockBin={dockBin ?? undefined}
-            scanImage={session.scanning ? session.shots[0]?.dataUrl : audit.submitting ? audit.imageDataUrl ?? undefined : undefined} />
+            scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined} />
           <Carriage arm={arm} point={point} bin={activeBin} />
         </svg>
       </div>}

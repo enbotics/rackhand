@@ -22,7 +22,6 @@ import type { CatalogMatchResult } from "@/lib/warehouse/catalog-match-types";
 import type { CatalogResolutionRequestResult } from "@/lib/warehouse/catalog-resolution-types";
 import {
   deriveScanIdentity,
-  describeMeasureFailure,
   type ScanIdentityStatus,
 } from "@/lib/warehouse/dashboard-presentation";
 import {
@@ -172,11 +171,10 @@ export interface WarehouseSession {
   scanState: ScanState;
   scanning: boolean;
   /* ---- Raspberry Pi camera ---- */
-  piCapture: CameraCaptureJobView | null;
+  piCapture: CameraCaptureJobView<MeasurementResult> | null;
   startPiScan: () => void;
 
   identity: ScanIdentityStatus | null;
-  onCapture: (shot: Shot) => void;
   onDeleteShot: (id: string) => void;
   onMeasured: (
     id: string,
@@ -247,7 +245,7 @@ export function WarehouseSessionProvider({
   // Current scan session.
   const [scanState, setScanState] = useState<ScanState>(EMPTY_SCAN);
 
-  const [piCapture, setPiCapture] = useState<CameraCaptureJobView | null>(null);
+  const [piCapture, setPiCapture] = useState<CameraCaptureJobView<MeasurementResult> | null>(null);
 
   /**
    * Synchronous guard against two fast clicks before React
@@ -466,8 +464,7 @@ export function WarehouseSessionProvider({
       }
 
       /*
-       * Now enter the exact same catalog matcher used
-       * by the existing browser scan.
+       * Enter the authoritative catalog matcher after Pi measurement.
        */
       setScanState({
         phase: "MATCHING",
@@ -526,96 +523,6 @@ export function WarehouseSessionProvider({
     [requestIdentification],
   );
 
-  /**
-   * capture -> measure -> ScanResult -> catalog match.
-   *
-   * Ends there, deliberately. Scanning identifies a part; it never puts one
-   * away. The physical action is a separate request that a person approves.
-   */
-  /**
-   * Existing browser-camera path.
-   *
-   * Browser and Raspberry Pi now differ only in how they
-   * obtain MeasurementResult.
-   *
-   * Everything afterward goes through applyMeasurementResult().
-   */
-  const handleCapture = useCallback(
-    async (shot: Shot) => {
-      setShots((previous) => [shot, ...previous]);
-
-      addShot(shot).catch(() => {
-        /*
-         * Local IndexedDB history failing must never stop
-         * the warehouse workflow.
-         */
-      });
-
-      beginNewScan();
-
-      try {
-        const response = await fetch("/api/measure", {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          body: JSON.stringify({
-            imageDataUrl: shot.dataUrl,
-
-            imageWidthPx: shot.width,
-
-            imageHeightPx: shot.height,
-          }),
-        });
-
-        const body = (await response.json()) as
-          | MeasurementResult
-          | {
-              error?: {
-                code?: unknown;
-                message?: unknown;
-              };
-            };
-
-        if (!response.ok) {
-          const failure = "error" in body ? (body.error ?? {}) : {};
-
-          setScanState({
-            phase: "FAILED",
-
-            scan: null,
-
-            failure: describeMeasureFailure(failure.code, failure.message),
-          });
-
-          return;
-        }
-
-        await applyMeasurementResult({
-          measurementResult: body as MeasurementResult,
-
-          shot,
-        });
-      } catch {
-        setScanState({
-          phase: "FAILED",
-
-          scan: null,
-
-          failure: {
-            title: "The measurement service could not be reached.",
-
-            guidance:
-              "Check that the application server is running, then scan again.",
-          },
-        });
-      }
-    },
-    [beginNewScan, applyMeasurementResult],
-  );
-
   const startPiScan = useCallback(async () => {
     /*
      * Prevent duplicate jobs from a rapid double click.
@@ -647,7 +554,7 @@ export function WarehouseSessionProvider({
        * → PROCESSING
        * → COMPLETED
        */
-      const completed = await waitForCameraCapture(created.captureJobId, {
+      const completed = await waitForCameraCapture<MeasurementResult>(created.captureJobId, {
         pollIntervalMs: 1000,
 
         timeoutMs: 120_000,
@@ -764,8 +671,7 @@ export function WarehouseSessionProvider({
       });
 
       /*
-       * 5. Enter the SAME warehouse pipeline
-       * as the browser camera.
+       * 5. Enter the warehouse catalog pipeline.
        */
       await applyMeasurementResult({
         measurementResult: completed.result,
@@ -1180,7 +1086,6 @@ export function WarehouseSessionProvider({
       scanning:
         scanState.phase === "MEASURING" || scanState.phase === "MATCHING",
       identity,
-      onCapture: (shot) => void handleCapture(shot),
       onDeleteShot: handleDelete,
       onMeasured: handleMeasured,
       piCapture,
@@ -1234,7 +1139,6 @@ export function WarehouseSessionProvider({
     shots,
     scanState,
     identity,
-    handleCapture,
     handleDelete,
     handleMeasured,
     piCapture,

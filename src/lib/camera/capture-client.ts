@@ -1,7 +1,5 @@
 "use client";
 
-import type { MeasurementResult } from "@/lib/warehouse/scan-types";
-
 export type CameraCaptureStatus =
   | "PENDING"
   | "CLAIMED"
@@ -11,7 +9,7 @@ export type CameraCaptureStatus =
   | "FAILED"
   | "EXPIRED";
 
-export interface CameraCaptureJobView {
+export interface CameraCaptureJobView<TResult = unknown> {
   captureJobId: string;
 
   purpose: string;
@@ -34,7 +32,7 @@ export interface CameraCaptureJobView {
 
   completedAt: string | null;
 
-  result: MeasurementResult | null;
+  result: TResult | null;
 
   error: {
     code: string;
@@ -83,9 +81,9 @@ export async function createCameraCapture(): Promise<CreateCaptureResponse> {
   return body as CreateCaptureResponse;
 }
 
-export async function getCameraCapture(
+export async function getCameraCapture<TResult = unknown>(
   captureJobId: string,
-): Promise<CameraCaptureJobView> {
+): Promise<CameraCaptureJobView<TResult>> {
   const response = await fetch(
     `/api/camera/captures/${encodeURIComponent(captureJobId)}`,
     {
@@ -109,7 +107,7 @@ export async function getCameraCapture(
     );
   }
 
-  return body as CameraCaptureJobView;
+  return body as CameraCaptureJobView<TResult>;
 }
 
 function sleep(milliseconds: number, signal?: AbortSignal) {
@@ -137,7 +135,7 @@ function sleep(milliseconds: number, signal?: AbortSignal) {
   });
 }
 
-export async function waitForCameraCapture(
+export async function waitForCameraCapture<TResult = unknown>(
   captureJobId: string,
   options?: {
     signal?: AbortSignal;
@@ -146,9 +144,9 @@ export async function waitForCameraCapture(
 
     timeoutMs?: number;
 
-    onStatus?: (job: CameraCaptureJobView) => void;
+    onStatus?: (job: CameraCaptureJobView<TResult>) => void;
   },
-): Promise<CameraCaptureJobView> {
+): Promise<CameraCaptureJobView<TResult>> {
   const {
     signal,
     pollIntervalMs = 1000,
@@ -163,7 +161,7 @@ export async function waitForCameraCapture(
       throw new DOMException("Aborted", "AbortError");
     }
 
-    const job = await getCameraCapture(captureJobId);
+    const job = await getCameraCapture<TResult>(captureJobId);
 
     onStatus?.(job);
 

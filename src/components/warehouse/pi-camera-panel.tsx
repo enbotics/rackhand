@@ -90,7 +90,7 @@ export function PiCameraPanel({
     <div className="overflow-hidden rounded-lg border border-line bg-bg-elevated">
       <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-3">
         <div>
-          <p className="text-sm font-semibold text-ink">Raspberry Pi Camera</p>
+          <p className="text-sm font-semibold text-ink">Raspberry Pi 5 Camera</p>
 
           <p className="mt-0.5 font-mono text-[10px] text-ink-faint">
             warehouse-camera-01

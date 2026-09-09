@@ -29,7 +29,7 @@ const MAX_IMAGE_DIMENSION_PX = 1024;
 /** Below this, a returned height is dropped rather than trusted — see prompt: a single overhead frame has no vertical ruler, so height is inherently the shakiest of the three numbers. */
 const MIN_HEIGHT_CONFIDENCE = 0.5;
 
-const PROMPT = `This photo was taken by a webcam mounted directly overhead, looking straight down at a printed calibration mat lying on a flat work surface. The mat itself has 4 small QR-code squares near its corners and a ruled rectangular zone with tick marks and grid lines printed on it — IGNORE all of that printed mat graphics entirely, it is not the object. One or more visually matching physical items may rest on top of the mat, inside its ruled zone.
+const PROMPT = `This photo was taken by a Raspberry Pi camera mounted directly overhead, looking straight down at a printed calibration mat lying on a flat work surface. The mat itself has 4 small QR-code squares near its corners and a ruled rectangular zone with tick marks and grid lines printed on it — IGNORE all of that printed mat graphics entirely, it is not the object. One or more visually matching physical items may rest on top of the mat, inside its ruled zone.
 
 Do not estimate any physical measurement yourself — any size guess of yours would be unreliable, the actual mm conversion is done separately from the mat's own markings. Instead:
 

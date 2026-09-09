@@ -1,6 +1,7 @@
-# webcam-scan
+# Agentic spare-parts warehouse
 
-Just a demo project for testing webcam accuracy
+The Raspberry Pi 5 camera is the sole production image source. Browser
+`getUserMedia` capture is intentionally not used.
 
 ## Warehouse agents
 
@@ -17,8 +18,13 @@ it with Strands `Agent.asTool()`; it is not a second client endpoint.
   standard AWS chain — nothing is hard-coded, and no AWS secret belongs in the
   committed `.env`.
 - **Vision:** Gemini (`GEMINI_API_KEY`) performs scan measurement and the
-  Inventory Auditor's one-frame quantity count. Image bytes are not put into
-  either agent's conversation.
+  shared one-frame quantity/confidence/foreign-object analysis used by putaway
+  and inventory auditing. Image bytes are not put into either agent's
+  conversation.
+- **Camera:** manual scans, putaway verification and inventory audits create
+  durable `CameraCaptureJob` rows for the configured Raspberry Pi worker.
+  The Pi uploads one fresh JPEG; the server dispatches it to measurement or
+  shared bin-analysis logic according to the job purpose.
 - **Warehouse truth:** PostgreSQL/Supabase is authoritative. Audit evidence is
   stored in Supabase Storage and audit/count history is persisted in dedicated
   database tables.

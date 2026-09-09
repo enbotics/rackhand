@@ -14,14 +14,10 @@ export interface GuidedPutawayRequest {
   imageDataUrl?: string;
 }
 
-/** The human decision at the presented bin. Placement requires fresh photo evidence. */
+/** The human placement decision. A placed bin is verified by the Raspberry Pi. */
 export type GuidedPlacementDecision =
   | { placed: false }
-  | {
-      placed: true;
-      verificationImageDataUrl: string;
-      verificationCapturedAt: number;
-    };
+  | { placed: true };
 
 export type GuidedDatabaseStatus =
   | "CHECKING"

@@ -50,7 +50,7 @@ export async function POST(request: Request) {
   const { imageDataUrl } = body;
 
   /*
-   * Keep accepting the browser's existing data URL format.
+   * Keep accepting stored-shot data URLs for history remeasurement.
    *
    * Examples:
    * data:image/jpeg;base64,...

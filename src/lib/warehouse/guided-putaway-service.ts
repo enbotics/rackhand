@@ -30,6 +30,7 @@ import type {
   GuidedPutawayStatusView,
 } from "./guided-putaway-types";
 import { uploadPutawayPhoto } from "./storage";
+import { requirePutawayVerification } from "./putaway-verification";
 
 const QUANTITY = 1;
 
@@ -628,41 +629,17 @@ export async function returnGuidedPutawayBin(
     | { verificationImageUrl: string; verificationCapturedAt: Date }
     | undefined;
   if (placed) {
-    const capturedAt = new Date(decision.verificationCapturedAt);
-    const invalidTimestamp =
-      !Number.isFinite(decision.verificationCapturedAt) ||
-      capturedAt.getTime() < loaded.createdAt.getTime() ||
-      capturedAt.getTime() > Date.now() + 60_000;
-    if (
-      typeof decision.verificationImageDataUrl !== "string" ||
-      !decision.verificationImageDataUrl.startsWith("data:image/") ||
-      invalidTimestamp
-    ) {
-      return failure(
-        "placement_photo_required",
-        "Take a fresh verification photo of the item inside the presented bin before returning it.",
-        {
-          ...info,
-          databaseStatus: "WAITING_TO_SAVE",
-          gantryStatus: "WAITING_FOR_PLACEMENT",
-        },
-      );
-    }
-
     try {
+      const verified = await requirePutawayVerification(loaded.id, true);
       verification = {
-        verificationImageUrl: await uploadBinVerificationPhoto(
-          loaded.id,
-          loaded.destinationBin.code,
-          decision.verificationImageDataUrl,
-        ),
-        verificationCapturedAt: capturedAt,
+        verificationImageUrl: verified.imageUrl,
+        verificationCapturedAt: verified.capturedAt,
       };
     } catch (error) {
-      console.error("[guided-putaway] verification photo upload failed", error);
+      console.error("[guided-putaway] Raspberry Pi verification failed", error);
       return failure(
-        "placement_photo_upload_failed",
-        "The verification photo could not be saved. The bin is still at intake—retry the photo before returning it.",
+        "placement_photo_required",
+        "The Raspberry Pi verification did not complete. The bin is still at intake—request a fresh photo before returning it.",
         {
           ...info,
           databaseStatus: "WAITING_TO_SAVE",
@@ -877,11 +854,4 @@ export async function commitGuidedPutaway(
     gantryOperationId: loaded.gantryOperationId ?? undefined,
     inventoryQuantityAdded: placed ? 1 : 0,
   };
-}
-function uploadBinVerificationPhoto(
-  id: string,
-  code: string,
-  verificationImageDataUrl: string,
-): string | PromiseLike<string> {
-  throw new Error("Function not implemented.");
 }

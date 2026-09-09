@@ -18,6 +18,8 @@ import {
   isMeasurementError,
   measureImageBuffer,
 } from "@/lib/measurement/measure-image-buffer";
+import { processPutawayCameraCapture } from "@/lib/warehouse/putaway-verification";
+import { processAuditCameraCapture } from "@/lib/warehouse/audit-bin-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,7 +54,41 @@ async function processUploadedCapture(jobId: string, imageBuffer: Buffer) {
   console.info(`[camera] Processing capture ${jobId}`);
 
   try {
-    const result = await measureImageBuffer(imageBuffer);
+    let result: unknown;
+    const captureInput = {
+      imageBuffer,
+      evidenceUrl: processingJob.evidenceUrl!,
+      imageWidth: processingJob.imageWidth!,
+      imageHeight: processingJob.imageHeight!,
+      capturedAt: processingJob.capturedAt!,
+    };
+
+    switch (processingJob.purpose) {
+      case "MANUAL_SCAN":
+        result = await measureImageBuffer(imageBuffer);
+        break;
+      case "PUTAWAY_VERIFICATION":
+        if (!processingJob.workflowCaptureId) {
+          throw new Error("Putaway camera job has no workflow capture id.");
+        }
+        result = await processPutawayCameraCapture(
+          processingJob.workflowCaptureId,
+          captureInput,
+        );
+        break;
+      case "INVENTORY_AUDIT":
+      case "RECOUNT":
+        if (!processingJob.workflowCaptureId) {
+          throw new Error("Audit camera job has no workflow capture id.");
+        }
+        result = await processAuditCameraCapture(
+          processingJob.workflowCaptureId,
+          captureInput,
+        );
+        break;
+      default:
+        throw new Error(`Unsupported camera purpose: ${processingJob.purpose}`);
+    }
 
     await completeCaptureJob(jobId, {
       result,
