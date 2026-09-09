@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/warehouse/db";
 
 /**
@@ -175,6 +176,7 @@ export async function createCaptureJob(input: CreateCaptureJobInput) {
 
   return prisma.cameraCaptureJob.create({
     data: {
+      id: randomUUID(),
       purpose: input.purpose,
       deviceId,
 
@@ -184,6 +186,7 @@ export async function createCaptureJob(input: CreateCaptureJobInput) {
 
       requestedAt: now,
       expiresAt: calculateExpiryDate(now),
+      updatedAt: now,
     },
   });
 }
