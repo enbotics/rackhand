@@ -4,6 +4,11 @@ import { runInventoryAuditGraph } from "./graphs/inventory-audit-graph";
 import type { BinAuditResult, InventoryAuditRunResult } from "./audit-types";
 import type { InventoryAuditRun } from "@/generated/prisma/client";
 import { observeDailyBinActivity } from "./audit-activity-service";
+import {
+  getActiveInventoryAuditSummary,
+  InventoryAuditAlreadyRunningError,
+  recoverStaleInventoryAudit,
+} from "./audit-recovery-service";
 
 export type InventoryAuditTrigger = "CLIENT" | "TRUSTED_INTERNAL";
 
@@ -16,6 +21,10 @@ export async function runInventoryAudit(input: {
   trigger: InventoryAuditTrigger;
 }): Promise<InventoryAuditRunResult> {
   const requestedBinCode = input.binCode?.trim().toUpperCase();
+  // A process restart can interrupt the in-memory wait while leaving the
+  // durable ACTIVE lock behind. Recover only rows whose own deadline plus a
+  // safety grace has elapsed; a genuinely live audit remains untouched.
+  await recoverStaleInventoryAudit();
   if (input.trigger === "TRUSTED_INTERNAL") {
     if (!requestedBinCode) throw new Error("trusted_audit_bin_required");
     const observation = await observeDailyBinActivity();
@@ -35,7 +44,16 @@ export async function runInventoryAudit(input: {
       },
     });
   } catch (error) {
-    if (isUniqueViolation(error)) throw new Error("audit_already_running");
+    if (isUniqueViolation(error)) {
+      const active = await getActiveInventoryAuditSummary();
+      if (active) {
+        throw new InventoryAuditAlreadyRunningError(
+          active,
+          requestedBinCode || null,
+        );
+      }
+      throw new Error("audit_already_running");
+    }
     throw error;
   }
 

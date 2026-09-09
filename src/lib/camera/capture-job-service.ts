@@ -38,6 +38,7 @@ export const CAMERA_CAPTURE_STATUSES = [
 export type CameraCaptureStatus = (typeof CAMERA_CAPTURE_STATUSES)[number];
 
 const DEFAULT_CAPTURE_TIMEOUT_SECONDS = 30;
+const DEFAULT_PROCESSING_TIMEOUT_SECONDS = 5 * 60;
 
 /**
  * Keep this small.
@@ -134,6 +135,20 @@ function getCaptureTimeoutSeconds(): number {
     );
   }
 
+  return value;
+}
+
+function getProcessingTimeoutSeconds(): number {
+  const raw =
+    process.env.CAMERA_PROCESSING_TIMEOUT_SECONDS ??
+    String(DEFAULT_PROCESSING_TIMEOUT_SECONDS);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new CameraCaptureJobError(
+      "camera_invalid_configuration",
+      "CAMERA_PROCESSING_TIMEOUT_SECONDS must be a positive number.",
+    );
+  }
   return value;
 }
 
@@ -237,7 +252,7 @@ export async function requireCaptureJob(jobId: string) {
 export async function expireStaleCaptureJobs(
   now = new Date(),
 ): Promise<number> {
-  const result = await prisma.cameraCaptureJob.updateMany({
+  const captureResult = await prisma.cameraCaptureJob.updateMany({
     where: {
       expiresAt: {
         lte: now,
@@ -254,10 +269,29 @@ export async function expireStaleCaptureJobs(
       errorCode: "camera_capture_timeout",
       errorMessage:
         "The camera capture request expired before an image was received.",
+      updatedAt: now,
     },
   });
 
-  return result.count;
+  const processingDeadline = new Date(
+    now.getTime() - getProcessingTimeoutSeconds() * 1000,
+  );
+  const processingResult = await prisma.cameraCaptureJob.updateMany({
+    where: {
+      status: { in: ["UPLOADED", "PROCESSING"] },
+      updatedAt: { lte: processingDeadline },
+    },
+    data: {
+      status: "FAILED",
+      completedAt: now,
+      errorCode: "camera_processing_timeout",
+      errorMessage:
+        "Camera processing stopped making progress and was recovered automatically.",
+      updatedAt: now,
+    },
+  });
+
+  return captureResult.count + processingResult.count;
 }
 
 /**
@@ -331,6 +365,7 @@ export async function claimNextCaptureJob(deviceId: string) {
         status: "CLAIMED",
         claimedAt,
         expiresAt: captureDeadline,
+        updatedAt: claimedAt,
       },
     });
 
@@ -457,6 +492,7 @@ export async function markCaptureUploaded(
         errorCode: "camera_capture_timeout",
         errorMessage:
           "The camera capture request expired before upload completed.",
+        updatedAt: now,
       },
     });
 
@@ -488,6 +524,7 @@ export async function markCaptureUploaded(
       capturedAt: input.capturedAt,
 
       uploadedAt: now,
+      updatedAt: now,
     },
   });
 
@@ -529,6 +566,7 @@ export async function markCaptureUploaded(
  * - null         -> another process already claimed/completed it
  */
 export async function claimCaptureForProcessing(jobId: string) {
+  const now = new Date();
   const result = await prisma.cameraCaptureJob.updateMany({
     where: {
       id: jobId,
@@ -537,6 +575,7 @@ export async function claimCaptureForProcessing(jobId: string) {
 
     data: {
       status: "PROCESSING",
+      updatedAt: now,
     },
   });
 
@@ -584,6 +623,7 @@ export async function completeCaptureJob(
 
       errorCode: null,
       errorMessage: null,
+      updatedAt: now,
     },
   });
 
@@ -654,6 +694,7 @@ export async function failCaptureJob(
       errorMessage: sanitizeErrorMessage(input.errorMessage),
 
       completedAt: now,
+      updatedAt: now,
     },
   });
 
