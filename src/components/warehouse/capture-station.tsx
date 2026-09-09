@@ -3,12 +3,11 @@
 import { useAuditCapture } from "./audit-capture-dialog";
 import { useState } from "react";
 import { useWarehouseSession } from "./session";
-import { useSharedCamera } from "@/lib/camera-context";
 import { GuidedPutawayDialog } from "./guided-putaway-dialog";
 import { BUTTON_VARIANTS } from "./ui";
 import { CapturePopup } from "./capture-popup";
 
-/** Camera controls live in a popup; the main page stays focused on the rack. */
+/** Pi capture controls live in a popup; the main page stays focused on the rack. */
 export function CaptureStation() {
   const session = useWarehouseSession();
   const audit = useAuditCapture();
@@ -23,7 +22,7 @@ export function CaptureStation() {
       </button>
       {open && !session.scanning && !audit.pending && <CapturePopup title="Register an item"
         onClose={() => setOpen(false)} disabled={machineBusy}
-        onCapture={(shot) => { setOpen(false); session.onCapture(shot); }} />}
+        onCapture={() => { setOpen(false); session.startPiScan(); }} />}
     </>
   );
 }
@@ -31,7 +30,6 @@ export function CaptureStation() {
 /** Existing identification/catalog logic; only its presentation timing changes. */
 export function ScanResultDialog() {
   const session = useWarehouseSession();
-  const camera = useSharedCamera();
   return <GuidedPutawayDialog
     scanState={session.scanState} identity={session.identity} confirmed={session.confirmed}
     identification={session.identification} identityRejected={session.identityRejected}
@@ -40,7 +38,6 @@ export function ScanResultDialog() {
     gantry={session.gantry} shots={session.shots} onSelectIdentity={session.selectCandidate}
     onRejectIdentity={session.rejectIdentification} onReconsiderIdentity={session.reconsiderIdentification}
     onRegisterNewPart={session.registerNewPart} registeringPart={session.registeringPart}
-    registerError={session.registerError} onCaptureVerification={camera.captureFrame}
-    getCameraStream={camera.getStream} onWarehouseChanged={session.refresh}
+    registerError={session.registerError} onWarehouseChanged={session.refresh}
   />;
 }

@@ -1,5 +1,5 @@
 /**
- * Runtime toggle for how an inventory audit gets its photo: a live camera
+ * Runtime toggle for how an inventory audit gets its photo: a Raspberry Pi
  * capture (PROD) or a sampled stand-in from a bin's curated local demo
  * photos (SIMULATION) — see simulateCapture() in audit-bin-service.ts.
  *

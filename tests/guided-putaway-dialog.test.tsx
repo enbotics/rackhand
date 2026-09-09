@@ -113,7 +113,6 @@ describe("guided putaway dialog", () => {
         onRegisterNewPart={() => {}}
         registeringPart={false}
         registerError={null}
-        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -131,16 +130,6 @@ describe("guided putaway dialog", () => {
     const committed = deferred<Response>();
     const requests: string[] = [];
     const requestBodies = new Map<string, Record<string, unknown>>();
-    const verificationShot = {
-      id: "verification_1",
-      dataUrl: "data:image/jpeg;base64,cGxhY2VtZW50",
-      createdAt: 1_700_000_010_000,
-      width: 1280,
-      height: 720,
-      deviceLabel: "Overhead camera",
-    };
-    const onCaptureVerification = vi.fn(() => verificationShot);
-
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -208,7 +197,6 @@ describe("guided putaway dialog", () => {
         onRegisterNewPart={() => {}}
         registeringPart={false}
         registerError={null}
-        onCaptureVerification={onCaptureVerification}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -241,21 +229,13 @@ describe("guided putaway dialog", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Waiting for placement")).toBeTruthy());
-    const verifyButton = screen.getByRole("button", { name: "Verify photo & return bin" });
-    expect((verifyButton as HTMLButtonElement).disabled).toBe(true);
     expect(requests.some((url) => url.endsWith("/return"))).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Take verification photo" }));
-    expect(screen.getByAltText("Verification photo for bin B1-02")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retake photo" }));
-    expect(onCaptureVerification).toHaveBeenCalledTimes(2);
-    fireEvent.click(screen.getByRole("button", { name: "Verify photo & return bin" }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify with Pi camera" }));
 
     await waitFor(() => expect(screen.getByText("Returning bin")).toBeTruthy());
     expect(requestBodies.get("/api/warehouse/guided-putaway/movement_1/return")).toEqual({
       placed: true,
-      verificationImageDataUrl: verificationShot.dataUrl,
-      verificationCapturedAt: verificationShot.createdAt,
     });
 
     returned.resolve(
@@ -351,7 +331,6 @@ describe("guided putaway dialog", () => {
         onRegisterNewPart={() => {}}
         registeringPart={false}
         registerError={null}
-        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -401,7 +380,6 @@ describe("guided putaway dialog", () => {
         onRegisterNewPart={onRegisterNewPart}
         registeringPart={false}
         registerError={null}
-        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -443,7 +421,6 @@ describe("guided putaway dialog", () => {
         onRegisterNewPart={() => {}}
         registeringPart={true}
         registerError="The warehouse could not be reached. Try again."
-        onCaptureVerification={() => null}
         onWarehouseChanged={() => {}}
       />,
     );
@@ -480,7 +457,6 @@ describe("guided putaway dialog", () => {
       onRegisterNewPart: () => {},
       registeringPart: false,
       registerError: null,
-      onCaptureVerification: () => null,
       onWarehouseChanged: () => {},
     };
     const { rerender } = render(

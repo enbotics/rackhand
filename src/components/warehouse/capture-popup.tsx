@@ -1,23 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Shot } from "@/lib/shots-db";
-import { CameraStage } from "@/components/camera-stage";
 import { Modal } from "./modal";
-import { ErrorNote } from "./ui";
+import { BUTTON_VARIANTS, ErrorNote } from "./ui";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
 
-/** Freeze one frame, dismiss smoothly, then hand that same frame to analysis. */
+/** Dismiss smoothly, then ask the Raspberry Pi worker for one fresh frame. */
 export function CapturePopup({ title, onCapture, onClose, disabled = false, error, captureLabel = "Capture & identify", dismissible = true }: {
   title: string;
-  onCapture: (shot: Shot) => void;
+  onCapture: () => void;
   onClose: () => void;
   disabled?: boolean;
   error?: string | null;
   captureLabel?: string;
   dismissible?: boolean;
 }) {
-  const [exit, setExit] = useState<{ shot: Shot | null } | null>(null);
+  const [exit, setExit] = useState<{ capture: boolean } | null>(null);
   const exitStarted = useRef(false);
   const reduced = usePrefersReducedMotion();
   const callbacks = useRef({ onCapture, onClose });
@@ -32,20 +30,36 @@ export function CapturePopup({ title, onCapture, onClose, disabled = false, erro
     if (!exit) return;
     const completed = exit;
     setExit(null);
-    if (completed.shot) callbacks.current.onCapture(completed.shot);
+    if (completed.capture) callbacks.current.onCapture();
     else callbacks.current.onClose();
   }
 
-  function finish(shot: Shot | null) {
+  function finish(capture: boolean) {
     if (exitStarted.current) return;
     exitStarted.current = true;
-    setExit({ shot });
+    setExit({ capture });
   }
 
-  return <Modal title={title} onClose={() => finish(null)} closing={exit !== null} onExitComplete={completeExit}
-    dismissible={dismissible && exit === null} maxWidthClassName="max-w-2xl">
-    <p className="mb-4 text-sm text-ink-muted">Position the item in the frame. After capture, watch the warehouse scan it; the result will open automatically.</p>
-    <CameraStage onCapture={(shot) => finish(shot)} disabled={disabled || exit !== null} captureLabel={captureLabel} />
+  return <Modal title={title} onClose={() => finish(false)} closing={exit !== null} onExitComplete={completeExit}
+    dismissible={dismissible && exit === null} maxWidthClassName="max-w-lg">
+    <div className="rounded-xl border border-line bg-bg-elevated p-5">
+      <div className="flex items-center gap-3">
+        <span className="relative flex h-3 w-3">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-40" />
+          <span className="relative inline-flex h-3 w-3 rounded-full bg-success" />
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-ink">Raspberry Pi camera capture</p>
+          <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+            Requesting a capture will close this dialog and queue one fresh image on the Pi. The analyzed result will reopen automatically.
+          </p>
+        </div>
+      </div>
+      <button type="button" onClick={() => finish(true)} disabled={disabled || exit !== null}
+        className={`${BUTTON_VARIANTS.approve} mt-5 w-full`}>
+        {captureLabel}
+      </button>
+    </div>
     {disabled && <p className="mt-3 text-xs text-ink-muted">Capture unlocks when the gantry stops.</p>}
     {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
   </Modal>;

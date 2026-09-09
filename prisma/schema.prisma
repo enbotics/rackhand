@@ -84,7 +84,7 @@ model Inventory {
 /// A requested warehouse state transition. Creating one does NOT mean a
 /// gantry moved anything — the physical lifecycle is a later milestone.
 model Movement {
-  id                     String    @id @default(cuid())
+  id                     String                 @id @default(cuid())
   /// MovementType: PUTAWAY | RETRIEVAL | TRANSFER | ADJUSTMENT
   type                   String
   partId                 String
@@ -92,7 +92,7 @@ model Movement {
   /// MovementStatus: PENDING | VALIDATED | RUNNING | PRESENTING |
   /// AWAITING_PLACEMENT | RETURNING | READY_TO_COMMIT | READY_TO_CANCEL |
   /// COMPLETED | FAILED | CANCELLED
-  status                 String    @default("PENDING")
+  status                 String                 @default("PENDING")
   /// Nullable: a putaway starts at an intake station, a retrieval ends at an
   /// output station. Those stations are free-text locations rather than fake
   /// Bin rows, so bin availability logic never sees them.
@@ -114,8 +114,8 @@ model Movement {
   /// movement reaches FAILED or CANCELLED so the operator may retry the same
   /// physical scan. Unique rather than checked-then-written, so two concurrent
   /// submissions of one scan cannot both claim it.
-  idempotencyKey         String?   @unique
-  createdAt              DateTime  @default(now())
+  idempotencyKey         String?                @unique
+  createdAt              DateTime               @default(now())
   /// Set only when a movement actually reaches a terminal state.
   completedAt            DateTime?
   /// The photo captured for this scan, uploaded to Supabase Storage. Only
@@ -134,10 +134,10 @@ model Movement {
   /// independent full-audit workflow.
   verificationImageUrl   String?
   verificationCapturedAt DateTime?
-  putawayCapture          PutawayCaptureRequest?
-  destinationBin         Bin?      @relation("MovementDestination", fields: [destinationBinId], references: [id])
-  part                   Part      @relation(fields: [partId], references: [id])
-  sourceBin              Bin?      @relation("MovementSource", fields: [sourceBinId], references: [id])
+  putawayCapture         PutawayCaptureRequest?
+  destinationBin         Bin?                   @relation("MovementDestination", fields: [destinationBinId], references: [id])
+  part                   Part                   @relation(fields: [partId], references: [id])
+  sourceBin              Bin?                   @relation("MovementSource", fields: [sourceBinId], references: [id])
 
   @@index([status])
   @@index([createdAt])
@@ -145,7 +145,7 @@ model Movement {
   @@index([destinationBinId, verificationCapturedAt])
 }
 
-/// Durable browser-camera and human-review state for one putaway. Unlike an
+/// Durable Raspberry Pi camera and human-review state for one putaway. Unlike an
 /// inventory audit, this only decides whether the presented bin may return;
 /// the accepted quantity is committed by the parent Movement after gantry
 /// completion.
@@ -379,7 +379,7 @@ model BinAudit {
   @@index([status])
 }
 
-/// Browser-camera handshake. Image bytes go straight to Supabase Storage;
+/// Raspberry Pi camera handshake. Image bytes are uploaded by the camera worker;
 /// Prisma stores only the durable URL and the structured Gemini result,
 /// broken into individual columns (not a JSON blob) to match
 /// PutawayCaptureRequest's shape — the two share the same comparison/retry
@@ -424,27 +424,31 @@ model AuditCaptureRequest {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model CameraCaptureJob {
-  id           String    @id
-  purpose      String
-  deviceId     String
-  status       String    @default("PENDING")
-  binAuditId   String?
-  evidenceUrl  String?
-  imageWidth   Int?
-  imageHeight  Int?
-  resultJson   String?
-  requestedAt  DateTime  @default(now())
-  claimedAt    DateTime?
-  capturedAt   DateTime?
-  uploadedAt   DateTime?
-  completedAt  DateTime?
-  expiresAt    DateTime
-  errorCode    String?
-  errorMessage String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime
+  id                String    @id
+  purpose           String
+  deviceId          String
+  status            String    @default("PENDING")
+  binAuditId        String?
+  /// The PutawayCaptureRequest or AuditCaptureRequest this image must satisfy.
+  /// Null only for standalone MANUAL_SCAN jobs.
+  workflowCaptureId String?
+  evidenceUrl       String?
+  imageWidth        Int?
+  imageHeight       Int?
+  resultJson        String?
+  requestedAt       DateTime  @default(now())
+  claimedAt         DateTime?
+  capturedAt        DateTime?
+  uploadedAt        DateTime?
+  completedAt       DateTime?
+  expiresAt         DateTime
+  errorCode         String?
+  errorMessage      String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime
 
   @@index([binAuditId])
+  @@index([workflowCaptureId, status])
   @@index([deviceId, status, requestedAt])
   @@index([status])
 }

@@ -12,11 +12,15 @@ import { prisma } from "@/lib/warehouse/db";
  *
  * RECOUNT:
  *   Human explicitly requests a fresh physical recount.
+ *
+ * PUTAWAY_VERIFICATION:
+ *   A returned/presented bin must be photographed before putaway continues.
  */
 export const CAMERA_CAPTURE_PURPOSES = [
   "MANUAL_SCAN",
   "INVENTORY_AUDIT",
   "RECOUNT",
+  "PUTAWAY_VERIFICATION",
 ] as const;
 
 export type CameraCapturePurpose = (typeof CAMERA_CAPTURE_PURPOSES)[number];
@@ -52,6 +56,9 @@ export interface CreateCaptureJobInput {
    * Required for INVENTORY_AUDIT / RECOUNT once those flows are wired.
    */
   binAuditId?: string | null;
+
+  /** Durable PutawayCaptureRequest/AuditCaptureRequest id for workflow photos. */
+  workflowCaptureId?: string | null;
 
   /**
    * Normally omitted.
@@ -183,6 +190,7 @@ export async function createCaptureJob(input: CreateCaptureJobInput) {
       status: "PENDING",
 
       binAuditId: input.binAuditId ?? null,
+      workflowCaptureId: input.workflowCaptureId ?? null,
 
       requestedAt: now,
       expiresAt: calculateExpiryDate(now),

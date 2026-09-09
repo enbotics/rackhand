@@ -58,7 +58,7 @@ export function AuditCaptureModeToggle() {
       aria-label="Audit capture mode"
       disabled={busy}
       onClick={() => void flip()}
-      title="How the inventory auditor gets its photo: a live camera capture (PROD) or a sampled demo photo (SIMULATION). Click to switch."
+      title="How the inventory auditor gets its photo: a Raspberry Pi capture (PROD) or a sampled demo photo (SIMULATION). Click to switch."
       className="group flex cursor-pointer items-center gap-2 rounded-full border border-line bg-bg-elevated py-1 pl-2.5 pr-1.5 font-mono text-[9px] uppercase tracking-wider transition-colors hover:border-accent-soft disabled:cursor-not-allowed disabled:opacity-60"
     >
       <span className={simulation ? "text-amber-200" : "text-accent"}>

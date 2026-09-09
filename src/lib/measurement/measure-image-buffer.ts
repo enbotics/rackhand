@@ -36,7 +36,6 @@ export function isMeasurementError(error: unknown): error is MeasurementError {
  * Shared server-side measurement pipeline.
  *
  * Used by:
- * - browser /api/measure
  * - Raspberry Pi camera jobs
  * - future audit/recount capture flows
  *
@@ -207,7 +206,7 @@ export async function measureImageBuffer(
   }
 
   /*
-   * Shared response contract used by browser scans and Pi scans.
+   * Measurement response consumed by the Raspberry Pi scan workflow.
    */
   const result: MeasurementResult = {
     name: outcome.measurement.name,

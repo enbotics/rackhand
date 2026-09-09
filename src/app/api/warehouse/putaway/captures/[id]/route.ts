@@ -1,12 +1,23 @@
 import { NextResponse } from "next/server";
-import { verifyPutawayCapture } from "@/lib/warehouse/putaway-verification";
+import { requestPutawayCameraCapture } from "@/lib/warehouse/putaway-verification";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   try {
-    return NextResponse.json(await verifyPutawayCapture(id, await request.json()));
-  } catch {
-    return NextResponse.json({ error: { message: "The photo could not be analyzed. Remove obstructions if needed and retry with a clear view." } }, { status: 422 });
+    const job = await requestPutawayCameraCapture(id);
+    return NextResponse.json({
+      captureJobId: job.id,
+      status: job.status,
+      requestedAt: job.requestedAt.toISOString(),
+      expiresAt: job.expiresAt.toISOString(),
+    }, { status: 201 });
+  } catch (error) {
+    return NextResponse.json({
+      error: {
+        code: "camera_job_create_failed",
+        message: error instanceof Error ? error.message : "The Raspberry Pi photo could not be requested.",
+      },
+    }, { status: 409 });
   }
 }

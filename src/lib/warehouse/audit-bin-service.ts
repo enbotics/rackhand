@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { createCaptureJob } from "@/lib/camera/capture-job-service";
 import { prisma } from "./db";
 import { getGantryController } from "@/lib/gantry/factory";
 import { countAuditImage, type AuditExpectedContext } from "@/lib/geminiAuditCount";
@@ -10,6 +11,7 @@ import {
   AUDIT_CAPTURE_CONFIDENCE_THRESHOLD,
   type AuditCaptureDecision,
   type AuditCaptureOutcome,
+  type AuditCaptureView,
 } from "./audit-capture-types";
 import {
   AUDIT_CAPTURE_TIMEOUT_MS,
@@ -474,6 +476,12 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
           expiresAt: new Date(Date.now() + AUDIT_CAPTURE_TIMEOUT_MS),
         },
       });
+      // Trusted idle-assistance has no operator present to press the capture
+      // button. It still uses the exact same durable Pi job and vision gates;
+      // only creation of the camera request is automatic.
+      if (isTrusted) {
+        await requestAuditCameraCapture(capture.id);
+      }
       captured = await waitForTerminalCapture(capture.id, isTrusted);
     }
   } catch (error) {
@@ -587,6 +595,7 @@ export async function classifyAndPersistAuditCapture(input: {
   capacity: number;
   vision: AuditVisionResult;
   evidenceUrl: string;
+  capturedAt?: Date;
 }): Promise<{ outcome: AuditCaptureOutcome | "UNEXPECTED_STOCK"; status: string }> {
   const outcome = classifyAuditVision(input.vision, {
     quantity: input.expectedQuantity,
@@ -594,7 +603,7 @@ export async function classifyAndPersistAuditCapture(input: {
     capacity: input.capacity,
   });
   const foreignObjectsJson = JSON.stringify(foreignObjectNames(input.vision));
-  const capturedAt = new Date();
+  const capturedAt = input.capturedAt ?? new Date();
 
   if (outcome === "REVIEW_DECREASE" || outcome === "LOW_CONFIDENCE" || outcome === "CAPACITY_EXCEEDED" || outcome === "FOREIGN_OBJECTS") {
     const status = outcome === "REVIEW_DECREASE" ? "REVIEW_DECREASE" : "RETRY_REQUIRED";
@@ -657,6 +666,167 @@ export async function classifyAndPersistAuditCapture(input: {
   return { outcome, status };
 }
 
+const DISPLAY_CAPTURE_OUTCOME: Record<
+  AuditCaptureOutcome | "UNEXPECTED_STOCK",
+  AuditCaptureOutcome
+> = {
+  VERIFIED: "VERIFIED",
+  AUTO_RECONCILED: "AUTO_RECONCILED",
+  REVIEW_DECREASE: "REVIEW_DECREASE",
+  LOW_CONFIDENCE: "LOW_CONFIDENCE",
+  CAPACITY_EXCEEDED: "CAPACITY_EXCEEDED",
+  FOREIGN_OBJECTS: "FOREIGN_OBJECTS",
+  UNEXPECTED_STOCK: "LOW_CONFIDENCE",
+};
+
+/** Request one physical Raspberry Pi frame for a pending inventory audit. */
+export async function requestAuditCameraCapture(id: string) {
+  const now = new Date();
+  const capture = await prisma.auditCaptureRequest.findUnique({
+    where: { id },
+    include: { binAudit: { include: { bin: true } } },
+  });
+  if (!capture || capture.status !== "WAITING_FOR_CAMERA" || capture.expiresAt <= now) {
+    throw new Error("This audit capture is stale or no longer pending.");
+  }
+  if (capture.binAudit.status !== "RUNNING" || capture.binAudit.bin.status !== "AUDITING") {
+    throw new Error("This bin is no longer positioned for auditing.");
+  }
+  const gantry = await getGantryController().getStatus();
+  if (gantry.state !== "IDLE" || gantry.activeOperationId) {
+    throw new Error("Wait for the gantry to stop before requesting a photo.");
+  }
+
+  const existing = await prisma.cameraCaptureJob.findFirst({
+    where: {
+      purpose: "INVENTORY_AUDIT",
+      workflowCaptureId: id,
+      status: { in: ["PENDING", "CLAIMED", "UPLOADED", "PROCESSING"] },
+      expiresAt: { gt: now },
+    },
+    orderBy: { requestedAt: "desc" },
+  });
+  return existing ?? createCaptureJob({
+    purpose: "INVENTORY_AUDIT",
+    binAuditId: capture.binAuditId,
+    workflowCaptureId: id,
+  });
+}
+
+/** Analyze a Raspberry Pi frame with the same audit policy used by simulation. */
+export async function processAuditCameraCapture(id: string, input: {
+  imageBuffer: Buffer;
+  evidenceUrl: string;
+  imageWidth: number;
+  imageHeight: number;
+  capturedAt: Date;
+}): Promise<AuditCaptureView> {
+  if (!Buffer.isBuffer(input.imageBuffer) || input.imageBuffer.length === 0
+    || !input.evidenceUrl
+    || !Number.isInteger(input.imageWidth) || input.imageWidth <= 0
+    || !Number.isInteger(input.imageHeight) || input.imageHeight <= 0
+    || !Number.isFinite(input.capturedAt.getTime())) {
+    throw new Error("A fresh Raspberry Pi frame and valid metadata are required.");
+  }
+  const claimed = await prisma.auditCaptureRequest.updateMany({
+    where: { id, status: "WAITING_FOR_CAMERA", expiresAt: { gt: new Date() } },
+    data: { status: "CAPTURING" },
+  });
+  if (claimed.count !== 1) throw new Error("This audit capture is no longer pending.");
+
+  let binAuditId: string | null = null;
+  try {
+    const capture = await prisma.auditCaptureRequest.findUniqueOrThrow({
+      where: { id },
+      include: {
+        binAudit: { include: { bin: true, auditRun: true, expectedPart: true } },
+      },
+    });
+    binAuditId = capture.binAuditId;
+    const { binAudit } = capture;
+    if (binAudit.status !== "RUNNING" || binAudit.bin.status !== "AUDITING"
+      || input.capturedAt.getTime() < capture.createdAt.getTime()
+      || input.capturedAt.getTime() > Date.now() + 60_000) {
+      throw new Error("This audit capture is stale or no longer pending.");
+    }
+    const part = binAudit.expectedPart;
+    const vision = await countAuditImage(input.imageBuffer, {
+      binCode: binAudit.bin.code,
+      sku: part?.sku ?? null,
+      canonicalName: part?.canonicalName ?? null,
+      dimensions: part
+        ? { lengthMM: part.lengthMM, widthMM: part.widthMM, heightMM: part.heightMM }
+        : null,
+    });
+    const { outcome, status } = await classifyAndPersistAuditCapture({
+      captureId: id,
+      binAuditId: binAudit.id,
+      binId: binAudit.binId,
+      binCode: binAudit.bin.code,
+      originalStatus: binAudit.expectedQuantity > 0 ? "OCCUPIED" : "AVAILABLE",
+      expectedPartId: binAudit.expectedPartId,
+      expectedQuantity: capture.expectedQuantity,
+      capacity: binAudit.bin.capacity,
+      vision,
+      evidenceUrl: input.evidenceUrl,
+      capturedAt: input.capturedAt,
+    });
+    await prisma.auditCaptureRequest.update({
+      where: { id },
+      data: { imageWidth: input.imageWidth, imageHeight: input.imageHeight },
+    });
+    return {
+      captureId: id,
+      binCode: binAudit.bin.code,
+      status,
+      outcome: DISPLAY_CAPTURE_OUTCOME[outcome],
+      expectedQuantity: capture.expectedQuantity,
+      observedQuantity: vision.observedCount,
+      confidencePercent: confidencePercent(vision.countConfidence),
+      previousImageUrl: capture.previousImageUrl,
+      currentImageUrl: input.evidenceUrl,
+      foreignObjects: vision.foreignObjects ?? [],
+      notes: outcome === "UNEXPECTED_STOCK"
+        ? `${vision.notes} No catalog record expects stock in this bin — resolve it from bin management, not this capture.`.trim()
+        : vision.notes,
+    };
+  } catch (error) {
+    console.error(`[inventory-audit] Raspberry Pi capture failed id=${id}`, error);
+    await prisma.auditCaptureRequest.updateMany({
+      where: { id, status: "CAPTURING" },
+      data: {
+        status: "RETRY_REQUIRED",
+        evidenceUrl: input.evidenceUrl,
+        errorCode: "capture_failed",
+        notes: "The image could not be analyzed. Request a fresh Raspberry Pi photo.",
+      },
+    });
+    if (binAuditId) {
+      await prisma.binAudit.update({
+        where: { id: binAuditId },
+        data: { evidenceUrl: input.evidenceUrl, capturedAt: input.capturedAt },
+      }).catch(() => {});
+    }
+    const failed = await prisma.auditCaptureRequest.findUniqueOrThrow({
+      where: { id },
+      include: { binAudit: { include: { bin: true } } },
+    });
+    return {
+      captureId: id,
+      binCode: failed.binAudit.bin.code,
+      status: "RETRY_REQUIRED",
+      outcome: "LOW_CONFIDENCE",
+      expectedQuantity: failed.expectedQuantity,
+      observedQuantity: null,
+      confidencePercent: null,
+      previousImageUrl: failed.previousImageUrl,
+      currentImageUrl: input.evidenceUrl,
+      foreignObjects: [],
+      notes: failed.notes,
+    };
+  }
+}
+
 /**
  * A human's decision on a pending audit capture: ACCEPT either dismisses an
  * already-applied automatic result (PENDING_ACK) so the bin can be returned,
@@ -690,6 +860,7 @@ export async function decideAuditCapture(captureId: string, decision: AuditCaptu
         imageWidth: null,
         imageHeight: null,
         capturedAt: null,
+        errorCode: null,
         attempt: { increment: 1 },
         expiresAt: new Date(Date.now() + AUDIT_CAPTURE_TIMEOUT_MS),
       },

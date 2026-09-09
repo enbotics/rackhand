@@ -211,8 +211,6 @@ export function GuidedPutawayDialog({
   onRegisterNewPart,
   registeringPart,
   registerError,
-  onCaptureVerification,
-  getCameraStream,
   onWarehouseChanged,
 }: {
   scanState: ScanState;
@@ -235,10 +233,6 @@ export function GuidedPutawayDialog({
   onRegisterNewPart: () => void;
   registeringPart: boolean;
   registerError: string | null;
-  /** Captures the current live camera frame without starting a new scan. */
-  onCaptureVerification: () => Shot | null;
-  /** The same live stream already open for scanning — for the placement-verification preview below. */
-  getCameraStream?: () => MediaStream | null;
   onWarehouseChanged: () => void;
 }) {
   const scanId = scanState.scan?.scanResult?.scanId ?? null;
@@ -253,7 +247,6 @@ export function GuidedPutawayDialog({
   const [error, setError] = useState<string | null>(null);
   const seenOpenRequest = useRef(0);
   const [lastSeenPhase, setLastSeenPhase] = useState(scanState.phase);
-  const placementVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const shelfRows = useMemo(() => groupBinsInShelfOrder(bins), [bins]);
   const identityReady = identity === "MATCHED" || identity === "HUMAN_CONFIRMED";
@@ -323,19 +316,6 @@ export function GuidedPutawayDialog({
     seenOpenRequest.current = openRequestVersion;
     setOpen(true);
   }, [openRequestVersion, scanId]);
-
-  /**
-   * A second, read-only view of the SAME live stream already open for
-   * scanning — not a second camera device. Bound imperatively (not via
-   * React's `srcObject` prop, which does not exist) whenever this step is on
-   * screen, so the operator can see the item inside the bin before verifying,
-   * instead of aiming blind.
-   */
-  useEffect(() => {
-    if (phase !== "AWAITING_PLACEMENT") return;
-    const video = placementVideoRef.current;
-    if (video) video.srcObject = getCameraStream?.() ?? null;
-  }, [phase, getCameraStream]);
 
   useEffect(() => {
     if (phase !== "FETCHING" && phase !== "RETURNING") return;
@@ -420,12 +400,12 @@ export function GuidedPutawayDialog({
   }, [applyFailure, confirmed, identityReady, onWarehouseChanged, scanState.scan, shots]);
 
   /**
-   * `shot` carries the verification photo for placed=true — captured at the
-   * moment of the click, from the live preview above, rather than a photo
-   * taken and reviewed ahead of time. See `verify` below.
+   * A placed bin enters the shared Raspberry Pi verification handshake before
+   * the return can move. The server keeps this request open until the remote
+   * photo has been analyzed and any required human decision is complete.
    */
   const settle = useCallback(
-    async (placed: boolean, shot?: Shot) => {
+    async (placed: boolean) => {
       if (!operation) return;
       setPhase("RETURNING");
       setGantryStatus("RETURNING_BIN");
@@ -435,13 +415,7 @@ export function GuidedPutawayDialog({
       try {
         const response = await postJson(
           `/api/warehouse/guided-putaway/${operation.movementId}/return`,
-          placed
-            ? {
-                placed: true,
-                verificationImageDataUrl: shot!.dataUrl,
-                verificationCapturedAt: shot!.createdAt,
-              }
-            : { placed: false },
+          { placed },
         );
         returned = response.data as unknown as GuidedPutawayResult;
         if (!response.ok || !returned.ok) {
@@ -495,25 +469,18 @@ export function GuidedPutawayDialog({
   );
 
   /**
-   * One click: capture the live frame right now and go straight to
-   * verify+return. No separate "take photo, review, then confirm" step — the
-   * live preview above already lets the operator see the shot before
-   * clicking, so a second still-frame review added nothing but an extra click.
+   * One click starts the durable Pi-camera verification. The shared capture
+   * dialog owns the actual request, comparison and retry/confirmation UI.
    */
   const verify = useCallback(async () => {
-    const shot = onCaptureVerification();
-    if (!shot) {
-      setVerificationError("The camera is not ready. Start the live camera, then retry.");
-      return;
-    }
     setVerificationError(null);
     setVerifying(true);
     try {
-      await settle(true, shot);
+      await settle(true);
     } finally {
       setVerifying(false);
     }
-  }, [onCaptureVerification, settle]);
+  }, [settle]);
 
   // Nothing captured yet — genuinely nothing to show, not even a collapsed
   // reopen button. Every other phase (MEASURING, FAILED, MATCHING, READY) has
@@ -802,7 +769,7 @@ export function GuidedPutawayDialog({
             </p>
             <p className="mt-2 text-sm text-ink">
               Place <strong>{operation.part.sku}</strong> ({operation.part.canonicalName}) into bin{" "}
-              <strong>{operation.destinationBinCode}</strong>, then verify while it&apos;s visible below.
+              <strong>{operation.destinationBinCode}</strong>, then request a fresh Raspberry Pi verification photo.
             </p>
             {destinationBin && (
               <p className="mt-1 font-mono text-[10px] text-ink-muted">
@@ -810,18 +777,11 @@ export function GuidedPutawayDialog({
               </p>
             )}
 
-            {/* Live view of the same camera used to scan — not a captured
-                still. The operator lines up the shot here and Verify captures
-                it at the moment of the click, so there is nothing to review
-                or retake afterward. */}
-            <div className="relative mt-4 aspect-video w-full overflow-hidden rounded-xl border border-line bg-black/40">
-              <video
-                ref={placementVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="h-full w-full object-cover"
-              />
+            <div className="mt-4 rounded-xl border border-line bg-bg-elevated p-4">
+              <p className="text-sm font-medium text-ink">Remote camera verification</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                The Pi will capture the bin at the scan station. Quantity, confidence and foreign objects are checked before the gantry may return it.
+              </p>
             </div>
 
             {verificationError && (
@@ -845,7 +805,7 @@ export function GuidedPutawayDialog({
                 disabled={verifying}
                 className={BUTTON_VARIANTS.approve}
               >
-                {verifying ? "Verifying…" : "Verify"}
+                {verifying ? "Waiting for Pi verification…" : "Verify with Pi camera"}
               </button>
             </div>
           </section>
