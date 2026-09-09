@@ -2,9 +2,23 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/warehouse/db";
 import { countAuditImage } from "@/lib/geminiAuditCount";
 import { uploadAuditEvidence } from "@/lib/warehouse/storage";
+import { classifyAndPersistAuditCapture } from "@/lib/warehouse/audit-bin-service";
+import type { AuditCaptureOutcome, AuditCaptureView } from "@/lib/warehouse/audit-capture-types";
+import { confidencePercent } from "@/lib/warehouse/audit-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** UNEXPECTED_STOCK has no confirmable comparison — it never reaches this view. */
+const DISPLAY_OUTCOME: Record<AuditCaptureOutcome | "UNEXPECTED_STOCK", AuditCaptureOutcome> = {
+  VERIFIED: "VERIFIED",
+  AUTO_RECONCILED: "AUTO_RECONCILED",
+  REVIEW_DECREASE: "REVIEW_DECREASE",
+  LOW_CONFIDENCE: "LOW_CONFIDENCE",
+  CAPACITY_EXCEEDED: "CAPACITY_EXCEEDED",
+  FOREIGN_OBJECTS: "FOREIGN_OBJECTS",
+  UNEXPECTED_STOCK: "LOW_CONFIDENCE",
+};
 
 export async function POST(
   request: Request,
@@ -78,19 +92,22 @@ export async function POST(
       },
     });
     binAuditId = capture.binAuditId;
+    const { binAudit } = capture;
+    // A stale/superseded attempt (superseded by a retry that reset this same
+    // row) must never write a photo taken for a different attempt.
     const imageBuffer = Buffer.from(
       input.imageDataUrl.slice(input.imageDataUrl.indexOf(",") + 1),
       "base64",
     );
     evidenceUrl = await uploadAuditEvidence(
-      capture.binAudit.auditRunId,
-      capture.binAuditId,
-      capture.binAudit.bin.code,
+      binAudit.auditRunId,
+      `${binAudit.id}-attempt${capture.attempt}`,
+      binAudit.bin.code,
       input.imageDataUrl,
     );
-    const part = capture.binAudit.expectedPart;
+    const part = binAudit.expectedPart;
     const vision = await countAuditImage(imageBuffer, {
-      binCode: capture.binAudit.bin.code,
+      binCode: binAudit.bin.code,
       sku: part?.sku ?? null,
       canonicalName: part?.canonicalName ?? null,
       dimensions: part
@@ -101,26 +118,41 @@ export async function POST(
           }
         : null,
     });
-    const capturedAt = new Date();
-    await prisma.$transaction(async (tx) => {
-      const stored = await tx.auditCaptureRequest.updateMany({
-        where: { id, status: "CAPTURING", expiresAt: { gt: capturedAt } },
-        data: {
-          status: "CAPTURED",
-          evidenceUrl,
-          visionResultJson: JSON.stringify(vision),
-          imageWidth: Number(input.imageWidth),
-          imageHeight: Number(input.imageHeight),
-          capturedAt,
-        },
-      });
-      if (stored.count !== 1) throw new Error("audit_capture_expired");
-      await tx.binAudit.update({
-        where: { id: capture.binAuditId },
-        data: { evidenceUrl, capturedAt },
-      });
+
+    const { outcome, status } = await classifyAndPersistAuditCapture({
+      captureId: id,
+      binAuditId: binAudit.id,
+      binId: binAudit.binId,
+      binCode: binAudit.bin.code,
+      originalStatus: binAudit.bin.status,
+      expectedPartId: binAudit.expectedPartId,
+      expectedQuantity: capture.expectedQuantity,
+      capacity: binAudit.bin.capacity,
+      vision,
+      evidenceUrl,
     });
-    return NextResponse.json({ ok: true, captureId: id, status: "CAPTURED" });
+    await prisma.auditCaptureRequest.update({
+      where: { id },
+      data: { imageWidth: Number(input.imageWidth), imageHeight: Number(input.imageHeight) },
+    });
+
+    const view: AuditCaptureView = {
+      captureId: id,
+      binCode: binAudit.bin.code,
+      status,
+      outcome: DISPLAY_OUTCOME[outcome],
+      expectedQuantity: capture.expectedQuantity,
+      observedQuantity: vision.observedCount,
+      confidencePercent: confidencePercent(vision.countConfidence),
+      previousImageUrl: capture.previousImageUrl,
+      currentImageUrl: evidenceUrl,
+      foreignObjects: vision.foreignObjects ?? [],
+      notes:
+        outcome === "UNEXPECTED_STOCK"
+          ? `${vision.notes} No catalog record expects stock in this bin — resolve it from bin management, not this capture.`.trim()
+          : vision.notes,
+    };
+    return NextResponse.json(view);
   } catch (error) {
     console.error(`[inventory-audit] capture failed id=${id}`, error);
     await prisma.auditCaptureRequest

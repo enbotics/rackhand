@@ -1,4 +1,3 @@
-export const AUDIT_AUTO_RECONCILE_CONFIDENCE = 0.8;
 // Allows one initial analysis plus one GoalLoop refinement of the same frame.
 export const AUDIT_CAPTURE_TIMEOUT_MS = 75_000;
 
@@ -11,6 +10,8 @@ export interface AuditVisionResult {
   countConfidence: number;
   expectedPartPresent: boolean;
   foreignObjectSuspected: boolean;
+  /** Short visible names such as "washer" or "red cable"; empty when none. */
+  foreignObjects?: string[];
   occlusion: AuditOcclusion;
   notes: string;
 }
@@ -54,22 +55,4 @@ export interface InventoryAuditRunResult {
 
 export function confidencePercent(confidence: number): number {
   return Math.round(confidence * 10_000) / 100;
-}
-
-export function isAuditVisionResult(value: unknown): value is AuditVisionResult {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const item = value as Record<string, unknown>;
-  const count = item.observedCount;
-  return (
-    typeof item.countable === "boolean" &&
-    (count === null || (typeof count === "number" && Number.isInteger(count) && count >= 0)) &&
-    typeof item.countConfidence === "number" &&
-    Number.isFinite(item.countConfidence) &&
-    item.countConfidence >= 0 &&
-    item.countConfidence <= 1 &&
-    typeof item.expectedPartPresent === "boolean" &&
-    typeof item.foreignObjectSuspected === "boolean" &&
-    ["NONE", "LOW", "MEDIUM", "HIGH"].includes(String(item.occlusion)) &&
-    typeof item.notes === "string"
-  );
 }

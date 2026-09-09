@@ -1,18 +1,18 @@
 /**
- * Authoritative putaway and checked-out-bin reconciliation.
+ * Authoritative putaway and checked-out-bin return.
  *
- * The model supplies neither the scan, photo nor quantity. A normal putaway
- * adds camera-counted units to a compatible shelf bin. Returning a CHECKED_OUT
- * bin replaces its preserved baseline with the newly observed count.
+ * The model supplies neither the scan, photo nor quantity. One manual image
+ * is analyzed before motion: confident increases apply automatically and
+ * decreases require an explicit human decision. The accepted absolute count
+ * is committed only after the gantry completes.
  */
 import { prisma } from "./db";
 import { matchScanToCatalog } from "./catalog-matcher";
 import { resolveCatalogIdentity } from "./catalog-identity";
-import { applyInventoryAddition } from "./inventory-service";
 import { evaluatePutawayDestination } from "./putaway-destination";
 import { getBinByCode, listPutawayDestinations, updateMovementStatus } from "./repository";
 import { collectScanResultIssues } from "./scan-result";
-import { uploadPutawayPhoto } from "./storage";
+import { requirePutawayVerification } from "./putaway-verification";
 import {
   MIN_PUTAWAY_QUANTITY_CONFIDENCE,
   PUTAWAY_RETURN_SOURCE,
@@ -249,7 +249,7 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
 
   const imageDataUrl = typeof input.imageDataUrl === "string" ? input.imageDataUrl : "";
   if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(imageDataUrl)) {
-    return fail(scanId, "photo_required", "A fresh automatic camera photo is required before putaway.");
+    return fail(scanId, "photo_required", "An identified intake scan is required before putaway.");
   }
 
   const observedQuantity = scanResult.quantity?.observed ?? 1;
@@ -386,16 +386,18 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
   }
 
   let imageUrl: string;
+  let verifiedQuantity: number;
   try {
-    imageUrl = await uploadPutawayPhoto(scanId, imageDataUrl);
-    await prisma.movement.update({ where: { id: movement.id }, data: { imageUrl } });
+    const verified = await requirePutawayVerification(movement.id);
+    imageUrl = verified.imageUrl;
+    verifiedQuantity = verified.quantity;
   } catch (error) {
     await releaseClaim(movement.id, bin.id, bin.status, undefined, relocatingCheckout ? checkedOutBin : null);
     console.error(`[putaway] photo upload failed scan=${scanId} movement=${movement.id}`, error);
     return fail(
       scanId,
       "photo_upload_failed",
-      "The verification photo could not be stored, so the gantry did not move.",
+      "Fresh photo verification failed or timed out, so the gantry did not move. Check the camera and retry putaway.",
       { movementId: movement.id },
     );
   }
@@ -440,7 +442,7 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     });
   }
 
-  const inventoryAfter = checkedOutReturn ? observedQuantity : baselineQuantity + observedQuantity;
+  const inventoryAfter = verifiedQuantity;
   try {
     await prisma.$transaction(async (tx) => {
       if (checkedOutReturn) {
@@ -452,9 +454,11 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
         }
         if (relocatingCheckout) {
           await tx.inventory.delete({ where: { id: existing.id } });
-          await tx.inventory.create({
-            data: { partId: part.id, binId: bin.id, quantity: observedQuantity },
-          });
+          if (verifiedQuantity > 0) {
+            await tx.inventory.create({
+              data: { partId: part.id, binId: bin.id, quantity: verifiedQuantity },
+            });
+          }
           const releasedSource = await tx.bin.updateMany({
             where: { id: checkedOutBin!.id, status: "RESERVED" },
             data: { status: "AVAILABLE" },
@@ -463,10 +467,22 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
             throw new Error("checked-out source reservation was lost after physical return");
           }
         } else {
-          await tx.inventory.update({ where: { id: existing.id }, data: { quantity: observedQuantity } });
+          if (verifiedQuantity === 0) await tx.inventory.delete({ where: { id: existing.id } });
+          else await tx.inventory.update({ where: { id: existing.id }, data: { quantity: verifiedQuantity } });
         }
       } else {
-        await applyInventoryAddition(tx, part, bin, observedQuantity);
+        const existing = await tx.inventory.findUnique({
+          where: { partId_binId: { partId: part.id, binId: bin.id } },
+        });
+        if ((existing?.quantity ?? 0) !== baselineQuantity || verifiedQuantity > bin.capacity) {
+          throw new Error("putaway quantity baseline changed before commit");
+        }
+        if (existing) {
+          if (verifiedQuantity === 0) await tx.inventory.delete({ where: { id: existing.id } });
+          else await tx.inventory.update({ where: { id: existing.id }, data: { quantity: verifiedQuantity } });
+        } else if (verifiedQuantity > 0) {
+          await tx.inventory.create({ data: { partId: part.id, binId: bin.id, quantity: verifiedQuantity } });
+        }
       }
       const committedBin = await tx.bin.updateMany({
         where: { id: bin.id, status: "RESERVED" },
@@ -483,7 +499,6 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
           gantryOperationId: operation.operationId,
           imageUrl,
           verificationImageUrl: imageUrl,
-          verificationCapturedAt: new Date(),
           previousQuantity: baselineQuantity,
           newQuantity: inventoryAfter,
         },
@@ -511,7 +526,7 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     destinationBinCode: destination,
     movementId: movement.id,
     gantryOperationId: operation.operationId,
-    observedQuantity,
+    observedQuantity: verifiedQuantity,
     inventoryQuantityBefore: baselineQuantity,
     inventoryQuantityAfter: inventoryAfter,
     inventoryQuantityAdded: Math.max(0, delta),
@@ -529,21 +544,8 @@ export interface CheckedOutReturnRequest {
   binCode?: string;
 }
 
-/**
- * Returns an already-known CHECKED_OUT bin to its own shelf slot, restoring
- * the exact quantity that was checked out. No scan and no fresh photo: the
- * identity, quantity and evidence photo are already on file from when the
- * bin was originally put away — putting back something that never left the
- * warehouse's own records is not a new intake, and there is nothing for a
- * camera to re-prove that it did not already prove once.
- *
- * Deliberately narrow. This can ONLY move a bin the warehouse already has
- * CHECKED_OUT back to that same slot, for the exact preserved quantity. It
- * never accepts an operator-supplied quantity, never relocates to a
- * different bin, and never touches a bin that is not already checked out —
- * every one of those needs fresh visual evidence and stays the scan-based
- * path in `executePutaway`.
- */
+/** Return a checked-out bin only after a fresh manual snapshot. Quantity is
+ * preserved here; inventory auditing is solely responsible for recounting it. */
 export async function returnCheckedOutBin(
   input: CheckedOutReturnRequest,
 ): Promise<PutawayResult> {
@@ -576,7 +578,7 @@ export async function returnCheckedOutBin(
   }
 
   const inventoryRow = bin.inventory[0];
-  if (!inventoryRow) {
+  if (!inventoryRow || bin.inventory.length !== 1) {
     return fail("", "inventory_conflict", `Checked-out bin ${bin.code} has no preserved baseline to return.`);
   }
   const part = inventoryRow.part;
@@ -587,22 +589,6 @@ export async function returnCheckedOutBin(
   if (status.state !== "IDLE" || status.activeOperationId !== null) {
     return fail("", "gantry_busy", `The gantry is ${status.state} and cannot start a return.`);
   }
-
-  // The last photo this exact part/bin pairing has on file. A plain return
-  // carries no new evidence, so the record keeps the one it already has
-  // rather than a blank field.
-  const priorPhoto = await prisma.movement.findFirst({
-    where: {
-      type: "PUTAWAY",
-      status: "COMPLETED",
-      partId: part.id,
-      destinationBinId: bin.id,
-      imageUrl: { not: null },
-    },
-    orderBy: { completedAt: "desc" },
-    select: { imageUrl: true },
-  });
-  const imageUrl = priorPhoto?.imageUrl ?? "";
 
   let movement: Movement;
   try {
@@ -636,7 +622,6 @@ export async function returnCheckedOutBin(
           sourceLocation: PUTAWAY_RETURN_SOURCE,
           previousQuantity: quantity,
           newQuantity: quantity,
-          ...(imageUrl ? { imageUrl } : {}),
         },
       });
     });
@@ -648,6 +633,17 @@ export async function returnCheckedOutBin(
   logPutaway(
     `return bin=${bin.code} sku=${part.sku} qty=${quantity} movement=${movement.id} status=VALIDATED`,
   );
+
+  let imageUrl: string;
+  let verifiedQuantity: number;
+  try {
+    const verified = await requirePutawayVerification(movement.id, true);
+    imageUrl = verified.imageUrl;
+    verifiedQuantity = verified.quantity;
+  } catch {
+    await releaseClaim(movement.id, bin.id, "CHECKED_OUT");
+    return fail("", "photo_required", "A fresh bin snapshot is required. The bin has not moved; check the camera and retry putaway.", { movementId: movement.id });
+  }
 
   let operation: GantryOperation;
   try {
@@ -685,11 +681,11 @@ export async function returnCheckedOutBin(
       if (!existing || existing.quantity !== quantity) {
         throw new Error("checked-out inventory baseline changed after physical return");
       }
-      // Quantity is unchanged by design — this transition commits status, not
-      // a stock write.
+      if (verifiedQuantity === 0) await tx.inventory.delete({ where: { id: existing.id } });
+      else await tx.inventory.update({ where: { id: existing.id }, data: { quantity: verifiedQuantity } });
       const committed = await tx.bin.updateMany({
         where: { id: bin!.id, status: "RESERVED" },
-        data: { status: "OCCUPIED" },
+        data: { status: verifiedQuantity > 0 ? "OCCUPIED" : "AVAILABLE" },
       });
       if (committed.count !== 1) {
         throw new Error("return reservation was lost after physical movement");
@@ -726,12 +722,12 @@ export async function returnCheckedOutBin(
     destinationBinCode: bin.code,
     movementId: movement.id,
     gantryOperationId: operation.operationId,
-    observedQuantity: quantity,
+    observedQuantity: verifiedQuantity,
     inventoryQuantityBefore: quantity,
-    inventoryQuantityAfter: quantity,
-    inventoryQuantityAdded: 0,
-    inventoryQuantityRemoved: 0,
-    inventoryQuantityDelta: 0,
+    inventoryQuantityAfter: verifiedQuantity,
+    inventoryQuantityAdded: Math.max(0, verifiedQuantity - quantity),
+    inventoryQuantityRemoved: Math.max(0, quantity - verifiedQuantity),
+    inventoryQuantityDelta: verifiedQuantity - quantity,
     reconciledCheckout: true,
     imageUrl,
     status: "COMPLETED",

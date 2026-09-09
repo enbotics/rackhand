@@ -63,7 +63,12 @@ export function getGantryController(): GantryController {
     );
   }
 
-  globalForGantry.gantryController ??= new SimulatedGantryController(readSimulatorOptions());
+  // Fast Refresh replaces the simulator class module but intentionally keeps
+  // globalThis. Do not keep an instance whose old prototype predates a motion
+  // change (for example, the final putaway homing phase).
+  if (!(globalForGantry.gantryController instanceof SimulatedGantryController)) {
+    globalForGantry.gantryController = new SimulatedGantryController(readSimulatorOptions());
+  }
   return globalForGantry.gantryController;
 }
 

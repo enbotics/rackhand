@@ -105,8 +105,19 @@ export interface BinAuditView {
   previousQuantity: number | null;
   newQuantity: number | null;
   evidenceUrl: string | null;
+  /** This bin's accepted evidence from before this audit — the "before" half of the comparison. Null if never photographed before. */
+  priorEvidenceUrl: string | null;
   /** True for a REVIEW_REQUIRED audit a human can still act on: known part, countable observation. */
   awaitingConfirmation: boolean;
+  /**
+   * True only when the observation itself is trustworthy and just came in
+   * lower than what's on file — the one case where applying it is actually
+   * safe. A rejection for low confidence, a suspected foreign object, an
+   * over-capacity count, or unregistered stock is never applicable: the
+   * count can't be trusted at all, so "apply" would defeat the reason it
+   * was flagged. Those cases can still be dismissed, just never applied.
+   */
+  canApply: boolean;
   reason: string | null;
 }
 

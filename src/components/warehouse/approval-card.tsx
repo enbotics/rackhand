@@ -92,6 +92,11 @@ export function ApprovalCard({
           )}
         </div>
 
+        {summary.action === "PUTAWAY" && <p className="mt-3 rounded-lg border border-accent-soft/40 bg-accent-tint p-3 text-xs text-ink-muted">
+          After approval, frame the whole bin and manually verify it. The comparison shows both snapshots,
+          quantity and confidence; decreases need confirmation while safe increases update automatically.
+        </p>}
+
         <p className="mt-3 text-xs leading-relaxed text-ink-muted">
           Nothing has moved yet. No bin is reserved and no stock has changed. Approving authorises
           the attempt; the warehouse service still validates it before executing. Counts at or

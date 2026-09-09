@@ -11,6 +11,22 @@ function outcomeTone(status: string): string {
   return "text-accent";
 }
 
+/** Short, reason-specific line — the chat message stays brief precisely because this card carries the detail. */
+function reviewMessage(bin: BinAuditView): string {
+  switch (bin.reason) {
+    case "audit_pending_confirmation":
+      return "Confident, safe count — just lower than what's on file. Confirm it or leave the record as it is.";
+    case "foreign_object_suspected":
+      return "An unexpected object was seen alongside the part. This count can't be trusted — retry the audit once it's cleared.";
+    case "audit_capacity_exceeded":
+      return "The observed count exceeds this bin's capacity. Correct the contents, then retry the audit.";
+    case "physical_stock_without_record":
+      return "Stock is visible but no catalog record expects any here. Resolve this from bin management, not this card.";
+    default:
+      return "The image wasn't clear or confident enough to trust. Retry the audit for a fresh photo.";
+  }
+}
+
 async function postConfirmation(binAuditId: string, decision: "APPLY" | "DISMISS") {
   const response = await fetch(`/api/warehouse/audits/${binAuditId}/confirm`, {
     method: "POST",
@@ -25,9 +41,31 @@ async function postConfirmation(binAuditId: string, decision: "APPLY" | "DISMISS
   }
 }
 
+/** One before/after evidence thumbnail. Absence is shown, never silently skipped. */
+function EvidenceThumb({ label, url }: { label: string; url: string | null }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <p className="font-mono text-[9px] uppercase tracking-[0.1em] text-ink-faint">{label}</p>
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt={label}
+          className="mt-1 h-20 w-full rounded-[4px] border border-line object-cover"
+        />
+      ) : (
+        <div className="mt-1 flex h-20 w-full items-center justify-center rounded-[4px] border border-dashed border-line text-[9px] text-ink-faint">
+          None yet
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AuditBinRow({ bin, onChanged }: { bin: BinAuditView; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasEvidence = bin.evidenceUrl !== null || bin.priorEvidenceUrl !== null;
 
   async function decide(decision: "APPLY" | "DISMISS") {
     setBusy(true);
@@ -44,39 +82,32 @@ function AuditBinRow({ bin, onChanged }: { bin: BinAuditView; onChanged: () => v
 
   return (
     <div className="rounded-lg border border-line bg-bg-elevated px-3 py-2">
-      <div className="flex gap-3">
-        {bin.evidenceUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={bin.evidenceUrl}
-            alt={`${bin.binCode} camera capture`}
-            className="h-16 w-16 shrink-0 rounded-[4px] border border-line object-cover"
-          />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-3">
-            <span className="font-mono text-[11px] text-ink">{bin.binCode}</span>
-            <span className={`font-mono text-[9px] uppercase ${outcomeTone(bin.status)}`}>
-              {bin.status.replaceAll("_", " ")}
-            </span>
-          </div>
-          <p className="mt-1 text-[11px] text-ink-muted">
-            {bin.sku ?? "Expected empty"}: {bin.expectedQuantity} → {bin.observedQuantity ?? "—"}
-          </p>
-          <p className="mt-1 text-[10px] text-ink-faint">
-            {bin.confidencePercent === null ? "No confidence score" : `${bin.confidencePercent}% confidence`}
-            {" · "}
-            {bin.inventoryUpdated ? "Database inventory updated" : bin.reason ?? "No database change"}
-          </p>
-        </div>
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-mono text-[11px] text-ink">{bin.binCode}</span>
+        <span className={`font-mono text-[9px] uppercase ${outcomeTone(bin.status)}`}>
+          {bin.status.replaceAll("_", " ")}
+        </span>
       </div>
+      <p className="mt-1 text-[11px] text-ink-muted">
+        {bin.sku ?? "Expected empty"}: {bin.expectedQuantity} → {bin.observedQuantity ?? "—"}
+        {bin.confidencePercent === null ? "" : ` · ${bin.confidencePercent}% confidence`}
+      </p>
+      <p className="mt-1 text-[10px] text-ink-faint">
+        {bin.inventoryUpdated ? "Database inventory updated" : bin.reason ?? "No database change"}
+      </p>
+
+      {/* Before/after, whenever either photo exists — not just while a
+          decision is pending, so a settled result stays visually checkable. */}
+      {hasEvidence && (
+        <div className="mt-2 flex gap-2">
+          <EvidenceThumb label="Before this audit" url={bin.priorEvidenceUrl} />
+          <EvidenceThumb label="This capture" url={bin.evidenceUrl} />
+        </div>
+      )}
 
       {bin.awaitingConfirmation && (
         <div className="mt-2 border-t border-line-soft pt-2">
-          <p className="text-[11px] leading-relaxed text-ink-muted">
-            The camera count is shown above — review it, then apply it or leave the record as it is.
-            Nothing is ever written to inventory automatically.
-          </p>
+          <p className="text-[11px] leading-relaxed text-ink-muted">{reviewMessage(bin)}</p>
           {error && (
             <div className="mt-2">
               <ErrorNote>{error}</ErrorNote>
@@ -91,14 +122,19 @@ function AuditBinRow({ bin, onChanged }: { bin: BinAuditView; onChanged: () => v
             >
               Leave as-is
             </button>
-            <button
-              type="button"
-              onClick={() => void decide("APPLY")}
-              disabled={busy}
-              className={BUTTON_VARIANTS.approve}
-            >
-              {busy ? "Applying…" : `Apply ${bin.observedQuantity}`}
-            </button>
+            {/* Apply only when the count itself is trustworthy (just lower
+                than recorded) — every other reason means the count can't be
+                trusted at all, so there is nothing safe to apply. */}
+            {bin.canApply && (
+              <button
+                type="button"
+                onClick={() => void decide("APPLY")}
+                disabled={busy}
+                className={BUTTON_VARIANTS.approve}
+              >
+                {busy ? "Applying…" : `Apply ${bin.observedQuantity}`}
+              </button>
+            )}
           </div>
         </div>
       )}

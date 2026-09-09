@@ -11,6 +11,7 @@ import { usePrefersReducedMotion } from "./use-reduced-motion";
 import { useAuditCapture } from "./audit-capture-dialog";
 import { useWarehouseSession } from "./session";
 import { CaptureStation, ScanResultDialog } from "./capture-station";
+import { AuditCaptureModeToggle } from "./audit-capture-mode-toggle";
 import { BUTTON_VARIANTS, ErrorNote } from "./ui";
 
 type Point = { x: number; y: number };
@@ -42,7 +43,7 @@ function locationPoint(location: string | null | undefined, geometry: Geometry):
 /** Withdraw into the clear aisle, change height, then extend into the bay.
  * No diagonal path through neighbouring totes or shelf boards. */
 function travelPoint(from: Point, to: Point, progress: number): Point {
-  if (from.x === to.x && from.y === to.y) return to;
+  if (from.y === to.y) return { x: from.x + (to.x - from.x) * progress, y: to.y };
   const stops = [from, { x: AISLE_X, y: from.y }, { x: AISLE_X, y: to.y }, to];
   const lengths = stops.slice(1).map((p, i) => Math.abs(p.x - stops[i].x) + Math.abs(p.y - stops[i].y));
   const total = lengths.reduce((a, b) => a + b, 0);
@@ -120,40 +121,85 @@ const Tote = memo(function Tote({ code, quantity: providedQuantity, bin, tone = 
   </g>;
 });
 
-function Carriage({ gantry, arm, geometry, bin }: { gantry: GantryStatus | null | undefined; arm: RackArmState; geometry: Geometry; bin?: BinView }) {
+/** Ordered visual playback: telemetry chooses phases, never a fresh origin
+ * for an already moving carriage. Carry/release and shelf occupancy share
+ * this same phase so a bin cannot teleport ahead of its carriage. */
+function useGantryPlayback(input: GantryStatus | null, geometry: Geometry) {
   const reduced = usePrefersReducedMotion();
-  const target = locationPoint(arm.location, geometry);
-  const [point, setPoint] = useState(target);
-  const shown = useRef(target);
-  const motion = gantry?.motion;
-  const motionRef = useRef(motion);
-  motionRef.current = motion;
+  const initial = locationPoint(input?.currentLocation, geometry);
+  const [view, setView] = useState({ gantry: input, point: initial });
+  const shown = useRef(initial);
   const geometryRef = useRef(geometry);
   geometryRef.current = geometry;
-  const phaseKey = `${gantry?.activeOperationId}:${motion?.startedAt}:${arm.phase}:${target.x}:${target.y}`;
-  useEffect(() => {
-    let frame = 0;
-    const sample = motionRef.current;
-    const to = arm.phase === "FAULT" ? shown.current : locationPoint(arm.location, geometryRef.current);
-    const travelling = arm.phase === "TRAVELLING" && sample;
-    const from = travelling ? locationPoint(sample.from, geometryRef.current) : shown.current;
-    const duration = reduced || arm.phase === "FAULT" ? 0 : travelling ? sample.durationMs : 220;
-    const elapsed = travelling ? sample.elapsedMs : 0;
-    const started = performance.now();
-    function tick(now: number) {
-      const t = duration ? Math.min(1, (elapsed + now - started) / duration) : 1;
-      const eased = t * t * (3 - 2 * t);
-      const next = travelPoint(from, to, eased);
-      shown.current = next;
-      setPoint(next);
-      if (t < 1) frame = requestAnimationFrame(tick);
-    }
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-    // Polls within the same leg must not restart its animation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phaseKey, reduced]);
+  const reducedRef = useRef(reduced);
+  reducedRef.current = reduced;
+  const keyRef = useRef("");
+  const queue = useRef<GantryStatus[]>([]);
+  const frame = useRef<number | null>(null);
+  const work = useRef<{ gantry: GantryStatus; from: Point; to: Point; started: number; duration: number } | null>(null);
 
+  useEffect(() => {
+    if (!input) return;
+    const key = [input.activeOperationId, input.operation?.operationId, input.state,
+      input.motion?.startedAt, input.currentLocation, input.lastError].join("|");
+    if (key === keyRef.current) return;
+    keyRef.current = key;
+    if (input.state === "OFFLINE" || input.state === "ERROR" || (input.state === "IDLE" && input.lastError)) {
+      queue.current = []; work.current = null;
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+      setView({ gantry: input, point: shown.current });
+      return;
+    }
+
+    // A completed home reading is the controller's authoritative final pose.
+    // Drop stale shelf frames that may still be queued after a slow render and
+    // smoothly finish from the currently displayed point instead.
+    const settledAtHome = input.state === "IDLE"
+      && input.currentLocation === null
+      && input.activeOperationId === null;
+    if (settledAtHome) {
+      queue.current = [];
+      work.current = null;
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+    }
+    queue.current.push(input);
+    if (frame.current !== null) return;
+    function tick(now: number) {
+      if (!work.current) {
+        const status = queue.current.shift();
+        if (!status) { frame.current = null; return; }
+        const to = locationPoint(status.motion ? status.motion.to : status.currentLocation, geometryRef.current);
+        const finalHome = status.state === "IDLE"
+          && status.currentLocation === null
+          && status.activeOperationId === null;
+        const remaining = status.motion
+          ? status.motion.durationMs - status.motion.elapsedMs
+          : finalHome ? 650 : 220;
+        work.current = { gantry: status, from: shown.current, to, started: now,
+          duration: Math.max(status.state === "MOVING" || status.state === "HOMING" ? 350 : 120, remaining) };
+      }
+      const step = work.current;
+      const progress = reducedRef.current ? 1 : Math.min(1, (now - step.started) / step.duration);
+      const eased = progress * progress * (3 - 2 * progress);
+      const moving = step.gantry.state === "MOVING" || step.gantry.state === "HOMING";
+      const point = moving ? travelPoint(step.from, step.to, eased) : {
+        x: step.from.x + (step.to.x - step.from.x) * eased,
+        y: step.from.y + (step.to.y - step.from.y) * eased,
+      };
+      shown.current = point;
+      setView({ gantry: step.gantry, point });
+      if (progress === 1) work.current = null;
+      frame.current = requestAnimationFrame(tick);
+    }
+    frame.current = requestAnimationFrame(tick);
+  }, [input]);
+  useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
+  return view;
+}
+
+function Carriage({ arm, point, bin }: { arm: RackArmState; point: Point; bin?: BinView }) {
   const handling = arm.phase === "PICKING" || arm.phase === "DROPPING";
   return <g aria-hidden="true">
     <g transform={`translate(0 ${point.y})`}>
@@ -256,14 +302,14 @@ function CameraRig({ scanning, dockBin, scanImage }: { scanning: boolean; dockBi
 
 /** A code-native, perspective machine scene. Only telemetry drives movement;
  * the database still owns stock, capacity and availability. */
-export function WarehouseRack({ bins, loading, error, onRetry, gantry, activeMovement, latestAudit, onManageBins, onSelectBin }: {
+export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry, activeMovement, latestAudit, onManageBins, onSelectBin }: {
   bins: BinView[]; loading: boolean; error: string | null; onRetry: () => void;
   gantry: GantryStatus | null; activeMovement: MovementRowView | null;
   latestAudit: InventoryAuditView | null; onManageBins?: () => void; onSelectBin?: (bin: BinView) => void;
 }) {
   const id = useId().replace(/:/g, "");
-  const [detailView, setDetailView] = useState(false);
   const geometry = useMemo(() => geometryFor(bins), [bins]);
+  const { gantry, point } = useGantryPlayback(rawGantry, geometry);
   const arm = deriveRackArmState({ gantry, activeMovement, latestAudit });
   const audit = useAuditCapture();
   const session = useWarehouseSession();
@@ -278,8 +324,7 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry, activeMov
     && (operation?.status === "COMPLETED" || operation?.source && isGantryStation(operation.source))
     ? activeBin ?? checkedOut.find((bin) => bin.code !== returned)
     : !gantry?.activeOperationId && !arm.carrying ? checkedOut.find((bin) => bin.code !== returned) : null;
-  const presented = currentAtStation && activeBin && (!isReturn
-    || operation?.source && isGantryStation(operation.source)) ? activeBin.code : null;
+  const presented = dockBin?.code ?? null;
 
   return <section className="machine-panel flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-line" aria-label="Warehouse machine visualization">
     <div className="machine-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 px-5 py-4">
@@ -289,21 +334,16 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry, activeMov
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <CaptureStation />
-        <span className="rounded-full border border-amber-300/20 bg-amber-300/5 px-2.5 py-1 font-mono text-[9px] tracking-wider text-amber-200">
-          {gantry?.mode === "HARDWARE" ? "HARDWARE" : "SIMULATED MOTION"}
-        </span>
-        <button type="button" onClick={() => setDetailView((value) => !value)} aria-pressed={detailView} className={BUTTON_VARIANTS.secondary}>
-          {detailView ? "Fit rack" : "Zoom in"}
-        </button>
         {onManageBins && <button type="button" onClick={onManageBins} className={BUTTON_VARIANTS.secondary}>Manage bins</button>}
+        <AuditCaptureModeToggle />
       </div>
     </div>
     {error && <div className="px-5 pb-3"><ErrorNote onRetry={onRetry}>{error}</ErrorNote></div>}
     {loading && bins.length === 0 ? <div className="flex h-80 items-center justify-center text-sm text-ink-muted" role="status">Loading your warehouse…</div>
       : bins.length === 0 ? <div className="p-12 text-center text-sm text-ink-muted">No bins yet. Add bins to build your storage rack.</div>
-      : <div className={`machine-scene min-h-0 flex-1 ${detailView ? "machine-scene-detail overflow-auto" : "overflow-hidden"}`}>
+      : <div className="machine-scene min-h-0 flex-1 overflow-hidden">
         <svg viewBox={`0 0 ${geometry.width} ${geometry.height}`}
-          className="machine-scene-svg block w-full font-mono" style={detailView ? { width: geometry.width, minWidth: geometry.width, height: geometry.height } : undefined}
+          className="machine-scene-svg block w-full font-mono"
           preserveAspectRatio="xMidYMid meet"
           role="group" aria-label="Interactive storage rack. Select a bin to inspect its contents.">
           <defs>
@@ -319,7 +359,8 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry, activeMov
           <Structure geometry={geometry} id={id} />
           {geometry.rows.flatMap((row) => row.bins.map((bin) => {
             const point = geometry.points.get(bin.code)!;
-            const absent = (bin.status === "CHECKED_OUT" && bin.code !== returned)
+            const approachingPickup = !!gantry?.activeOperationId && operation?.source === bin.code && !arm.carrying;
+            const absent = (!approachingPickup && bin.status === "CHECKED_OUT" && bin.code !== returned)
               || bin.code === presented || (arm.carrying && bin.code === arm.focusBin);
             return <g key={bin.binId} transform={`translate(${point.x} ${point.y})`}
               className="machine-bin cursor-pointer outline-none" role="button" tabIndex={onSelectBin ? 0 : undefined}
@@ -339,8 +380,8 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry, activeMov
             </g>;
           }))}
           <CameraRig scanning={scanning} dockBin={dockBin ?? undefined}
-            scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined} />
-          <Carriage gantry={gantry} arm={arm} geometry={geometry} bin={activeBin} />
+            scanImage={session.scanning ? session.shots[0]?.dataUrl : audit.submitting ? audit.imageDataUrl ?? undefined : undefined} />
+          <Carriage arm={arm} point={point} bin={activeBin} />
         </svg>
       </div>}
     <div className="machine-status flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">

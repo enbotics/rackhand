@@ -157,12 +157,7 @@ export class SimulatedGantryController implements GantryController {
     const { source, destination } = validatePutaway(input);
     const operation = this.claim("PUTAWAY", source, destination);
 
-    return this.execute(operation, [
-      { state: "MOVING", delayMs: this.moveDelayMs, failOn: "movement_timeout", arriveAt: source },
-      { state: "PICKING", delayMs: this.pickDelayMs, failOn: "pickup_failed" },
-      { state: "MOVING", delayMs: this.moveDelayMs, failOn: null, arriveAt: destination },
-      { state: "DROPPING", delayMs: this.dropDelayMs, failOn: "drop_failed" },
-    ]);
+    return this.execute(operation, this.returnToShelfPhases(source, destination));
   }
 
   async retrieve(input: RetrievalRequest): Promise<GantryOperation> {
@@ -183,7 +178,7 @@ export class SimulatedGantryController implements GantryController {
   async returnBin(input: BinReturnRequest): Promise<GantryOperation> {
     const { source, destination } = validateBinReturn(input);
     const operation = this.claim("BIN_RETURN", source, destination);
-    return this.execute(operation, this.binTransferPhases(source, destination));
+    return this.execute(operation, this.returnToShelfPhases(source, destination));
   }
 
   async presentBinForAudit(input: AuditBinRequest): Promise<GantryOperation> {
@@ -195,7 +190,7 @@ export class SimulatedGantryController implements GantryController {
   async returnBinFromAudit(input: AuditBinRequest): Promise<GantryOperation> {
     const binCode = validateAuditBin(input);
     const operation = this.claim("AUDIT_RETURN", "SCAN_STATION", binCode);
-    return this.execute(operation, this.binTransferPhases("SCAN_STATION", binCode));
+    return this.execute(operation, this.returnToShelfPhases("SCAN_STATION", binCode));
   }
 
   /* ---------------------------------------------------- failure injection */
@@ -295,6 +290,10 @@ export class SimulatedGantryController implements GantryController {
       if (phase.arriveAt !== undefined) this.currentLocation = phase.arriveAt;
       if (phase.state === "PICKING") this.carrying = true;
       if (phase.state === "DROPPING") this.carrying = false;
+      if (phase.state === "HOMING") {
+        this.currentLocation = null;
+        this.homed = true;
+      }
     }
 
     return this.finish(operation, null);
@@ -311,6 +310,14 @@ export class SimulatedGantryController implements GantryController {
       { state: "PICKING", delayMs: pick, failOn: "pickup_failed" },
       { state: "MOVING", delayMs: secondMove, failOn: null, arriveAt: destination },
       { state: "DROPPING", delayMs: drop, failOn: "drop_failed" },
+    ];
+  }
+
+  /** A shelf drop is complete only after the unloaded carriage returns home. */
+  private returnToShelfPhases(source: GantryLocation, destination: GantryLocation): Phase[] {
+    return [
+      ...this.binTransferPhases(source, destination),
+      { state: "HOMING", delayMs: this.homeDelayMs, failOn: "movement_timeout" },
     ];
   }
 

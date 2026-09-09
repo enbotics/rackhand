@@ -129,11 +129,12 @@ model Movement {
   /// `quantity` above holds the size of the change (always positive) to stay
   /// consistent with what every other movement type means by that field.
   previousQuantity       Int?
-  /// Camera evidence authorising this putaway. Legacy guided flows capture it
-  /// after presentation; direct putaway records the automatic count photo.
-  /// Either path persists it before warehouse commit.
+  /// Fresh manual bin snapshot accepted before putaway. The putaway verifier
+  /// compares its count to recorded stock; inventory auditing remains the
+  /// independent full-audit workflow.
   verificationImageUrl   String?
   verificationCapturedAt DateTime?
+  putawayCapture          PutawayCaptureRequest?
   destinationBin         Bin?      @relation("MovementDestination", fields: [destinationBinId], references: [id])
   part                   Part      @relation(fields: [partId], references: [id])
   sourceBin              Bin?      @relation("MovementSource", fields: [sourceBinId], references: [id])
@@ -142,6 +143,39 @@ model Movement {
   @@index([createdAt])
   @@index([scanId])
   @@index([destinationBinId, verificationCapturedAt])
+}
+
+/// Durable browser-camera and human-review state for one putaway. Unlike an
+/// inventory audit, this only decides whether the presented bin may return;
+/// the accepted quantity is committed by the parent Movement after gantry
+/// completion.
+model PutawayCaptureRequest {
+  id                     String    @id @default(cuid())
+  movementId             String    @unique
+  /// WAITING_FOR_CAMERA | CAPTURING | READY | REVIEW_DECREASE |
+  /// RETRY_REQUIRED | ACCEPTED | FAILED
+  status                 String    @default("WAITING_FOR_CAMERA")
+  expectedQuantity       Int
+  observedQuantity       Int?
+  countConfidence        Float?
+  countable              Boolean?
+  expectedPartPresent    Boolean?
+  foreignObjectSuspected Boolean?
+  foreignObjectsJson     String?
+  occlusion              String?
+  notes                  String?
+  previousImageUrl       String?
+  evidenceUrl            String?
+  imageWidth             Int?
+  imageHeight            Int?
+  attempt                Int       @default(0)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  expiresAt              DateTime
+  capturedAt             DateTime?
+  movement               Movement  @relation(fields: [movementId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
 }
 
 /// Audit record of one human approval decision for a state-changing agent
@@ -321,6 +355,11 @@ model BinAudit {
   notes                  String?
   status                 String               @default("PENDING")
   evidenceUrl            String?
+  /// This bin's last ACCEPTED evidence photo as it stood BEFORE this audit
+  /// — the "before" half of the comparison shown for this result, computed
+  /// once at finalize time (findLatestAcceptedSnapshot) so it stays fixed
+  /// even if a later audit changes what "latest accepted" means.
+  priorEvidenceUrl       String?
   inventoryUpdated       Boolean              @default(false)
   previousQuantity       Int?
   newQuantity            Int?
@@ -341,20 +380,44 @@ model BinAudit {
 }
 
 /// Browser-camera handshake. Image bytes go straight to Supabase Storage;
-/// Prisma stores only the durable URL and structured Gemini result.
+/// Prisma stores only the durable URL and the structured Gemini result,
+/// broken into individual columns (not a JSON blob) to match
+/// PutawayCaptureRequest's shape — the two share the same comparison/retry
+/// UI and decision-policy helpers, so their durable state should look alike.
+///
+/// status: WAITING_FOR_CAMERA | CAPTURING | REVIEW_DECREASE | RETRY_REQUIRED
+/// | ACCEPTED | FAILED. Unlike PutawayCaptureRequest there is no standalone
+/// "READY" status: a safe equal/higher observation needs no human decision,
+/// so the capture route finalizes it immediately and writes ACCEPTED
+/// directly — REVIEW_DECREASE and RETRY_REQUIRED are the only statuses a
+/// human ever actually acts on.
 model AuditCaptureRequest {
-  id               String    @id @default(cuid())
-  binAuditId       String    @unique
-  status           String    @default("WAITING_FOR_CAMERA")
-  evidenceUrl      String?
-  visionResultJson String?
-  imageWidth       Int?
-  imageHeight      Int?
-  errorCode        String?
-  createdAt        DateTime  @default(now())
-  expiresAt        DateTime
-  capturedAt       DateTime?
-  binAudit         BinAudit  @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
+  id                     String    @id @default(cuid())
+  binAuditId             String    @unique
+  status                 String    @default("WAITING_FOR_CAMERA")
+  expectedQuantity       Int       @default(0)
+  observedQuantity       Int?
+  countConfidence        Float?
+  countable              Boolean?
+  expectedPartPresent    Boolean?
+  foreignObjectSuspected Boolean?
+  foreignObjectsJson     String?
+  occlusion              String?
+  notes                  String?
+  /// This bin's last ACCEPTED evidence photo — the "before" half of the
+  /// comparison dialog. Null when this bin has never had one.
+  previousImageUrl       String?
+  evidenceUrl            String?
+  imageWidth             Int?
+  imageHeight            Int?
+  /// Incremented on every retry; the row is reused, never duplicated.
+  attempt                Int       @default(0)
+  errorCode              String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  expiresAt              DateTime
+  capturedAt             DateTime?
+  binAudit               BinAudit  @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
 }

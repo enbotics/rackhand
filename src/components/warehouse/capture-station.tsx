@@ -19,9 +19,9 @@ export function CaptureStation() {
       <button type="button" onClick={() => setOpen(true)}
         disabled={session.scanning || audit.pending !== null || audit.submitting}
         className={BUTTON_VARIANTS.approve}>
-        {session.scanning || audit.submitting ? "Scanning…" : "Scan an item"}
+        {session.scanning || audit.submitting ? "Scanning…" : "Register an item"}
       </button>
-      {open && !session.scanning && !audit.pending && <CapturePopup title="Scan an item"
+      {open && !session.scanning && !audit.pending && <CapturePopup title="Register an item"
         onClose={() => setOpen(false)} disabled={machineBusy}
         onCapture={(shot) => { setOpen(false); session.onCapture(shot); }} />}
     </>

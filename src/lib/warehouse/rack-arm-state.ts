@@ -132,7 +132,7 @@ export function deriveRackArmState({
     const focusBin = [operation.source, operation.destination].find(
       (point): point is string => point !== null && !isGantryStation(point),
     ) ?? null;
-    const fault = state === "ERROR" || state === "OFFLINE" || !!gantry.lastError;
+    const fault = state === "ERROR" || state === "OFFLINE" || (state === "IDLE" && !!gantry.lastError);
     const phase: RackArmPhase = fault ? "FAULT"
       : state === "MOVING" || state === "HOMING" ? "TRAVELLING"
       : state === "PICKING" || state === "DROPPING" ? state

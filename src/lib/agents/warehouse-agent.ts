@@ -5,10 +5,19 @@
  * Auditor as an Agent-as-Tool. The auditor is not another client endpoint and
  * cannot widen the orchestrator's authority.
  *
- * REQUEST-STATELESS: a fresh orchestrator is built per invocation and there
- * is no conversational session. The Inventory Auditor's Strands memory is a
- * read-only projection of durable, completed audit history; it cannot retain
- * arbitrary prompt text or grant authority across requests.
+ * A fresh orchestrator is still BUILT per invocation — tools, interventions,
+ * hooks and the system prompt always come from the current server code, never
+ * from anything restored. What now carries across turns is the conversation
+ * itself: the operator's chat history is stored server-side per session (see
+ * conversation-store.ts) and reloaded into that fresh agent, so "put it away"
+ * can resolve against the retrieval the operator asked for a minute earlier
+ * instead of guessing from global warehouse state.
+ *
+ * Only server-written state may become history. A browser supplies an opaque
+ * session id, its own message, and scan DATA — never messages, tool-call blocks
+ * or tool results. The Inventory Auditor's Strands memory remains a read-only
+ * projection of durable, completed audit history; it cannot retain arbitrary
+ * prompt text or grant authority across requests.
  *
  * The agent runs server-side only. It never receives a database handle, a
  * Prisma client, filesystem access, a shell, or arbitrary HTTP — its entire
@@ -33,6 +42,11 @@ import {
   type ApprovalSummary,
   type PendingApprovalView,
 } from "./approval-store";
+import {
+  loadConversation,
+  saveConversation,
+  validateAgentSessionId,
+} from "./conversation-store";
 import { matchScanToCatalog } from "@/lib/warehouse/catalog-matcher";
 import { getCatalogResolution } from "@/lib/warehouse/catalog-resolution-service";
 import { prisma } from "@/lib/warehouse/db";
@@ -394,6 +408,79 @@ function extractVisibleText(message: Message): string {
   return stripInlineReasoning(visible);
 }
 
+/* --------------------------------------------------- conversation memory */
+
+/**
+ * Captures the conversation for the session store.
+ *
+ * `systemPrompt` is excluded deliberately: the safety policy must always be the
+ * one this build ships, never one frozen into a snapshot before it was edited.
+ * `interrupts` are excluded because a parked interrupt is the approval store's
+ * property — resuming it is that store's job, and a copy loose in the session
+ * store could only ever be a stale second key to the same physical action.
+ *
+ * JSON round-tripped for the same reason parkForApproval does it: what is
+ * retained must be inert data, not a live object graph holding a model client
+ * or AWS credentials.
+ */
+function captureConversation(agent: Agent): Snapshot {
+  return JSON.parse(
+    JSON.stringify(
+      agent.takeSnapshot({ preset: "session", exclude: ["systemPrompt", "interrupts"] }),
+    ),
+  ) as Snapshot;
+}
+
+/**
+ * Restores this session's history into a freshly built agent.
+ *
+ * The agent is still constructed from server code every turn — only the message
+ * history is restored — so tools, interventions and hooks can never be
+ * inherited from an older process state.
+ */
+function restoreConversation(agent: Agent, sessionId: string | null): void {
+  const snapshot = loadConversation(sessionId);
+  if (snapshot) agent.loadSnapshot(snapshot);
+}
+
+/**
+ * Stores the conversation after a turn, but ONLY when the turn actually ended.
+ *
+ * A turn that stopped on an interrupt has an uncommitted tool call and a
+ * history that ends on a user-role message; persisting that would both leave a
+ * half-finished exchange as the session's memory and risk handing the provider
+ * two consecutive user messages on the next turn. The parked approval carries
+ * the session id instead, so whichever way the operator decides, the RESUMED
+ * run — which does end on a proper assistant message — is what gets stored.
+ */
+function persistConversation(
+  sessionId: string | null,
+  agent: Agent,
+  stopReason: string,
+): void {
+  if (!sessionId || stopReason === "interrupt") return;
+  saveConversation(sessionId, captureConversation(agent));
+}
+
+/**
+ * The last message before an invocation, used as a marker so the tool calls
+ * reported to the client are THIS turn's and not the whole session's.
+ *
+ * Identity rather than an index: the sliding-window conversation manager may
+ * trim the front of the array during a long session, which would silently
+ * shift any index recorded beforehand.
+ */
+function conversationMarker(agent: Agent): Message | null {
+  return agent.messages.at(-1) ?? null;
+}
+
+/** Messages appended since `marker`; the whole history when it has been trimmed away. */
+function messagesSince(agent: Agent, marker: Message | null): Message[] {
+  if (!marker) return [...agent.messages];
+  const index = agent.messages.indexOf(marker);
+  return index === -1 ? [...agent.messages] : agent.messages.slice(index + 1);
+}
+
 /** Tool names the model invoked this turn — operational trace, not reasoning. */
 function extractToolCalls(messages: readonly Message[]): string[] {
   const names: string[] = [];
@@ -416,7 +503,11 @@ export const EMPTY_REPLY_FALLBACK =
   "I could not produce an answer for that. I can inspect catalog, inventory, bins, scans, gantry and audit state, and I can request approved putaway, whole-bin retrieval or physical inventory-audit operations.";
 
 /**
- * Runs one stateless Warehouse Agent turn.
+ * Runs one Warehouse Agent turn.
+ *
+ * With a `sessionId` the turn continues that session's server-stored
+ * conversation; without one it is a single isolated exchange, which is how the
+ * smoke-test script and the trusted observation path run.
  *
  * Throws an AgentError whose message is always a fixed safe string; the
  * underlying provider error is logged server-side and never returned.
@@ -429,11 +520,17 @@ export async function invokeWarehouseAgent(
   /** Test seam: build the agent with a scripted model instead of Bedrock. */
   createAgent: () => Agent = createWarehouseAgent,
   rawScanImageDataUrl?: unknown,
+  /**
+   * An opaque per-chat handle. The ONLY conversational thing a browser may
+   * send: it selects server-owned history, it can never supply or edit it.
+   */
+  rawSessionId?: unknown,
 ): Promise<WarehouseAgentReply> {
-  // Validated independently, and both before the model is constructed.
+  // Validated independently, and all before the model is constructed.
   const message = validateAgentMessage(rawMessage);
   const scanResult = validateAgentScanResult(rawScanResult);
   const scanImageDataUrl = validateScanImageDataUrl(rawScanImageDataUrl);
+  const sessionId = validateAgentSessionId(rawSessionId);
 
   // Milestone 12. Server-generated: a browser may not choose its own trace id,
   // and the summary is the operator's own words, truncated — never the system
@@ -453,6 +550,10 @@ export async function invokeWarehouseAgent(
   });
 
   const agent = createAgent();
+  // Everything the model will treat as "what happened earlier" comes from here
+  // — state this server wrote at the end of a previous turn of THIS session.
+  restoreConversation(agent, sessionId);
+  const marker = conversationMarker(agent);
   // Server-authored constants only — no scan- or catalog-derived text ever
   // reaches the model this way, so a hostile label cannot become instruction.
   const notices = [
@@ -481,10 +582,13 @@ export async function invokeWarehouseAgent(
         return { result: invocation, workflows: getContextWorkflows() };
       },
     );
-    const toolCalls = extractToolCalls(agent.messages);
+    // This turn's calls only — with a restored session, `agent.messages` also
+    // holds every earlier turn's, which the operator has already been shown.
+    const toolCalls = extractToolCalls(messagesSince(agent, marker));
+    persistConversation(sessionId, agent, result.stopReason);
 
     console.log(
-      `[warehouse-agent] invocation completed stopReason=${result.stopReason} tools=${toolCalls.join(",") || "none"} scan=${scanResult ? scanResult.scanId : "none"}`,
+      `[warehouse-agent] invocation completed stopReason=${result.stopReason} tools=${toolCalls.join(",") || "none"} scan=${scanResult ? scanResult.scanId : "none"} session=${sessionId ? "yes" : "none"}`,
     );
 
     // A state-changing tool was intercepted before it ran. Nothing has
@@ -499,6 +603,9 @@ export async function invokeWarehouseAgent(
         scanImageDataUrl,
         catalogResolutionId: catalogResolutionId ?? null,
         traceId,
+        // Carried server-side, never re-sent by the browser, so the decision
+        // that finishes this action lands back in the conversation it began in.
+        sessionId,
       });
       await recordEvent(traceId, {
         type: "APPROVAL_REQUIRED",
@@ -691,11 +798,9 @@ async function summarizeToolCall(
     };
   }
 
-  // A putaway call with no attached scan can ONLY be a plain checked-out
-  // return (see execute-putaway.ts) — so the preview names the exact bin,
-  // part and quantity that call will restore, unchanged, rather than the
-  // scan-based guesses below (which do not apply here at all).
-  if (toolName === "execute_putaway" && !scanResult) {
+  // A named checkout takes precedence over a stale attached intake scan.
+  // This preview shows the baseline that the fresh verification will compare.
+  if (toolName === "execute_putaway" && (!scanResult || typeof args.binCode === "string")) {
     const requestedCode =
       typeof args.binCode === "string" && args.binCode.trim() !== ""
         ? args.binCode.trim().toUpperCase()
@@ -721,8 +826,8 @@ async function summarizeToolCall(
       source: "OUTPUT",
       destination: bin?.code ?? requestedCode ?? "(chosen at execution)",
       quantity: row?.quantity ?? null,
-      scope: "COUNTED_UNITS",
-      capacity: row && bin ? { before: row.quantity, after: row.quantity, limit: bin.capacity } : null,
+      scope: "ENTIRE_BIN",
+      capacity: null,
     };
   }
 
@@ -849,6 +954,8 @@ async function parkForApproval(input: {
   scanImageDataUrl: string | null;
   catalogResolutionId: string | null;
   traceId: string | null;
+  /** The chat this pause belongs to, so the resumed turn updates its memory. */
+  sessionId: string | null;
 }): Promise<PendingApprovalView> {
   const call = parseInterruptReason(input.interruptReason);
   const toolName = call?.name ?? "unknown_tool";
@@ -876,6 +983,7 @@ async function parkForApproval(input: {
     scanImageDataUrl: input.scanImageDataUrl,
     catalogResolutionId: input.catalogResolutionId,
     traceId: input.traceId,
+    sessionId: input.sessionId,
   });
 }
 
@@ -964,7 +1072,11 @@ export async function resumeWarehouseAgent(
   }
 
   const agent = createAgent();
+  // The parked snapshot ALREADY contains the whole conversation: the agent it
+  // was taken from had this session's history loaded before it ran. So there is
+  // nothing extra to restore here, and restoring anything would fight it.
   agent.loadSnapshot(parked.snapshot);
+  const marker = conversationMarker(agent);
 
   // Same bag as the original invocation's, for the same two reasons: the hooks
   // read the trace id out of it, and they record a tool failure into it.
@@ -1000,7 +1112,14 @@ export async function resumeWarehouseAgent(
     // the decision is only durable once the resumed run has been driven.
     if (decision === "APPROVE") await settleApproval(approvalId.trim(), "APPROVED");
 
-    const toolCalls = extractToolCalls(agent.messages);
+    // Only what the resumed run added — the parked snapshot's own history is
+    // the operator's earlier turns, already reported when they happened.
+    const toolCalls = extractToolCalls(messagesSince(agent, marker));
+    // The decision closed the exchange the pause opened, so THIS is the state
+    // the session should remember: the tool ran (or was refused) and the model
+    // answered. A run that stopped on another interrupt is skipped and handled
+    // by the approval it just raised, which carries the same session id on.
+    persistConversation(parked.sessionId, agent, result.stopReason);
 
     // The model asked again. After a DENIAL that is exactly the harassment the
     // operator just refused, so no new approval is created: the interrupt is
@@ -1034,6 +1153,7 @@ export async function resumeWarehouseAgent(
         scanImageDataUrl: parked.scanImageDataUrl,
         catalogResolutionId: parked.catalogResolutionId,
         traceId,
+        sessionId: parked.sessionId,
       });
       await recordEvent(traceId, {
         type: "APPROVAL_REQUIRED",
