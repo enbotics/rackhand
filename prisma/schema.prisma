@@ -171,7 +171,9 @@ model PutawayCaptureRequest {
   attempt                Int       @default(0)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
-  expiresAt              DateTime
+  /// Processing lease. Null while waiting for a human; renewed only while
+  /// server-side image analysis is actively running.
+  expiresAt              DateTime?
   capturedAt             DateTime?
   movement               Movement  @relation(fields: [movementId], references: [id], onDelete: Cascade)
 
@@ -385,8 +387,9 @@ model BinAudit {
 /// PutawayCaptureRequest's shape — the two share the same comparison/retry
 /// UI and decision-policy helpers, so their durable state should look alike.
 ///
-/// status: WAITING_FOR_CAMERA | CAPTURING | REVIEW_DECREASE | RETRY_REQUIRED
-/// | ACCEPTED | FAILED. Unlike PutawayCaptureRequest there is no standalone
+/// status: WAITING_FOR_CAMERA | CAPTURING | PENDING_ACK | REVIEW_DECREASE |
+/// RETRY_REQUIRED | ACCEPTED | FAILED. Unlike PutawayCaptureRequest there is
+/// no standalone
 /// "READY" status: a safe equal/higher observation needs no human decision,
 /// so the capture route finalizes it immediately and writes ACCEPTED
 /// directly — REVIEW_DECREASE and RETRY_REQUIRED are the only statuses a
@@ -415,7 +418,9 @@ model AuditCaptureRequest {
   errorCode              String?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
-  expiresAt              DateTime
+  /// Processing lease. Null while waiting for a human; renewed only while
+  /// server-side image analysis is actively running.
+  expiresAt              DateTime?
   capturedAt             DateTime?
   binAudit               BinAudit  @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
 
@@ -432,6 +437,9 @@ model CameraCaptureJob {
   /// The PutawayCaptureRequest or AuditCaptureRequest this image must satisfy.
   /// Null only for standalone MANUAL_SCAN jobs.
   workflowCaptureId String?
+  /// Attempt number of the owning putaway/audit capture. Late results from a
+  /// superseded retry are rejected instead of mutating the current attempt.
+  workflowAttempt   Int?
   evidenceUrl       String?
   imageWidth        Int?
   imageHeight       Int?
@@ -441,7 +449,8 @@ model CameraCaptureJob {
   capturedAt        DateTime?
   uploadedAt        DateTime?
   completedAt       DateTime?
-  expiresAt         DateTime
+  /// Null while queued; a renewable lease while CLAIMED/UPLOADED/PROCESSING.
+  expiresAt         DateTime?
   errorCode         String?
   errorMessage      String?
   createdAt         DateTime  @default(now())

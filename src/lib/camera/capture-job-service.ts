@@ -32,19 +32,21 @@ export const CAMERA_CAPTURE_STATUSES = [
   "PROCESSING",
   "COMPLETED",
   "FAILED",
+  "CANCELLED",
   "EXPIRED",
 ] as const;
 
 export type CameraCaptureStatus = (typeof CAMERA_CAPTURE_STATUSES)[number];
 
-const DEFAULT_CAPTURE_TIMEOUT_SECONDS = 30;
+const DEFAULT_CAPTURE_TIMEOUT_SECONDS = 2 * 60;
 const DEFAULT_PROCESSING_TIMEOUT_SECONDS = 5 * 60;
+const DEFAULT_ABANDONED_TIMEOUT_SECONDS = 24 * 60 * 60;
 
 /**
  * Keep this small.
  *
- * Raspberry Pi polling should never hold a DB transaction open while
- * waiting for hardware/network activity.
+ * Raspberry Pi queue claims never hold a DB transaction open while waiting
+ * for hardware/network activity.
  */
 const MAX_CLAIM_ATTEMPTS = 3;
 
@@ -60,6 +62,9 @@ export interface CreateCaptureJobInput {
 
   /** Durable PutawayCaptureRequest/AuditCaptureRequest id for workflow photos. */
   workflowCaptureId?: string | null;
+
+  /** Retry generation of the owning workflow capture. */
+  workflowAttempt?: number | null;
 
   /**
    * Normally omitted.
@@ -152,10 +157,28 @@ function getProcessingTimeoutSeconds(): number {
   return value;
 }
 
+function getAbandonedTimeoutSeconds(): number {
+  const raw =
+    process.env.CAMERA_ABANDONED_TIMEOUT_SECONDS ??
+    String(DEFAULT_ABANDONED_TIMEOUT_SECONDS);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new CameraCaptureJobError(
+      "camera_invalid_configuration",
+      "CAMERA_ABANDONED_TIMEOUT_SECONDS must be a positive number.",
+    );
+  }
+  return value;
+}
+
 function calculateExpiryDate(now = new Date()): Date {
   const timeoutSeconds = getCaptureTimeoutSeconds();
 
   return new Date(now.getTime() + timeoutSeconds * 1000);
+}
+
+function calculateProcessingExpiryDate(now = new Date()): Date {
+  return new Date(now.getTime() + getProcessingTimeoutSeconds() * 1000);
 }
 
 function assertPositiveInteger(value: number, name: string): void {
@@ -206,9 +229,12 @@ export async function createCaptureJob(input: CreateCaptureJobInput) {
 
       binAuditId: input.binAuditId ?? null,
       workflowCaptureId: input.workflowCaptureId ?? null,
+      workflowAttempt: input.workflowAttempt ?? null,
 
       requestedAt: now,
-      expiresAt: calculateExpiryDate(now),
+      // Queued work does not hold a short lease. It remains durable until a
+      // device claims it, a retry supersedes it, or abandonment cleanup runs.
+      expiresAt: null,
       updatedAt: now,
     },
   });
@@ -244,7 +270,7 @@ export async function requireCaptureJob(jobId: string) {
 }
 
 /**
- * Mark stale non-terminal jobs EXPIRED.
+ * Recover stale leases and cancel only genuinely abandoned queued jobs.
  *
  * This is intentionally callable from request paths; no background worker
  * is required for the MVP.
@@ -252,23 +278,38 @@ export async function requireCaptureJob(jobId: string) {
 export async function expireStaleCaptureJobs(
   now = new Date(),
 ): Promise<number> {
-  const captureResult = await prisma.cameraCaptureJob.updateMany({
+  const abandonedBefore = new Date(
+    now.getTime() - getAbandonedTimeoutSeconds() * 1000,
+  );
+  const abandonedResult = await prisma.cameraCaptureJob.updateMany({
     where: {
-      expiresAt: {
-        lte: now,
-      },
-
-      status: {
-        in: ["PENDING", "CLAIMED"],
-      },
+      status: "PENDING",
+      updatedAt: { lte: abandonedBefore },
     },
 
     data: {
-      status: "EXPIRED",
+      status: "CANCELLED",
       completedAt: now,
-      errorCode: "camera_capture_timeout",
+      errorCode: "camera_job_abandoned",
       errorMessage:
-        "The camera capture request expired before an image was received.",
+        "The camera capture request was cancelled after being abandoned.",
+      updatedAt: now,
+    },
+  });
+
+  // CLAIMED is a device lease. If the Pi disappears, return the same durable
+  // job to the queue so a recovered worker can claim it again.
+  const releasedClaims = await prisma.cameraCaptureJob.updateMany({
+    where: {
+      status: "CLAIMED",
+      expiresAt: { lte: now },
+    },
+    data: {
+      status: "PENDING",
+      claimedAt: null,
+      expiresAt: null,
+      errorCode: null,
+      errorMessage: null,
       updatedAt: now,
     },
   });
@@ -279,7 +320,10 @@ export async function expireStaleCaptureJobs(
   const processingResult = await prisma.cameraCaptureJob.updateMany({
     where: {
       status: { in: ["UPLOADED", "PROCESSING"] },
-      updatedAt: { lte: processingDeadline },
+      OR: [
+        { expiresAt: { lte: now } },
+        { expiresAt: null, updatedAt: { lte: processingDeadline } },
+      ],
     },
     data: {
       status: "FAILED",
@@ -291,7 +335,7 @@ export async function expireStaleCaptureJobs(
     },
   });
 
-  return captureResult.count + processingResult.count;
+  return abandonedResult.count + releasedClaims.count + processingResult.count;
 }
 
 /**
@@ -325,10 +369,6 @@ export async function claimNextCaptureJob(deviceId: string) {
         deviceId: normalizedDeviceId,
 
         status: "PENDING",
-
-        expiresAt: {
-          gt: now,
-        },
       },
 
       orderBy: [
@@ -356,9 +396,6 @@ export async function claimNextCaptureJob(deviceId: string) {
         id: candidate.id,
         deviceId: normalizedDeviceId,
         status: "PENDING",
-        expiresAt: {
-          gt: claimedAt,
-        },
       },
 
       data: {
@@ -408,6 +445,20 @@ export async function requireDeviceCaptureJob(jobId: string, deviceId: string) {
   }
 
   return job;
+}
+
+/** Renew the authenticated Pi's ownership lease while it captures/uploads. */
+export async function renewDeviceCaptureLease(jobId: string, deviceId: string) {
+  await requireDeviceCaptureJob(jobId, deviceId);
+  const now = new Date();
+  const renewed = await prisma.cameraCaptureJob.updateMany({
+    where: { id: jobId, deviceId, status: "CLAIMED" },
+    data: {
+      expiresAt: calculateExpiryDate(now),
+      updatedAt: now,
+    },
+  });
+  return renewed.count === 1;
 }
 
 /**
@@ -465,6 +516,13 @@ export async function markCaptureUploaded(
     );
   }
 
+  if (job.status === "CANCELLED") {
+    throw new CameraCaptureJobError(
+      "camera_job_cancelled",
+      "The camera capture job was cancelled or superseded.",
+    );
+  }
+
   if (job.status === "FAILED") {
     throw new CameraCaptureJobError(
       "camera_job_failed",
@@ -479,7 +537,7 @@ export async function markCaptureUploaded(
     );
   }
 
-  if (job.expiresAt <= now) {
+  if (job.expiresAt && job.expiresAt <= now) {
     await prisma.cameraCaptureJob.updateMany({
       where: {
         id: jobId,
@@ -487,18 +545,18 @@ export async function markCaptureUploaded(
       },
 
       data: {
-        status: "EXPIRED",
-        completedAt: now,
-        errorCode: "camera_capture_timeout",
-        errorMessage:
-          "The camera capture request expired before upload completed.",
+        status: "PENDING",
+        claimedAt: null,
+        expiresAt: null,
+        errorCode: null,
+        errorMessage: null,
         updatedAt: now,
       },
     });
 
     throw new CameraCaptureJobError(
-      "camera_job_expired",
-      "The camera capture job has expired.",
+      "camera_claim_lost",
+      "The device lease ended before upload; the capture was safely requeued.",
     );
   }
 
@@ -524,6 +582,7 @@ export async function markCaptureUploaded(
       capturedAt: input.capturedAt,
 
       uploadedAt: now,
+      expiresAt: calculateProcessingExpiryDate(now),
       updatedAt: now,
     },
   });
@@ -575,6 +634,7 @@ export async function claimCaptureForProcessing(jobId: string) {
 
     data: {
       status: "PROCESSING",
+      expiresAt: calculateProcessingExpiryDate(now),
       updatedAt: now,
     },
   });
@@ -584,6 +644,23 @@ export async function claimCaptureForProcessing(jobId: string) {
   }
 
   return requireCaptureJob(jobId);
+}
+
+/** Keep a live server-side analysis from being recovered as stalled work. */
+export async function renewCaptureProcessingLease(jobId: string): Promise<boolean> {
+  const now = new Date();
+  const renewed = await prisma.cameraCaptureJob.updateMany({
+    where: { id: jobId, status: "PROCESSING" },
+    data: {
+      expiresAt: calculateProcessingExpiryDate(now),
+      updatedAt: now,
+    },
+  });
+  return renewed.count === 1;
+}
+
+export function captureProcessingHeartbeatMilliseconds(): number {
+  return Math.max(5_000, Math.floor(getProcessingTimeoutSeconds() * 1000 / 3));
 }
 
 /**
@@ -670,6 +747,7 @@ export async function failCaptureJob(
   if (
     current.status === "COMPLETED" ||
     current.status === "FAILED" ||
+    current.status === "CANCELLED" ||
     current.status === "EXPIRED"
   ) {
     return current;
@@ -769,7 +847,7 @@ export async function getCaptureJobStatus(jobId: string) {
 
     completedAt: job.completedAt?.toISOString() ?? null,
 
-    expiresAt: job.expiresAt.toISOString(),
+    expiresAt: job.expiresAt?.toISOString() ?? null,
 
     error: job.errorCode
       ? {
@@ -786,5 +864,5 @@ export async function getCaptureJobStatus(jobId: string) {
  * Convenience helper for routes/UI.
  */
 export function isTerminalCaptureStatus(status: string): boolean {
-  return status === "COMPLETED" || status === "FAILED" || status === "EXPIRED";
+  return status === "COMPLETED" || status === "FAILED" || status === "CANCELLED" || status === "EXPIRED";
 }

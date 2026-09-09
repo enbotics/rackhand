@@ -51,6 +51,8 @@ export const RETRIEVAL_FAILURE_REASONS = [
   "retrieval_commit_failed",
   /** Project addition, mirroring putaway_in_progress. */
   "retrieval_in_progress",
+  /** Simulation mode is on and this bin isn't one of the two it covers. */
+  "simulation_scope_violation",
 ] as const;
 export type RetrievalFailureReason = (typeof RETRIEVAL_FAILURE_REASONS)[number];
 

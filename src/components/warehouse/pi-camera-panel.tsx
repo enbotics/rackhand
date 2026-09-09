@@ -59,6 +59,12 @@ function getStatusText(capture: CameraCaptureJobView | null) {
           capture.error?.message ?? "The camera scan could not be completed.",
       };
 
+    case "CANCELLED":
+      return {
+        title: "Scan cancelled",
+        detail: capture.error?.message ?? "The camera request was cancelled.",
+      };
+
     case "EXPIRED":
       return {
         title: "Scan expired",
@@ -68,7 +74,7 @@ function getStatusText(capture: CameraCaptureJobView | null) {
 }
 
 function statusTone(capture: CameraCaptureJobView | null, scanning: boolean) {
-  if (capture?.status === "FAILED" || capture?.status === "EXPIRED") {
+  if (capture?.status === "FAILED" || capture?.status === "CANCELLED" || capture?.status === "EXPIRED") {
     return "bg-danger";
   }
 

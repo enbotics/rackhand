@@ -19,7 +19,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   try {
     return NextResponse.json(await decidePutawayCapture(id, decision as PutawayCaptureDecision));
-  } catch {
-    return NextResponse.json({ error: { message: "This verification is stale or cannot be changed." } }, { status: 409 });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "";
+    const message = reason.startsWith("This ") || reason.startsWith("The putaway ")
+      ? reason
+      : "The putaway verification decision could not be applied.";
+    return NextResponse.json({
+      error: { message },
+    }, { status: 409 });
   }
 }

@@ -1,6 +1,3 @@
-// Allows one initial analysis plus one GoalLoop refinement of the same frame.
-export const AUDIT_CAPTURE_TIMEOUT_MS = 75_000;
-
 export type AuditOcclusion = "NONE" | "LOW" | "MEDIUM" | "HIGH";
 
 export interface AuditVisionResult {

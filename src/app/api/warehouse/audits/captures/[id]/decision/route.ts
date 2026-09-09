@@ -20,7 +20,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     await decideAuditCapture(id, decision as AuditCaptureDecision);
     return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: { message: "This verification is stale or cannot be changed." } }, { status: 409 });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "audit_capture_failed";
+    const message = reason === "audit_inventory_stale"
+      ? "Inventory changed after this photo was analyzed. Take a fresh photo before confirming."
+      : reason === "audit_lock_lost"
+        ? "This bin is no longer locked for the current audit."
+        : "This audit verification is no longer awaiting that decision.";
+    return NextResponse.json({ error: { message } }, { status: 409 });
   }
 }

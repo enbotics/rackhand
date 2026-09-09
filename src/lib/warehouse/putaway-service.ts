@@ -640,9 +640,15 @@ export async function returnCheckedOutBin(
     const verified = await requirePutawayVerification(movement.id, true);
     imageUrl = verified.imageUrl;
     verifiedQuantity = verified.quantity;
-  } catch {
+  } catch (error) {
     await releaseClaim(movement.id, bin.id, "CHECKED_OUT");
-    return fail("", "photo_required", "A fresh bin snapshot is required. The bin has not moved; check the camera and retry putaway.", { movementId: movement.id });
+    console.error(`[putaway] return verification failed bin=${bin.code} movement=${movement.id}`, error);
+    return fail(
+      "",
+      "photo_required",
+      "Fresh photo verification failed or timed out, so the gantry did not move. Check the camera and retry putaway.",
+      { movementId: movement.id },
+    );
   }
 
   let operation: GantryOperation;

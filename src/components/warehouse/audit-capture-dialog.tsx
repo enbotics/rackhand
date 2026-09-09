@@ -41,37 +41,38 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const handledId = useRef<string | null>(null);
+  const resultRef = useRef(result);
+  resultRef.current = result;
 
   useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const controller = new AbortController();
-    async function poll() {
+    const source = new EventSource("/api/warehouse/captures/events");
+    const handlePending = (event: Event) => {
       try {
-        if (!inFlight.current) {
-          const responses = await Promise.all(["putaway", "audits"].map((kind) => fetch(`/api/warehouse/${kind}/captures/pending`, {
-            cache: "no-store", signal: controller.signal,
-          })));
-          if (responses.every((response) => response.ok)) {
-            const [putaway, audit] = await Promise.all(responses.map((response) => response.json())) as Array<{ captureId: string | null; binCode?: string }>;
-            const data = putaway.captureId ? putaway : audit;
-            const purpose = putaway.captureId ? "PUTAWAY" as const : "AUDIT" as const;
-            if (!stopped && !inFlight.current) {
-              if (data.captureId && data.captureId !== handledId.current) {
-                setPending((previous) => previous?.captureId === data.captureId ? previous
-                  : { captureId: data.captureId!, binCode: data.binCode ?? "bin", purpose });
-                // Multi-bin runs must not wait for dismissal of the previous result.
-                setResult(null);
-              } else if (!data.captureId && result === null) setPending(null);
-            }
-          }
+        const data = JSON.parse((event as MessageEvent<string>).data) as {
+          captureId: string | null;
+          binCode?: string;
+          purpose?: "PUTAWAY" | "AUDIT";
+        };
+        if (inFlight.current) return;
+        if (data.captureId && data.purpose && data.captureId !== handledId.current) {
+          setPending((previous) => previous?.captureId === data.captureId ? previous : {
+            captureId: data.captureId!,
+            binCode: data.binCode ?? "bin",
+            purpose: data.purpose!,
+          });
+          // Multi-bin runs must not wait for dismissal of the previous result.
+          setResult(null);
+        } else if (!data.captureId && resultRef.current === null) {
+          setPending(null);
         }
-      } catch { /* Transient poll failures do not cancel a pending capture. */ }
-      if (!stopped) timer = setTimeout(poll, 1_000);
-    }
-    timer = setTimeout(poll, 0);
-    return () => { stopped = true; controller.abort(); clearTimeout(timer); };
-  }, [result]);
+      } catch { /* A later authoritative Realtime event will replace malformed data. */ }
+    };
+    source.addEventListener("pending", handlePending);
+    return () => {
+      source.removeEventListener("pending", handlePending);
+      source.close();
+    };
+  }, []);
 
   async function capture() {
     if (!pending || inFlight.current || result !== null) return;
@@ -91,8 +92,9 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         throw new Error(requested.error?.message ?? "The Raspberry Pi capture could not be requested.");
       }
       const completed = await waitForCameraCapture<CaptureAnalysis>(requested.captureJobId, {
-        pollIntervalMs: 1_000,
-        timeoutMs: 120_000,
+        // The durable server state owns recovery. The browser follows the
+        // Realtime stream until a terminal state instead of inventing a
+        // second, shorter timeout.
       });
       if (!completed.result) throw new Error("The Raspberry Pi capture completed without an analysis result.");
       handledId.current = pending.captureId;
@@ -115,7 +117,10 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision }),
       });
-      if (!response.ok) throw new Error("decision failed");
+      const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
+      if (!response.ok) {
+        throw new Error(body.error?.message ?? "The verification decision could not be applied.");
+      }
       if (decision === "RETRY") {
         handledId.current = null;
         setResult(null);
@@ -125,8 +130,10 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         setAnalysis(null);
         setPending(null);
       }
-    } catch {
-      setError("This verification changed or expired. Retry the request.");
+    } catch (decisionError) {
+      setError(decisionError instanceof Error
+        ? decisionError.message
+        : "The verification decision could not be applied.");
     } finally {
       setDeciding(false);
     }

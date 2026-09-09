@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import {
   CameraCaptureJobError,
+  expireStaleCaptureJobs,
   requireCaptureJob,
 } from "@/lib/camera/capture-job-service";
 
@@ -29,6 +30,9 @@ export async function GET(
   try {
     const { id } = await context.params;
 
+    // Status reads also perform timeout recovery, so a stopped Pi worker is
+    // not required to poll again before the browser can observe a terminal job.
+    await expireStaleCaptureJobs();
     const job = await requireCaptureJob(id);
 
     return NextResponse.json({
@@ -51,6 +55,8 @@ export async function GET(
       uploadedAt: job.uploadedAt?.toISOString() ?? null,
 
       completedAt: job.completedAt?.toISOString() ?? null,
+
+      expiresAt: job.expiresAt?.toISOString() ?? null,
 
       result: parseResult(job.resultJson),
 
