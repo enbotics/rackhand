@@ -379,7 +379,7 @@ export function AgentPanel({
   latestMovement,
   workflow,
   latestAudit,
-  onAuditChanged,
+  onAuditChanged = () => {},
   detectedName,
   active = true,
 }: {
@@ -410,7 +410,7 @@ export function AgentPanel({
   workflow: WarehouseGraphResult | null;
   latestAudit: InventoryAuditView | null;
   /** Re-reads the warehouse snapshot after a human applies/dismisses an audit observation. */
-  onAuditChanged: () => void;
+  onAuditChanged?: () => void;
   /** The vision-detected name for the current scan, if any — used only in the identification card's "register as new" copy. */
   detectedName: string | null;
   /** Keep draft/history mounted while another workspace tab is selected. */
@@ -420,49 +420,45 @@ export function AgentPanel({
   const [turnsPresentAtMount] = useState(() => new Set(turns.map((turn) => turn.id)));
   const transcriptRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // Ref, not state: read/written on every scroll/content-growth tick, and
+  // must never itself trigger a re-render.
   const followLatest = useRef(true);
-  const scrollFrame = useRef<number | null>(null);
   const [showLatest, setShowLatest] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
 
+  // Passive auto-follow while pinned to the bottom: an instant scrollTop
+  // assignment, not an animation. Content grows dozens of times a second
+  // while a reply streams in (onProgress fires per token/frame), and easing
+  // toward a constantly-moving target was exactly what produced the
+  // reported jitter — every new pixel of growth retargeted the animation
+  // and any manual scroll input mid-flight had to fight it. An instant
+  // snap has no such race: it always lands exactly at the true bottom, so
+  // the next scroll event reports "at bottom" correctly and consistently.
   const scrollToLatest = useCallback(() => {
     const transcript = transcriptRef.current;
-    if (!active || !transcript?.clientHeight || !followLatest.current) return;
-    if (reducedMotion) { transcript.scrollTop = transcript.scrollHeight; return; }
-    if (scrollFrame.current !== null) return;
-    let previousTime = performance.now();
-    function tick(now: number) {
-      const element = transcriptRef.current;
-      if (!element?.clientHeight || !followLatest.current) { scrollFrame.current = null; return; }
-      const target = element.scrollHeight - element.clientHeight;
-      const remaining = target - element.scrollTop;
-      if (Math.abs(remaining) <= 1) { element.scrollTop = target; scrollFrame.current = null; return; }
-      // One animation follows a changing target, including progressively
-      // revealed replies and late-loading images. New content never resets it.
-      const blend = 1 - Math.exp(-Math.min(64, now - previousTime) / 65);
-      element.scrollTop += Math.sign(remaining) * Math.max(1, Math.abs(remaining) * blend);
-      previousTime = now;
-      scrollFrame.current = requestAnimationFrame(tick);
-    }
-    scrollFrame.current = requestAnimationFrame(tick);
-  }, [active, reducedMotion]);
+    if (!active || !transcript || !followLatest.current) return;
+    transcript.scrollTop = transcript.scrollHeight;
+  }, [active]);
 
-  const stopFollowing = () => {
-    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
-    scrollFrame.current = null;
-    followLatest.current = false;
-    setShowLatest(true);
-  };
+  // The explicit "Jump to latest" affordance is a one-off, deliberate user
+  // action — unlike passive auto-follow, a single smooth scroll here has
+  // nothing to compete with, so it can afford the nicer animation.
+  const jumpToLatest = useCallback(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript) return;
+    followLatest.current = true;
+    setShowLatest(false);
+    transcript.scrollTo({
+      top: transcript.scrollHeight,
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+  }, [reducedMotion]);
 
   useEffect(() => {
     const observer = new ResizeObserver(scrollToLatest);
     if (contentRef.current) observer.observe(contentRef.current);
     if (transcriptRef.current) observer.observe(transcriptRef.current);
-    return () => {
-      observer.disconnect();
-      if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
-      scrollFrame.current = null;
-    };
+    return () => observer.disconnect();
   }, [scrollToLatest]);
 
   // A new trailing card (or an existing one changing state, e.g. approval ->
@@ -519,16 +515,17 @@ export function AgentPanel({
           ref={transcriptRef}
           tabIndex={0}
           aria-label="Warehouse agent conversation"
-          onWheel={stopFollowing}
-          onTouchStart={stopFollowing}
-          onPointerDown={(event) => { if (event.target === event.currentTarget) stopFollowing(); }}
-          onKeyDown={(event) => {
-            if (event.target === event.currentTarget && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) stopFollowing();
-          }}
+          // The scroll position itself is the only source of truth for
+          // "is the operator following along." A wheel/touch/key event says
+          // nothing on its own — the trackpad's own inertial scrolling keeps
+          // firing wheel events after the gesture ends, and one micro-tick
+          // at the very bottom used to be enough to flip into "away" mode
+          // and pop up "Jump to latest" even though nothing had moved.
           onScroll={() => {
             const element = transcriptRef.current;
-            if (!element?.clientHeight || scrollFrame.current !== null) return;
-            const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 60;
+            if (!element) return;
+            const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+            const nearBottom = distanceFromBottom < 48;
             followLatest.current = nearBottom;
             setShowLatest(!nearBottom);
           }}
@@ -641,9 +638,15 @@ export function AgentPanel({
           </div>
         </div>
 
-        {showLatest && <button type="button" onClick={() => {
-          followLatest.current = true; setShowLatest(false); scrollToLatest();
-        }} className="shrink-0 self-center rounded-full border border-accent-soft bg-accent-tint px-3 py-1 text-[11px] text-accent">Jump to latest ↓</button>}
+        {showLatest && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            className="shrink-0 self-center rounded-full border border-accent-soft bg-accent-tint px-3 py-1 text-[11px] text-accent"
+          >
+            Jump to latest ↓
+          </button>
+        )}
 
         <div className="flex shrink-0 flex-wrap gap-1.5">
           {SUGGESTIONS.map((suggestion) => (

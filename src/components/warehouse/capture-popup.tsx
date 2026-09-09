@@ -23,13 +23,18 @@ export function CapturePopup({ title, onCapture, onClose, disabled = false, erro
   const callbacks = useRef({ onCapture, onClose });
   callbacks.current = { onCapture, onClose };
   useEffect(() => {
-    if (!exit) return;
-    const timer = setTimeout(() => {
-      if (exit.shot) callbacks.current.onCapture(exit.shot);
-      else callbacks.current.onClose();
-    }, reduced ? 0 : 220);
-    return () => clearTimeout(timer);
+    if (!exit || !reduced) return;
+    const frame = requestAnimationFrame(() => completeExit());
+    return () => cancelAnimationFrame(frame);
   }, [exit, reduced]);
+
+  function completeExit() {
+    if (!exit) return;
+    const completed = exit;
+    setExit(null);
+    if (completed.shot) callbacks.current.onCapture(completed.shot);
+    else callbacks.current.onClose();
+  }
 
   function finish(shot: Shot | null) {
     if (exitStarted.current) return;
@@ -37,7 +42,7 @@ export function CapturePopup({ title, onCapture, onClose, disabled = false, erro
     setExit({ shot });
   }
 
-  return <Modal title={title} onClose={() => finish(null)} closing={exit !== null}
+  return <Modal title={title} onClose={() => finish(null)} closing={exit !== null} onExitComplete={completeExit}
     dismissible={dismissible && exit === null} maxWidthClassName="max-w-2xl">
     <p className="mb-4 text-sm text-ink-muted">Position the item in the frame. After capture, watch the warehouse scan it; the result will open automatically.</p>
     <CameraStage onCapture={(shot) => finish(shot)} disabled={disabled || exit !== null} captureLabel={captureLabel} />

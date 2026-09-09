@@ -19,6 +19,7 @@ export function Modal({
   maxWidthClassName = "max-w-lg",
   dismissible = true,
   closing = false,
+  onExitComplete,
 }: {
   title: string;
   onClose: () => void;
@@ -29,6 +30,8 @@ export function Modal({
   dismissible?: boolean;
   /** Capture popups leave the scene visible before processing starts. */
   closing?: boolean;
+  /** Called by the overlay's real exit animation, never by an estimated delay. */
+  onExitComplete?: () => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -43,6 +46,9 @@ export function Modal({
       className={`fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm sm:p-8 ${closing ? "capture-popup-exit pointer-events-none" : "animate-fade-in"}`}
       onClick={() => {
         if (dismissible) onClose();
+      }}
+      onAnimationEnd={(event) => {
+        if (closing && event.target === event.currentTarget) onExitComplete?.();
       }}
       role="presentation"
     >

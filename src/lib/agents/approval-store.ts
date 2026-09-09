@@ -74,6 +74,16 @@ interface PendingApproval {
    * APPROVE continues a story rather than starting a new one.
    */
   traceId: string | null;
+  /**
+   * The chat session this pause belongs to, when the request had one.
+   *
+   * Held here rather than round-tripped through the browser for exactly the
+   * reason the tool arguments are: the approve/deny call carries an id and a
+   * decision and nothing else, so a client cannot redirect a finished action's
+   * memory into a different conversation. Never persisted to ActionApproval —
+   * it is process-local chat state, not auditable warehouse history.
+   */
+  sessionId: string | null;
   expiresAt: number;
 }
 
@@ -106,6 +116,7 @@ export async function createPendingApproval(input: {
   scanImageDataUrl: string | null;
   catalogResolutionId: string | null;
   traceId: string | null;
+  sessionId: string | null;
 }): Promise<PendingApprovalView> {
   sweep();
 

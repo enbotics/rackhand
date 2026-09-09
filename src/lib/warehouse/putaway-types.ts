@@ -17,13 +17,13 @@ import type { ScanResult } from "./scan-types";
 /**
  * What the caller asks for. Deliberately small.
  *
- * Quantity comes only from the validated camera result. The model cannot
+ * Intake quantity comes only from the validated scan result. The model cannot
  * provide or override it. Movement status and inventory deltas are likewise
  * consequences the service derives, not inputs it accepts.
  */
 export interface PutawayRequest {
   scanResult: ScanResult;
-  /** The automatic camera frame that produced the count. Required to move. */
+  /** Original intake-scan frame used for identification/counting, not the later bin snapshot. */
   imageDataUrl?: string;
   /** Optional. Omitted means the deterministic findAvailableBin policy picks one. */
   destinationBinCode?: string;
@@ -37,7 +37,7 @@ export interface PutawayRequest {
   catalogResolutionId?: string;
 }
 
-/** @deprecated Quantity now comes from the automatic camera count. */
+/** @deprecated Intake quantity now comes from the validated scan count. */
 export const PUTAWAY_QUANTITY = 1;
 export const PUTAWAY_SOURCE = "INTAKE" as const;
 export const PUTAWAY_RETURN_SOURCE = "OUTPUT" as const;
@@ -78,13 +78,13 @@ export interface PutawaySuccess {
   destinationBinCode: string;
   movementId: string;
   gantryOperationId: string;
-  /** Count produced by the automatic pre-putaway camera verification. */
+  /** Fresh, accepted pre-putaway image count. */
   observedQuantity: number;
   inventoryQuantityBefore: number;
   inventoryQuantityAfter: number;
   /** Positive additions only; zero for a checkout reconciliation or replay. */
   inventoryQuantityAdded: number;
-  /** Units consumed while a checked-out bin was with the client. */
+  /** Confirmed decrease from the recorded bin quantity. */
   inventoryQuantityRemoved: number;
   /** Signed authoritative change: after minus before. */
   inventoryQuantityDelta: number;

@@ -1,17 +1,24 @@
 /**
- * One-off: gives a bin a starting stock quantity AND a "current snapshot"
- * evidence photo, so AUDIT_CAPTURE_MODE=simulation has something real to
- * show as this bin's latest known state before any simulated audit ever
- * runs. The photo is one of the bin's own curated local demo images
- * (public/audit-simulation/<BIN>/snapshot.jpg) — same free, no-Supabase
- * storage the simulated audit pool itself uses.
+ * Resets a bin's simulation baseline: a starting stock quantity AND a
+ * "current snapshot" evidence photo, so AUDIT_CAPTURE_MODE=simulation has
+ * something real to show as this bin's latest accepted state before the
+ * next simulated capture runs. The photo is the bin's own curated demo
+ * image (public/audit-simulation/<BIN>/snapshot.jpg) — same free, no-
+ * Supabase storage the simulated capture pool itself uses.
+ *
+ * SAFE TO RE-RUN. Unlike a one-shot seed, this is meant to be run again and
+ * again between test passes — it resets whatever quantity is currently
+ * there (including one a prior simulated audit/putaway left behind) back to
+ * the given baseline, and records a fresh VERIFIED "accepted snapshot" so
+ * the next simulated capture's comparison dialog shows a clean known
+ * starting point rather than whatever the last test happened to leave.
  *
  * DEVELOPMENT / DEMO ONLY, like scripts/demo-stock.ts. Run with:
  *   npx tsx scripts/seed-bin-snapshot.ts <BIN_CODE> <SKU> <QUANTITY>
  */
 import "./load-env";
 import { prisma } from "../src/lib/warehouse/db";
-import { addInventory } from "../src/lib/warehouse/inventory-service";
+import { addInventory, setInventoryQuantity } from "../src/lib/warehouse/inventory-service";
 
 async function main(): Promise<void> {
   const [binCode, sku, quantityRaw] = process.argv.slice(2);
@@ -28,12 +35,15 @@ async function main(): Promise<void> {
   const existing = await prisma.inventory.findUnique({
     where: { partId_binId: { partId: part.id, binId: bin.id } },
   });
-  if (existing) {
-    throw new Error(`${binCode} already holds ${existing.quantity} x ${sku} — refusing to double it.`);
+  if (!existing) {
+    await addInventory({ sku, binCode, quantity });
+    console.log(`Placed ${quantity} x ${sku} in ${binCode}.`);
+  } else if (existing.quantity !== quantity) {
+    await setInventoryQuantity({ sku, binCode, quantity });
+    console.log(`Reset ${binCode} from ${existing.quantity} to ${quantity} x ${sku}.`);
+  } else {
+    console.log(`${binCode} already holds ${quantity} x ${sku} — quantity unchanged.`);
   }
-
-  await addInventory({ sku, binCode, quantity });
-  console.log(`Placed ${quantity} x ${sku} in ${binCode}.`);
 
   const evidenceUrl = `/audit-simulation/${binCode}/snapshot.jpg`;
   const now = new Date();
@@ -71,7 +81,7 @@ async function main(): Promise<void> {
       completedAt: now,
     },
   });
-  console.log(`Recorded ${binCode}'s current snapshot: ${evidenceUrl}`);
+  console.log(`Recorded ${binCode}'s current accepted snapshot: ${evidenceUrl}`);
 }
 
 main()

@@ -23,7 +23,24 @@ import type {
   WarehouseOverview,
 } from "./dashboard-types";
 import { confidencePercent } from "./audit-types";
+import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
+
+/**
+ * While AUDIT_CAPTURE_MODE=SIMULATION is active for a bin set up for it, the
+ * dashboard shows that bin's curated demo baseline image instead of
+ * whatever a real (or previously simulated) photo happens to be on file —
+ * both the rack's "latest snapshot" and the bin-detail card's per-part
+ * thumbnail. Flipping back to PROD immediately goes back to reporting the
+ * real dynamically-computed photo, exactly as this file's own "read only,
+ * reports what IS" rule intends: while simulating, the demo baseline IS
+ * what this bin currently represents.
+ */
+function simulationSnapshotOverride(binCode: string): string | null {
+  return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode)
+    ? `/audit-simulation/${binCode}/snapshot.jpg`
+    : null;
+}
 
 /** Enough history to read the last few operations at a glance, not an audit log. */
 export const DEFAULT_MOVEMENT_LIMIT = 8;
@@ -150,6 +167,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
   ]);
 
   const binViews: BinView[] = bins.map((bin) => {
+    const simulationImageUrl = simulationSnapshotOverride(bin.code);
     const contents = bin.inventory
       // A zero row is bookkeeping left behind by a retrieval, not stock. It
       // must not draw a part into a bin that is physically empty.
@@ -160,8 +178,20 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
         canonicalName: row.part.canonicalName,
         quantity: row.quantity,
         catalogImageUrl: row.part.imageUrl,
-        imageUrl: putawayImages.get(`${row.partId}:${bin.id}`) ?? null,
+        imageUrl: simulationImageUrl ?? putawayImages.get(`${row.partId}:${bin.id}`) ?? null,
       }));
+
+    const realSnapshot = latestBinSnapshots.get(bin.id) ?? null;
+    const latestSnapshot = simulationImageUrl
+      ? {
+          imageUrl: simulationImageUrl,
+          capturedAt: realSnapshot?.capturedAt ?? Date.now(),
+          source: "INVENTORY_AUDIT" as const,
+          recordId: realSnapshot?.recordId ?? "simulation-baseline",
+          status: "VERIFIED",
+          confidencePercent: 100,
+        }
+      : realSnapshot;
 
     return {
       binId: bin.id,
@@ -171,7 +201,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       capacity: bin.capacity,
       contents,
       totalQuantity: contents.reduce((sum, item) => sum + item.quantity, 0),
-      latestSnapshot: latestBinSnapshots.get(bin.id) ?? null,
+      latestSnapshot,
     };
   });
 
@@ -249,13 +279,20 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
           previousQuantity: audit.previousQuantity,
           newQuantity: audit.newQuantity,
           evidenceUrl: audit.evidenceUrl,
-          // Confirmable only with a known part and a countable observation —
-          // a "physical stock, no catalog record" flag has neither and stays
-          // a read-only entry here.
+          priorEvidenceUrl: audit.priorEvidenceUrl,
+          // Reviewable (shows the comparison + a Dismiss option) with a
+          // known part and a countable observation — a "physical stock, no
+          // catalog record" flag has neither and stays a read-only entry.
           awaitingConfirmation:
             audit.status === "REVIEW_REQUIRED" &&
             audit.expectedPartId !== null &&
             audit.observedQuantity !== null,
+          // Applicable only when the observation itself is trustworthy —
+          // audit_pending_confirmation is the sole reason that means
+          // "confident and safe, just lower than what's on file." Every
+          // other REVIEW_REQUIRED reason means the count can't be trusted at
+          // all, so applying it would defeat the point of flagging it.
+          canApply: audit.errorCode === "audit_pending_confirmation",
           reason: audit.errorCode,
         })),
       }

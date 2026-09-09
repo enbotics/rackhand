@@ -11,15 +11,8 @@
  *
  *   Strands tool -> PutawayService -> catalog matcher + database + GantryController
  *
- * TWO PATHS, ONE TOOL. A scan attached to this request (see below) means a
- * camera-verified count exists — new intake, or a checked-out return the
- * operator wants reconciled against a fresh observed quantity — and that
- * always goes through the scan-based graph, exactly as before. No scan
- * attached means there is nothing new to verify, so the only thing this tool
- * can still do is hand a CHECKED_OUT bin straight back to its own slot for
- * the exact quantity already on file — see returnCheckedOutBin. It can never
- * do anything else without a scan: no new intake, no quantity the operator
- * merely states, no relocation to a different bin. Those all need a camera.
+ * Both paths require one fresh manual verification after approval. The image
+ * count is compared with recorded stock under deterministic confidence rules.
  *
  * WHY THERE IS NO `scanResult` PARAMETER. The suggested design took the scan
  * as a tool argument. That would let the model author the measurements the
@@ -61,24 +54,21 @@ export const executePutawayInputSchema = z.object({
     .max(20)
     .optional()
     .describe(
-      "Which CHECKED_OUT bin to return, e.g. \"B2-01\". Only meaningful WITHOUT an attached scan (a plain return, no fresh count). Omit it if exactly one bin is checked out; required if more than one is.",
+      "Which CHECKED_OUT bin to return, e.g. \"B2-01\". Use for a known checked-out return even if an earlier scan remains attached. A fresh manual photo compares the current visible count with recorded stock. Omit it if exactly one bin is checked out; required if more than one is.",
     ),
 });
 
 export const executePutawayTool = tool({
   name: EXECUTE_PUTAWAY_TOOL_NAME,
   description:
-    "Put away the camera-verified part attached to this request, OR — with no scan attached — return an already-known CHECKED_OUT bin to its own slot for the exact quantity on file, no camera step required. THIS TOOL CHANGES WAREHOUSE STATE AND RUNS THE GANTRY. With a scan: uses the automatic camera count and photo, returns a matching CHECKED_OUT bin by default and reconciles its preserved quantity against the new count, safely relocates it to an explicitly selected empty AVAILABLE slot, or chooses a compatible capacity-aware shelf bin for new intake. Without a scan: only a plain, unreconciled return of a CHECKED_OUT bin is possible — pass binCode when more than one bin is checked out. Use only for an explicit physical putaway/return request. ok:true means both movement and database commit completed.",
+    "Call this tool immediately for an explicit putaway or CHECKED_OUT-bin return; never ask for a photo in chat. After client HITL it opens a manual comparison flow. One fresh image is counted at strictly over 80% confidence: equal proceeds, higher auto-updates after movement, lower requires human confirmation, and foreign objects/low confidence/occlusion/capacity overflow require a fresh retry. The gantry runs only after acceptance. ok:true means movement and database commit completed.",
   inputSchema: executePutawayInputSchema,
   callback: async ({ destinationBinCode, binCode }) => {
     // The scan the API validated — never one the model wrote.
     const scanResult = getContextScanResult();
 
-    if (!scanResult) {
-      // No camera evidence exists for this request, so the only thing left
-      // that a putaway call can mean is handing back a bin the warehouse
-      // already knows is checked out — never new intake, never a quantity
-      // the model or operator merely states.
+    if (binCode || !scanResult) {
+      // The service requests a fresh manual snapshot; historical images cannot bypass it.
       try {
         const result = await returnCheckedOutBin({ binCode });
         logTool(

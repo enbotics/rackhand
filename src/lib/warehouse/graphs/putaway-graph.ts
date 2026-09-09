@@ -62,7 +62,7 @@ export const PUTAWAY_GRAPH_CONFIG = {
   /** Comfortably above the six nodes, nowhere near a runaway. */
   maxSteps: 12,
   /** Wall-clock ceiling for the whole workflow. */
-  timeout: 60_000,
+  timeout: 180_000,
   /** The chain is strictly sequential; state it rather than relying on topology. */
   maxConcurrency: 1,
 } as const;

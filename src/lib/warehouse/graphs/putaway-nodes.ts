@@ -162,7 +162,7 @@ export class PutawayValidateNode extends WorkflowNode<PutawayGraphRequest, Putaw
       return {
         kind: "BLOCKED",
         reason: "photo_required",
-        message: "A fresh automatic camera photo is required before putaway.",
+        message: "An identified intake scan is required before putaway.",
       };
     }
 
