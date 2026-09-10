@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  WAREHOUSE_SESSION_HEADER,
+  WAREHOUSE_SESSION_QUERY,
+} from "@/lib/warehouse/workflow-session";
+
 export type CameraCaptureStatus =
   | "PENDING"
   | "CLAIMED"
@@ -16,6 +21,9 @@ export interface CameraCaptureJobView<TResult = unknown> {
   purpose: string;
 
   status: CameraCaptureStatus;
+
+  /** 0 while the Pi owns it; 1+ while waiting in the shared FIFO. */
+  queuePosition: number | null;
 
   evidenceUrl: string | null;
 
@@ -48,6 +56,7 @@ interface CreateCaptureResponse {
   status: CameraCaptureStatus;
   requestedAt: string;
   expiresAt: string | null;
+  queuePosition: number | null;
 }
 
 export class CameraCaptureClientError extends Error {
@@ -60,9 +69,12 @@ export class CameraCaptureClientError extends Error {
   }
 }
 
-export async function createCameraCapture(): Promise<CreateCaptureResponse> {
+export async function createCameraCapture(
+  ownerSessionId: string,
+): Promise<CreateCaptureResponse> {
   const response = await fetch("/api/camera/captures", {
     method: "POST",
+    headers: { [WAREHOUSE_SESSION_HEADER]: ownerSessionId },
   });
 
   const body = await response.json().catch(() => ({}));
@@ -86,11 +98,13 @@ export async function createCameraCapture(): Promise<CreateCaptureResponse> {
 
 export async function getCameraCapture<TResult = unknown>(
   captureJobId: string,
+  ownerSessionId: string,
 ): Promise<CameraCaptureJobView<TResult>> {
   const response = await fetch(
     `/api/camera/captures/${encodeURIComponent(captureJobId)}`,
     {
       cache: "no-store",
+      headers: { [WAREHOUSE_SESSION_HEADER]: ownerSessionId },
     },
   );
 
@@ -115,17 +129,19 @@ export async function getCameraCapture<TResult = unknown>(
 
 export async function waitForCameraCapture<TResult = unknown>(
   captureJobId: string,
-  options?: {
+  options: {
+    sessionId: string;
     signal?: AbortSignal;
     timeoutMs?: number;
     onStatus?: (job: CameraCaptureJobView<TResult>) => void;
   },
 ): Promise<CameraCaptureJobView<TResult>> {
   const {
+    sessionId,
     signal,
     timeoutMs,
     onStatus,
-  } = options ?? {};
+  } = options;
 
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -134,7 +150,7 @@ export async function waitForCameraCapture<TResult = unknown>(
     }
 
     const source = new EventSource(
-      `/api/camera/captures/${encodeURIComponent(captureJobId)}/events`,
+      `/api/camera/captures/${encodeURIComponent(captureJobId)}/events?${WAREHOUSE_SESSION_QUERY}=${encodeURIComponent(sessionId)}`,
     );
     let settled = false;
     const cleanup = () => {

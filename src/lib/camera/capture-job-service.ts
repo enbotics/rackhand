@@ -58,6 +58,9 @@ const MAX_CLAIM_ATTEMPTS = 3;
 export interface CreateCaptureJobInput {
   purpose: CameraCapturePurpose;
 
+  /** Browser/operator workflow that alone may read this job's result. */
+  ownerSessionId?: string | null;
+
   /**
    * Optional audit relation.
    *
@@ -229,6 +232,7 @@ export async function createCaptureJob(input: CreateCaptureJobInput) {
       id: randomUUID(),
       purpose: input.purpose,
       deviceId,
+      ownerSessionId: input.ownerSessionId ?? null,
 
       status: "PENDING",
 
@@ -271,6 +275,21 @@ export async function requireCaptureJob(jobId: string) {
     );
   }
 
+  return job;
+}
+
+/** Browser ownership check; device-authenticated worker paths do not use it. */
+export async function requireOwnedCaptureJob(
+  jobId: string,
+  ownerSessionId: string,
+) {
+  const job = await requireCaptureJob(jobId);
+  if (job.ownerSessionId !== ownerSessionId) {
+    throw new CameraCaptureJobError(
+      "camera_job_not_owned",
+      "This camera capture belongs to another operator session.",
+    );
+  }
   return job;
 }
 
@@ -368,7 +387,16 @@ export async function claimNextCaptureJob(deviceId: string) {
   // Opportunistically clean up timed-out jobs first.
   await expireStaleCaptureJobs(now);
 
+  // One physical sensor may have many queued owners, but only one active
+  // capture lease. This also protects against accidentally running two Pi
+  // workers with the same device credentials.
   for (let attempt = 0; attempt < MAX_CLAIM_ATTEMPTS; attempt += 1) {
+    const activeClaim = await prisma.cameraCaptureJob.findFirst({
+      where: { deviceId: normalizedDeviceId, status: "CLAIMED" },
+      select: { id: true },
+    });
+    if (activeClaim) return null;
+
     const candidate = await prisma.cameraCaptureJob.findFirst({
       where: {
         deviceId: normalizedDeviceId,
@@ -812,8 +840,35 @@ export async function failDeviceCaptureJob(
  *
  * Don't return the Prisma object directly from an API route.
  */
-export async function getCaptureJobStatus(jobId: string) {
-  const job = await requireCaptureJob(jobId);
+export async function getCaptureJobStatus(
+  jobId: string,
+  ownerSessionId?: string,
+) {
+  const job = ownerSessionId
+    ? await requireOwnedCaptureJob(jobId, ownerSessionId)
+    : await requireCaptureJob(jobId);
+
+  let queuePosition: number | null = null;
+  if (job.status === "CLAIMED") {
+    queuePosition = 0;
+  } else if (job.status === "PENDING") {
+    const [active, ahead] = await Promise.all([
+      prisma.cameraCaptureJob.count({
+        where: { deviceId: job.deviceId, status: "CLAIMED" },
+      }),
+      prisma.cameraCaptureJob.count({
+        where: {
+          deviceId: job.deviceId,
+          status: "PENDING",
+          OR: [
+            { requestedAt: { lt: job.requestedAt } },
+            { requestedAt: job.requestedAt, id: { lt: job.id } },
+          ],
+        },
+      }),
+    ]);
+    queuePosition = active + ahead + 1;
+  }
 
   let result: unknown = null;
 
@@ -835,6 +890,9 @@ export async function getCaptureJobStatus(jobId: string) {
     purpose: job.purpose as CameraCapturePurpose,
 
     status: job.status as CameraCaptureStatus,
+
+    /** 0 means the Pi owns it now; 1+ is its FIFO waiting position. */
+    queuePosition,
 
     evidenceUrl: job.evidenceUrl,
 

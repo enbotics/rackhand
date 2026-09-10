@@ -3,6 +3,7 @@ import {
   captureProcessingHeartbeatMilliseconds,
   createCaptureJob,
 } from "@/lib/camera/capture-job-service";
+import { readCameraCapture } from "@/lib/camera/storage";
 import { prisma } from "./db";
 import { confidencePercent } from "./audit-types";
 import {
@@ -37,10 +38,16 @@ import {
   type PutawayCaptureOutcome,
   type PutawayCaptureView,
 } from "./putaway-capture-types";
+import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
 
 export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN"];
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
-const RETRYABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE", "RETRY_REQUIRED"];
+const RETRYABLE_CAPTURE_STATUSES = [
+  "READY",
+  "REVIEW_DECREASE",
+  "RETRY_REQUIRED",
+  "ANALYSIS_FAILED",
+];
 const RECOVERABLE_CAPTURE_STATUSES = ["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES];
 
 function isPutawaySimulationMode(binCode: string): boolean {
@@ -104,6 +111,7 @@ function persistedCaptureOutcome(input: {
   foreignObjectSuspected: boolean | null;
   movement: { destinationBin: { capacity: number } | null };
 }): PutawayCaptureOutcome | null {
+  if (input.status === "ANALYSIS_FAILED") return "ANALYSIS_FAILED";
   if (input.status === "REVIEW_DECREASE") return "REVIEW_DECREASE";
   if (input.status === "READY") {
     return (input.observedQuantity ?? input.expectedQuantity) > input.expectedQuantity
@@ -147,7 +155,7 @@ async function latestSnapshotBefore(binId: string, movementId: string): Promise<
     : audit.evidenceUrl;
 }
 
-export async function pendingPutawayCapture() {
+export async function pendingPutawayCapture(ownerSessionId: string) {
   await recoverAbandonedPutaways();
   const capture = await prisma.putawayCaptureRequest.findFirst({
     where: {
@@ -155,6 +163,7 @@ export async function pendingPutawayCapture() {
       // retries. Those review states still own the bin and must be surfaced
       // again; otherwise the server waits forever while the UI sees nothing.
       status: { in: RECOVERABLE_CAPTURE_STATUSES },
+      ownerSessionId,
       movement: { status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] } },
     },
     include: { movement: { include: { destinationBin: true } } },
@@ -180,7 +189,10 @@ export async function pendingPutawayCapture() {
 }
 
 /** Analyze the next simulation fixture, or request one physical Pi frame. */
-export async function requestPutawayCameraCapture(id: string): Promise<
+export async function requestPutawayCameraCapture(
+  id: string,
+  ownerSessionId?: string,
+): Promise<
   | { captureMode: "SIMULATION"; result: PutawayCaptureView }
   | { captureMode: "PROD"; job: Awaited<ReturnType<typeof createCaptureJob>> }
 > {
@@ -188,6 +200,9 @@ export async function requestPutawayCameraCapture(id: string): Promise<
     where: { id },
     include: { movement: { include: { destinationBin: true } } },
   });
+  if (capture && ownerSessionId && capture.ownerSessionId !== ownerSessionId) {
+    throw new Error("This putaway verification belongs to another operator session.");
+  }
   if (!capture || capture.status !== "WAITING_FOR_CAMERA") {
     throw new Error("This putaway verification is stale or no longer pending.");
   }
@@ -229,6 +244,7 @@ export async function requestPutawayCameraCapture(id: string): Promise<
   });
   const job = existing ?? await createCaptureJob({
     purpose: "PUTAWAY_VERIFICATION",
+    ownerSessionId: capture.ownerSessionId,
     workflowCaptureId: id,
     workflowAttempt: capture.attempt,
   });
@@ -268,6 +284,7 @@ export async function requirePutawayVerification(
   const request = await prisma.putawayCaptureRequest.create({
     data: {
       movementId,
+      ownerSessionId: getContextWorkflowSessionId(),
       expectedQuantity,
       previousImageUrl: simulatedBaseline
         ?? await latestSnapshotBefore(movement.destinationBin.id, movementId),
@@ -331,7 +348,7 @@ export async function requirePutawayVerification(
   }
 }
 
-export async function processPutawayCameraCapture(id: string, input: {
+interface PutawayAnalysisInput {
   imageBuffer: Buffer;
   evidenceUrl: string;
   imageWidth: number;
@@ -340,7 +357,20 @@ export async function processPutawayCameraCapture(id: string, input: {
   requestedAt: Date;
   workflowAttempt: number;
   captureMode?: "PROD" | "SIMULATION";
-}): Promise<PutawayCaptureView> {
+}
+
+function analysisFailureNote(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim()
+    ? error.message.trim().replace(/\s+/g, " ").slice(0, 360)
+    : "unknown_analysis_error";
+  return `The saved photo could not be analyzed (${detail}). Retry analysis without taking another photo.`;
+}
+
+async function analyzePutawayCapture(
+  id: string,
+  input: PutawayAnalysisInput,
+  claimFrom: "WAITING_FOR_CAMERA" | "ANALYSIS_FAILED",
+): Promise<PutawayCaptureView> {
   const captureMode = input.captureMode ?? "PROD";
   if (!Buffer.isBuffer(input.imageBuffer) || input.imageBuffer.length === 0
     || !input.evidenceUrl
@@ -350,15 +380,16 @@ export async function processPutawayCameraCapture(id: string, input: {
     throw new Error("A fresh capture frame and valid metadata are required.");
   }
   const claimed = await prisma.putawayCaptureRequest.updateMany({
-    where: { id, status: "WAITING_FOR_CAMERA", attempt: input.workflowAttempt },
+    where: { id, status: claimFrom, attempt: input.workflowAttempt },
     data: {
       status: "CAPTURING",
+      notes: null,
       expiresAt: captureProcessingDeadline(),
     },
   });
   if (claimed.count !== 1) throw new Error("This capture is stale or no longer pending.");
 
-  let imageUrl: string | null = null;
+  const imageUrl = input.evidenceUrl;
   try {
     const capture = await prisma.putawayCaptureRequest.findUniqueOrThrow({
       where: { id },
@@ -373,7 +404,6 @@ export async function processPutawayCameraCapture(id: string, input: {
       throw new Error("This capture is stale or no longer pending.");
     }
 
-    imageUrl = input.evidenceUrl;
     const part = movement.part;
     const leaseHeartbeat = setInterval(() => {
       void prisma.putawayCaptureRequest.updateMany({
@@ -431,15 +461,26 @@ export async function processPutawayCameraCapture(id: string, input: {
       include: { movement: { include: { destinationBin: true } } },
     });
     return captureView(updated, outcome, captureMode);
-  } catch {
+  } catch (error) {
+    console.error(`[putaway-verification] Analysis failed for ${id}:`, error);
     await prisma.putawayCaptureRequest.updateMany({
       where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
       data: {
-        status: "RETRY_REQUIRED",
+        status: "ANALYSIS_FAILED",
         evidenceUrl: imageUrl,
+        imageWidth: input.imageWidth,
+        imageHeight: input.imageHeight,
+        capturedAt: input.capturedAt,
+        observedQuantity: null,
+        countConfidence: null,
+        countable: null,
+        expectedPartPresent: null,
+        foreignObjectSuspected: null,
+        foreignObjectsJson: null,
+        occlusion: null,
         notes: captureMode === "SIMULATION"
-          ? "The simulated frame could not be analyzed. Run the next simulated capture."
-          : "The image could not be analyzed. Take a fresh photo and retry.",
+          ? "The simulated frame could not be analyzed. Run the next simulation."
+          : analysisFailureNote(error),
         expiresAt: null,
       },
     });
@@ -447,11 +488,79 @@ export async function processPutawayCameraCapture(id: string, input: {
       where: { id },
       include: { movement: { include: { destinationBin: true } } },
     });
-    return captureView(failed, "LOW_CONFIDENCE", captureMode);
+    return captureView(failed, "ANALYSIS_FAILED", captureMode);
   }
 }
 
-export async function decidePutawayCapture(id: string, decision: PutawayCaptureDecision) {
+export function processPutawayCameraCapture(
+  id: string,
+  input: PutawayAnalysisInput,
+): Promise<PutawayCaptureView> {
+  return analyzePutawayCapture(id, input, "WAITING_FOR_CAMERA");
+}
+
+/** Re-runs putaway inspection against the durable JPEG without recapturing. */
+export async function reanalyzePutawayCapture(
+  id: string,
+  ownerSessionId: string,
+): Promise<PutawayCaptureView> {
+  const capture = await prisma.putawayCaptureRequest.findUnique({
+    where: { id },
+    include: { movement: { include: { destinationBin: true } } },
+  });
+  if (!capture || capture.ownerSessionId !== ownerSessionId) {
+    throw new Error("This putaway verification belongs to another operator session.");
+  }
+  if (
+    capture.status !== "ANALYSIS_FAILED" ||
+    !capture.evidenceUrl ||
+    !capture.capturedAt ||
+    !capture.imageWidth ||
+    !capture.imageHeight
+  ) {
+    throw new Error("This putaway has no failed saved frame to analyze again.");
+  }
+  const job = await prisma.cameraCaptureJob.findFirst({
+    where: {
+      purpose: "PUTAWAY_VERIFICATION",
+      workflowCaptureId: id,
+      workflowAttempt: capture.attempt,
+      evidenceUrl: capture.evidenceUrl,
+    },
+    orderBy: { requestedAt: "desc" },
+  });
+  if (!job) throw new Error("The saved camera job could not be found.");
+
+  return analyzePutawayCapture(
+    id,
+    {
+      imageBuffer: await readCameraCapture(job.id),
+      evidenceUrl: capture.evidenceUrl,
+      imageWidth: capture.imageWidth,
+      imageHeight: capture.imageHeight,
+      capturedAt: capture.capturedAt,
+      requestedAt: job.requestedAt,
+      workflowAttempt: capture.attempt,
+      captureMode: "PROD",
+    },
+    "ANALYSIS_FAILED",
+  );
+}
+
+export async function decidePutawayCapture(
+  id: string,
+  decision: PutawayCaptureDecision,
+  ownerSessionId?: string,
+) {
+  if (ownerSessionId) {
+    const owner = await prisma.putawayCaptureRequest.findUnique({
+      where: { id },
+      select: { ownerSessionId: true },
+    });
+    if (!owner || owner.ownerSessionId !== ownerSessionId) {
+      throw new Error("This putaway verification belongs to another operator session.");
+    }
+  }
   if (decision === "CANCEL") {
     // Give the operator a real way out of a stuck comparison (e.g. every
     // retry keeps landing on LOW_CONFIDENCE/FOREIGN_OBJECTS, offering only

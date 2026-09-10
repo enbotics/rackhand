@@ -3,24 +3,15 @@ import { NextResponse } from "next/server";
 import {
   CameraCaptureJobError,
   expireStaleCaptureJobs,
-  requireCaptureJob,
+  getCaptureJobStatus,
 } from "@/lib/camera/capture-job-service";
+import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function parseResult(value: string | null): unknown {
-  if (!value) return null;
-
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return null;
-  }
-}
-
 export async function GET(
-  _request: Request,
+  request: Request,
   context: {
     params: Promise<{
       id: string;
@@ -28,48 +19,32 @@ export async function GET(
   },
 ) {
   try {
+    const ownerSessionId = warehouseSessionIdFromRequest(request);
+    if (!ownerSessionId) {
+      return NextResponse.json(
+        { error: { code: "warehouse_session_required", message: "A valid warehouse session is required." } },
+        { status: 400 },
+      );
+    }
     const { id } = await context.params;
 
     // Status reads also perform timeout recovery, so a stopped Pi worker is
     // not required to poll again before the browser can observe a terminal job.
     await expireStaleCaptureJobs();
-    const job = await requireCaptureJob(id);
+    const job = await getCaptureJobStatus(id, ownerSessionId);
 
     return NextResponse.json({
+      ...job,
+      id: undefined,
       captureJobId: job.id,
-      purpose: job.purpose,
-      status: job.status,
-
-      evidenceUrl: job.evidenceUrl,
-
-      imageWidth: job.imageWidth,
-
-      imageHeight: job.imageHeight,
-
-      requestedAt: job.requestedAt.toISOString(),
-
-      claimedAt: job.claimedAt?.toISOString() ?? null,
-
-      capturedAt: job.capturedAt?.toISOString() ?? null,
-
-      uploadedAt: job.uploadedAt?.toISOString() ?? null,
-
-      completedAt: job.completedAt?.toISOString() ?? null,
-
-      expiresAt: job.expiresAt?.toISOString() ?? null,
-
-      result: parseResult(job.resultJson),
-
-      error: job.errorCode
-        ? {
-            code: job.errorCode,
-            message: job.errorMessage ?? "Camera capture failed.",
-          }
-        : null,
     });
   } catch (error) {
     if (error instanceof CameraCaptureJobError) {
-      const status = error.code === "camera_job_not_found" ? 404 : 409;
+      const status = error.code === "camera_job_not_found"
+        ? 404
+        : error.code === "camera_job_not_owned"
+          ? 403
+          : 409;
 
       return NextResponse.json(
         {

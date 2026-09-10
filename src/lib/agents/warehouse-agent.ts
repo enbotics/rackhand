@@ -576,7 +576,14 @@ export async function invokeWarehouseAgent(
     // still exists — outside it, the store is gone and the graphs' progress
     // with it.
     const { result, workflows } = await runWithRequestContext(
-      { scanResult, scanImageDataUrl, requestId, catalogResolutionId, traceId },
+      {
+        scanResult,
+        scanImageDataUrl,
+        requestId,
+        catalogResolutionId,
+        traceId,
+        workflowSessionId: sessionId,
+      },
       async () => {
         const invocation = await agent.invoke(prompt, { invocationState });
         return { result: invocation, workflows: getContextWorkflows() };
@@ -1089,6 +1096,7 @@ export async function resumeWarehouseAgent(
         scanImageDataUrl: parked.scanImageDataUrl,
         requestId: parked.requestId,
         catalogResolutionId: parked.catalogResolutionId,
+        workflowSessionId: parked.sessionId,
         // The SAME trace as the interrupted request. Clicking APPROVE
         // continues one timeline; it does not begin a second one.
         traceId,

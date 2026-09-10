@@ -3,6 +3,7 @@ import {
   captureProcessingHeartbeatMilliseconds,
   createCaptureJob,
 } from "@/lib/camera/capture-job-service";
+import { readCameraCapture } from "@/lib/camera/storage";
 import { getGantryController } from "@/lib/gantry/factory";
 import { prisma } from "./db";
 import { confidencePercent } from "./audit-types";
@@ -35,6 +36,7 @@ import {
   type RetrievalCaptureOutcome,
   type RetrievalCaptureView,
 } from "./retrieval-capture-types";
+import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
 
 /**
  * Marker written to Movement.destinationLocation while verification is in
@@ -46,7 +48,16 @@ import {
  */
 export const RETRIEVAL_CAPTURE_MARKER = "VERIFY_RETRIEVAL";
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
-const RETRYABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE", "RETRY_REQUIRED"];
+const RETRYABLE_CAPTURE_STATUSES = [
+  "READY",
+  "REVIEW_DECREASE",
+  "RETRY_REQUIRED",
+  "ANALYSIS_FAILED",
+];
+const RECOVERABLE_CAPTURE_STATUSES = [
+  "WAITING_FOR_CAMERA",
+  ...RETRYABLE_CAPTURE_STATUSES,
+];
 
 function isRetrievalSimulationMode(binCode: string): boolean {
   return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode);
@@ -102,6 +113,32 @@ function captureView(input: {
   };
 }
 
+function persistedCaptureOutcome(input: {
+  status: string;
+  expectedQuantity: number;
+  observedQuantity: number | null;
+  foreignObjectSuspected: boolean | null;
+  movement: { sourceBin: { capacity: number } | null };
+}): RetrievalCaptureOutcome | null {
+  if (input.status === "ANALYSIS_FAILED") return "ANALYSIS_FAILED";
+  if (input.status === "REVIEW_DECREASE") return "REVIEW_DECREASE";
+  if (input.status === "READY") {
+    return (input.observedQuantity ?? input.expectedQuantity) > input.expectedQuantity
+      ? "INCREASED"
+      : "READY";
+  }
+  if (input.status !== "RETRY_REQUIRED") return null;
+  if (input.foreignObjectSuspected) return "FOREIGN_OBJECTS";
+  if (
+    input.observedQuantity !== null &&
+    input.movement.sourceBin &&
+    input.observedQuantity > input.movement.sourceBin.capacity
+  ) {
+    return "CAPACITY_EXCEEDED";
+  }
+  return "LOW_CONFIDENCE";
+}
+
 async function latestSnapshotBefore(binId: string, movementId: string): Promise<string | null> {
   const [movement, audit] = await Promise.all([
     prisma.movement.findFirst({
@@ -127,30 +164,37 @@ async function latestSnapshotBefore(binId: string, movementId: string): Promise<
     : audit.evidenceUrl;
 }
 
-export async function pendingRetrievalCapture() {
+export async function pendingRetrievalCapture(ownerSessionId: string) {
   const capture = await prisma.retrievalCaptureRequest.findFirst({
     where: {
-      status: "WAITING_FOR_CAMERA",
+      status: { in: RECOVERABLE_CAPTURE_STATUSES },
+      ownerSessionId,
       movement: { status: "RUNNING" },
     },
     include: { movement: { include: { sourceBin: true } } },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
   });
-  return capture
-    ? {
-        captureId: capture.id,
-        binCode: capture.movement.sourceBin?.code ?? "bin",
-        purpose: "RETRIEVAL" as const,
-        captureMode: isSimulatedWorkflowCapture(capture.id)
-          || isRetrievalSimulationMode(capture.movement.sourceBin?.code ?? "")
-          ? "SIMULATION" as const
-          : "PROD" as const,
-      }
-    : { captureId: null };
+  if (!capture) return { captureId: null };
+
+  const captureMode = isSimulatedWorkflowCapture(capture.id)
+    || isRetrievalSimulationMode(capture.movement.sourceBin?.code ?? "")
+    ? "SIMULATION" as const
+    : "PROD" as const;
+  const outcome = persistedCaptureOutcome(capture);
+  return {
+    captureId: capture.id,
+    binCode: capture.movement.sourceBin?.code ?? "bin",
+    purpose: "RETRIEVAL" as const,
+    captureMode,
+    analysis: outcome ? captureView(capture, outcome, captureMode) : null,
+  };
 }
 
 /** Analyze the next simulation fixture, or request one physical Pi frame. */
-export async function requestRetrievalCameraCapture(id: string): Promise<
+export async function requestRetrievalCameraCapture(
+  id: string,
+  ownerSessionId?: string,
+): Promise<
   | { captureMode: "SIMULATION"; result: RetrievalCaptureView }
   | { captureMode: "PROD"; job: Awaited<ReturnType<typeof createCaptureJob>> }
 > {
@@ -158,6 +202,9 @@ export async function requestRetrievalCameraCapture(id: string): Promise<
     where: { id },
     include: { movement: { include: { sourceBin: true } } },
   });
+  if (capture && ownerSessionId && capture.ownerSessionId !== ownerSessionId) {
+    throw new Error("This retrieval verification belongs to another operator session.");
+  }
   if (!capture || capture.status !== "WAITING_FOR_CAMERA") {
     throw new Error("This retrieval verification is stale or no longer pending.");
   }
@@ -204,6 +251,7 @@ export async function requestRetrievalCameraCapture(id: string): Promise<
   });
   const job = existing ?? await createCaptureJob({
     purpose: "RETRIEVAL_VERIFICATION",
+    ownerSessionId: capture.ownerSessionId,
     workflowCaptureId: id,
     workflowAttempt: capture.attempt,
   });
@@ -244,6 +292,7 @@ export async function requireRetrievalVerification(movementId: string) {
   const request = await prisma.retrievalCaptureRequest.create({
     data: {
       movementId,
+      ownerSessionId: getContextWorkflowSessionId(),
       expectedQuantity,
       previousImageUrl: simulatedBaseline
         ?? await latestSnapshotBefore(movement.sourceBin.id, movementId),
@@ -304,7 +353,7 @@ export async function requireRetrievalVerification(movementId: string) {
   }
 }
 
-export async function processRetrievalCameraCapture(id: string, input: {
+interface RetrievalAnalysisInput {
   imageBuffer: Buffer;
   evidenceUrl: string;
   imageWidth: number;
@@ -313,7 +362,20 @@ export async function processRetrievalCameraCapture(id: string, input: {
   requestedAt: Date;
   workflowAttempt: number;
   captureMode?: "PROD" | "SIMULATION";
-}): Promise<RetrievalCaptureView> {
+}
+
+function analysisFailureNote(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim()
+    ? error.message.trim().replace(/\s+/g, " ").slice(0, 360)
+    : "unknown_analysis_error";
+  return `The saved photo could not be analyzed (${detail}). Retry analysis without taking another photo.`;
+}
+
+async function analyzeRetrievalCapture(
+  id: string,
+  input: RetrievalAnalysisInput,
+  claimFrom: "WAITING_FOR_CAMERA" | "ANALYSIS_FAILED",
+): Promise<RetrievalCaptureView> {
   const captureMode = input.captureMode ?? "PROD";
   if (!Buffer.isBuffer(input.imageBuffer) || input.imageBuffer.length === 0
     || !input.evidenceUrl
@@ -322,18 +384,23 @@ export async function processRetrievalCameraCapture(id: string, input: {
     || !Number.isFinite(input.capturedAt.getTime())) {
     throw new Error("A fresh capture frame and valid metadata are required.");
   }
-  const gantry = await getGantryController().getStatus();
-  if (gantry.state !== "IDLE" || gantry.activeOperationId) throw new Error("Wait for the gantry to stop before capture.");
+  if (claimFrom === "WAITING_FOR_CAMERA") {
+    const gantry = await getGantryController().getStatus();
+    if (gantry.state !== "IDLE" || gantry.activeOperationId) {
+      throw new Error("Wait for the gantry to stop before capture.");
+    }
+  }
   const claimed = await prisma.retrievalCaptureRequest.updateMany({
-    where: { id, status: "WAITING_FOR_CAMERA", attempt: input.workflowAttempt },
+    where: { id, status: claimFrom, attempt: input.workflowAttempt },
     data: {
       status: "CAPTURING",
+      notes: null,
       expiresAt: captureProcessingDeadline(),
     },
   });
   if (claimed.count !== 1) throw new Error("This capture is stale or no longer pending.");
 
-  let imageUrl: string | null = null;
+  const imageUrl = input.evidenceUrl;
   try {
     const capture = await prisma.retrievalCaptureRequest.findUniqueOrThrow({
       where: { id },
@@ -348,7 +415,6 @@ export async function processRetrievalCameraCapture(id: string, input: {
       throw new Error("This capture is stale or no longer pending.");
     }
 
-    imageUrl = input.evidenceUrl;
     const part = movement.part;
     const leaseHeartbeat = setInterval(() => {
       void prisma.retrievalCaptureRequest.updateMany({
@@ -407,14 +473,25 @@ export async function processRetrievalCameraCapture(id: string, input: {
     });
     return captureView(updated, outcome, captureMode);
   } catch (error) {
+    console.error(`[retrieval-verification] Analysis failed for ${id}:`, error);
     await prisma.retrievalCaptureRequest.updateMany({
       where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
       data: {
-        status: "RETRY_REQUIRED",
+        status: "ANALYSIS_FAILED",
         evidenceUrl: imageUrl,
+        imageWidth: input.imageWidth,
+        imageHeight: input.imageHeight,
+        capturedAt: input.capturedAt,
+        observedQuantity: null,
+        countConfidence: null,
+        countable: null,
+        expectedPartPresent: null,
+        foreignObjectSuspected: null,
+        foreignObjectsJson: null,
+        occlusion: null,
         notes: captureMode === "SIMULATION"
-          ? "The simulated frame could not be analyzed. Run the next simulated capture."
-          : "The image could not be analyzed. Take a fresh photo and retry.",
+          ? "The simulated frame could not be analyzed. Run the next simulation."
+          : analysisFailureNote(error),
         expiresAt: null,
       },
     });
@@ -422,11 +499,80 @@ export async function processRetrievalCameraCapture(id: string, input: {
       where: { id },
       include: { movement: { include: { sourceBin: true } } },
     });
-    return captureView(failed, "LOW_CONFIDENCE", captureMode);
+    return captureView(failed, "ANALYSIS_FAILED", captureMode);
   }
 }
 
-export async function decideRetrievalCapture(id: string, decision: RetrievalCaptureDecision) {
+export function processRetrievalCameraCapture(
+  id: string,
+  input: RetrievalAnalysisInput,
+): Promise<RetrievalCaptureView> {
+  return analyzeRetrievalCapture(id, input, "WAITING_FOR_CAMERA");
+}
+
+/** Re-runs inspection against the durable JPEG without asking the Pi to recapture. */
+export async function reanalyzeRetrievalCapture(
+  id: string,
+  ownerSessionId: string,
+): Promise<RetrievalCaptureView> {
+  const capture = await prisma.retrievalCaptureRequest.findUnique({
+    where: { id },
+    include: { movement: { include: { sourceBin: true } } },
+  });
+  if (!capture || capture.ownerSessionId !== ownerSessionId) {
+    throw new Error("This retrieval verification belongs to another operator session.");
+  }
+  if (
+    capture.status !== "ANALYSIS_FAILED" ||
+    !capture.evidenceUrl ||
+    !capture.capturedAt ||
+    !capture.imageWidth ||
+    !capture.imageHeight
+  ) {
+    throw new Error("This retrieval has no failed saved frame to analyze again.");
+  }
+  const job = await prisma.cameraCaptureJob.findFirst({
+    where: {
+      purpose: "RETRIEVAL_VERIFICATION",
+      workflowCaptureId: id,
+      workflowAttempt: capture.attempt,
+      evidenceUrl: capture.evidenceUrl,
+    },
+    orderBy: { requestedAt: "desc" },
+  });
+  if (!job) throw new Error("The saved camera job could not be found.");
+
+  const imageBuffer = await readCameraCapture(job.id);
+  return analyzeRetrievalCapture(
+    id,
+    {
+      imageBuffer,
+      evidenceUrl: capture.evidenceUrl,
+      imageWidth: capture.imageWidth,
+      imageHeight: capture.imageHeight,
+      capturedAt: capture.capturedAt,
+      requestedAt: job.requestedAt,
+      workflowAttempt: capture.attempt,
+      captureMode: "PROD",
+    },
+    "ANALYSIS_FAILED",
+  );
+}
+
+export async function decideRetrievalCapture(
+  id: string,
+  decision: RetrievalCaptureDecision,
+  ownerSessionId?: string,
+) {
+  if (ownerSessionId) {
+    const owner = await prisma.retrievalCaptureRequest.findUnique({
+      where: { id },
+      select: { ownerSessionId: true },
+    });
+    if (!owner || owner.ownerSessionId !== ownerSessionId) {
+      throw new Error("This retrieval verification belongs to another operator session.");
+    }
+  }
   if (decision === "CANCEL") {
     // Give the operator a real way out of a stuck comparison (e.g. every
     // retry keeps landing on LOW_CONFIDENCE/FOREIGN_OBJECTS, offering only

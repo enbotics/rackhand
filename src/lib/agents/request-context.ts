@@ -32,6 +32,8 @@ interface RequestContext {
   scanImageDataUrl: string | null;
   /** Stable for the lifetime of one HTTP request; the default idempotency key. */
   requestId: string | null;
+  /** Browser/operator workflow that owns any camera request created this turn. */
+  workflowSessionId: string | null;
   /**
    * A confirmed human identity decision the OPERATOR attached to this request
    * (Milestone 9). It travels out-of-band for the same reason the scan does:
@@ -78,6 +80,7 @@ export function runWithRequestContext<T>(
     requestId?: string | null;
     catalogResolutionId?: string | null;
     traceId?: string | null;
+    workflowSessionId?: string | null;
   },
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -88,6 +91,7 @@ export function runWithRequestContext<T>(
       requestId: context.requestId ?? null,
       catalogResolutionId: context.catalogResolutionId ?? null,
       traceId: context.traceId ?? null,
+      workflowSessionId: context.workflowSessionId ?? null,
       workflows: [],
     },
     fn,
@@ -107,6 +111,11 @@ export function getContextScanImageDataUrl(): string | null {
 /** This request's stable id, if the API layer established one. */
 export function getContextRequestId(): string | null {
   return requestContextStorage.getStore()?.requestId ?? null;
+}
+
+/** The browser/operator workflow that owns physical UI created this turn. */
+export function getContextWorkflowSessionId(): string | null {
+  return requestContextStorage.getStore()?.workflowSessionId ?? null;
 }
 
 /** The operator's confirmed identity decision attached to this request, if any. */

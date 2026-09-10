@@ -55,6 +55,7 @@ import {
   waitForCameraCapture,
   type CameraCaptureJobView,
 } from "@/lib/camera/capture-client";
+import { warehouseBrowserSessionId } from "@/lib/warehouse/browser-session";
 
 /**
  * One operator session, shared by every page (Milestone 10, split in 13).
@@ -102,47 +103,6 @@ let turnCounter = 0;
 function nextTurnId(): string {
   turnCounter += 1;
   return `turn_${turnCounter}`;
-}
-
-/**
- * The handle that ties this chat to its server-side conversation memory.
- *
- * sessionStorage, NOT localStorage: it is scoped to this one tab and dies with
- * it. That is the lifetime the operator already sees on screen — reloading
- * clears the transcript, so the agent's memory of it should go too rather than
- * having the agent remember an exchange the operator no longer can. It also
- * means a second tab is a genuinely separate conversation, so two operators at
- * two stations never find their turns merged into one history.
- *
- * The value is opaque and carries no meaning: it authorises nothing, and every
- * word of the conversation it names was written by the server. Losing it costs
- * continuity and nothing else, which is why every failure here degrades to a
- * fresh id instead of an error.
- */
-const AGENT_SESSION_STORAGE_KEY = "ugreen:agent-session-id";
-let memorySessionId: string | null = null;
-
-function newSessionId(): string {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
-  }
-}
-
-function agentSessionId(): string {
-  try {
-    const stored = window.sessionStorage.getItem(AGENT_SESSION_STORAGE_KEY);
-    if (stored) return stored;
-    const created = newSessionId();
-    window.sessionStorage.setItem(AGENT_SESSION_STORAGE_KEY, created);
-    return created;
-  } catch {
-    // Private mode, or storage disabled. One id per page lifetime is still
-    // better memory than none, and it never leaves this tab either.
-    memorySessionId ??= newSessionId();
-    return memorySessionId;
-  }
 }
 
 const EMPTY_SCAN: ScanState = { phase: "EMPTY", scan: null, failure: null };
@@ -543,7 +503,8 @@ export function WarehouseSessionProvider({
       /*
        * 1. Create MANUAL_SCAN camera job.
        */
-      const created = await createCameraCapture();
+      const sessionId = warehouseBrowserSessionId();
+      const created = await createCameraCapture(sessionId);
 
       /*
        * 2. Wait for:
@@ -555,6 +516,7 @@ export function WarehouseSessionProvider({
        * → COMPLETED
        */
       const completed = await waitForCameraCapture<MeasurementResult>(created.captureJobId, {
+        sessionId,
         onStatus: (job) => {
           setPiCapture(job);
         },
@@ -784,7 +746,7 @@ export function WarehouseSessionProvider({
           // only conversational thing this client sends. The transcript itself
           // lives server-side; the browser never restates a turn or a tool
           // result, so it cannot tell the agent something happened that did not.
-          sessionId: agentSessionId(),
+          sessionId: warehouseBrowserSessionId(),
           // Structured, out-of-band, exactly as the Milestone 5 contract
           // defines it — never pasted into the message text.
           ...(scanResult ? { scanResult } : {}),

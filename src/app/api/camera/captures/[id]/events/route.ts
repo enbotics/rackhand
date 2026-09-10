@@ -7,6 +7,7 @@ import {
 } from "@/lib/camera/capture-job-service";
 import { CAMERA_SSE_HEADERS, sseEvent, sseHeartbeat } from "@/lib/camera/sse";
 import { createRealtimeAdminClient } from "@/lib/supabase/realtime-admin";
+import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,13 +23,26 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
+  const ownerSessionId = warehouseSessionIdFromRequest(request);
+  if (!ownerSessionId) {
+    return Response.json(
+      { error: { code: "warehouse_session_required", message: "A valid warehouse session is required." } },
+      { status: 400 },
+    );
+  }
   try {
-    await getCaptureJobStatus(id);
+    await getCaptureJobStatus(id, ownerSessionId);
   } catch (error) {
     if (error instanceof CameraCaptureJobError) {
       return Response.json(
         { error: { code: error.code, message: error.message } },
-        { status: error.code === "camera_job_not_found" ? 404 : 409 },
+        {
+          status: error.code === "camera_job_not_found"
+            ? 404
+            : error.code === "camera_job_not_owned"
+              ? 403
+              : 409,
+        },
       );
     }
     throw error;
@@ -84,7 +98,7 @@ export async function GET(
           do {
             pushAgain = false;
             await expireStaleCaptureJobs();
-            const job = await getCaptureJobStatus(id);
+            const job = await getCaptureJobStatus(id, ownerSessionId);
             if (closed) return;
             controller.enqueue(sseEvent("status", publicView(job)));
             if (expiryTimer) clearTimeout(expiryTimer);

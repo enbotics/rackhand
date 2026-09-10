@@ -153,6 +153,8 @@ model Movement {
 model PutawayCaptureRequest {
   id                     String    @id @default(cuid())
   movementId             String    @unique
+  /// Browser/operator workflow that owns this popup and its decisions.
+  ownerSessionId         String?
   /// WAITING_FOR_CAMERA | CAPTURING | READY | REVIEW_DECREASE |
   /// RETRY_REQUIRED | ACCEPTED | FAILED
   status                 String    @default("WAITING_FOR_CAMERA")
@@ -179,6 +181,7 @@ model PutawayCaptureRequest {
   movement               Movement  @relation(fields: [movementId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([ownerSessionId, status, createdAt])
 }
 
 /// Durable Raspberry Pi camera and human-review state for one retrieval.
@@ -193,6 +196,8 @@ model PutawayCaptureRequest {
 model RetrievalCaptureRequest {
   id                     String    @id @default(cuid())
   movementId             String    @unique
+  /// Browser/operator workflow that owns this popup and its decisions.
+  ownerSessionId         String?
   /// WAITING_FOR_CAMERA | CAPTURING | READY | REVIEW_DECREASE |
   /// RETRY_REQUIRED | ACCEPTED | FAILED
   status                 String    @default("WAITING_FOR_CAMERA")
@@ -219,6 +224,7 @@ model RetrievalCaptureRequest {
   movement               Movement  @relation(fields: [movementId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([ownerSessionId, status, createdAt])
 }
 
 /// Audit record of one human approval decision for a state-changing agent
@@ -438,6 +444,8 @@ model BinAudit {
 model AuditCaptureRequest {
   id                     String    @id @default(cuid())
   binAuditId             String    @unique
+  /// Browser/operator workflow that owns this popup and its decisions.
+  ownerSessionId         String?
   status                 String    @default("WAITING_FOR_CAMERA")
   expectedQuantity       Int       @default(0)
   observedQuantity       Int?
@@ -466,6 +474,7 @@ model AuditCaptureRequest {
   binAudit               BinAudit  @relation(fields: [binAuditId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([ownerSessionId, status, createdAt])
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -473,6 +482,8 @@ model CameraCaptureJob {
   id                String    @id
   purpose           String
   deviceId          String
+  /// Browser/operator workflow that receives this job's status and result.
+  ownerSessionId    String?
   status            String    @default("PENDING")
   binAuditId        String?
   /// The PutawayCaptureRequest, RetrievalCaptureRequest or AuditCaptureRequest
@@ -501,5 +512,6 @@ model CameraCaptureJob {
   @@index([binAuditId])
   @@index([workflowCaptureId, status])
   @@index([deviceId, status, requestedAt])
+  @@index([ownerSessionId, status, requestedAt])
   @@index([status])
 }

@@ -4,16 +4,17 @@ import { createRealtimeAdminClient } from "@/lib/supabase/realtime-admin";
 import { pendingAuditCapture } from "@/lib/warehouse/audit-bin-service";
 import { pendingPutawayCapture } from "@/lib/warehouse/putaway-verification";
 import { pendingRetrievalCapture } from "@/lib/warehouse/retrieval-verification";
+import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-async function pendingCapture() {
+async function pendingCapture(ownerSessionId: string) {
   const [putaway, retrieval, audit] = await Promise.all([
-    pendingPutawayCapture(),
-    pendingRetrievalCapture(),
-    pendingAuditCapture(),
+    pendingPutawayCapture(ownerSessionId),
+    pendingRetrievalCapture(ownerSessionId),
+    pendingAuditCapture(ownerSessionId),
   ]);
   if (putaway.captureId) return { ...putaway, purpose: "PUTAWAY" as const };
   if (retrieval.captureId) return { ...retrieval, purpose: "RETRIEVAL" as const };
@@ -23,6 +24,13 @@ async function pendingCapture() {
 
 /** Pushes newly requested putaway/retrieval/audit captures to the shared popup. */
 export function GET(request: Request) {
+  const ownerSessionId = warehouseSessionIdFromRequest(request);
+  if (!ownerSessionId) {
+    return Response.json(
+      { error: { code: "warehouse_session_required", message: "A valid warehouse session is required." } },
+      { status: 400 },
+    );
+  }
   const supabase = createRealtimeAdminClient();
   let cleanup: (() => void) | undefined;
   const stream = new ReadableStream<Uint8Array>({
@@ -41,7 +49,7 @@ export function GET(request: Request) {
         try {
           do {
             pushAgain = false;
-            const capture = await pendingCapture();
+            const capture = await pendingCapture(ownerSessionId);
             if (!closed) controller.enqueue(sseEvent("pending", capture));
           } while (pushAgain && !closed);
         } catch (error) {

@@ -39,6 +39,7 @@ import {
   type BinAuditOutcomeStatus,
   type BinAuditResult,
 } from "./audit-types";
+import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
 
 const CAPTURE_POLL_MS = 400;
 /**
@@ -196,10 +197,11 @@ function visionFromCaptureRow(capture: {
 }
 
 /** Durable browser recovery for capture, review and acknowledgement states. */
-export async function pendingAuditCapture() {
+export async function pendingAuditCapture(ownerSessionId: string) {
   const capture = await prisma.auditCaptureRequest.findFirst({
     where: {
       status: { in: RECOVERABLE_CAPTURE_STATUSES },
+      ownerSessionId,
       binAudit: { auditRun: { activeKey: "ACTIVE" } },
     },
     orderBy: { createdAt: "asc" },
@@ -471,6 +473,7 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
     const capture = await prisma.auditCaptureRequest.create({
       data: {
         binAuditId: audit.id,
+        ownerSessionId: getContextWorkflowSessionId(),
         status: "WAITING_FOR_CAMERA",
         expectedQuantity: audit.expectedQuantity,
         previousImageUrl,
@@ -681,7 +684,10 @@ const DISPLAY_CAPTURE_OUTCOME: Record<
 };
 
 /** Analyze the next simulation fixture, or request one physical Pi frame. */
-export async function requestAuditCameraCapture(id: string): Promise<
+export async function requestAuditCameraCapture(
+  id: string,
+  ownerSessionId?: string,
+): Promise<
   | { captureMode: "SIMULATION"; result: AuditCaptureView }
   | { captureMode: "PROD"; job: Awaited<ReturnType<typeof createCaptureJob>> }
 > {
@@ -689,6 +695,9 @@ export async function requestAuditCameraCapture(id: string): Promise<
     where: { id },
     include: { binAudit: { include: { bin: true } } },
   });
+  if (capture && ownerSessionId && capture.ownerSessionId !== ownerSessionId) {
+    throw new Error("This audit capture belongs to another operator session.");
+  }
   if (!capture || capture.status !== "WAITING_FOR_CAMERA") {
     throw new Error("This audit capture is stale or no longer pending.");
   }
@@ -729,6 +738,7 @@ export async function requestAuditCameraCapture(id: string): Promise<
   });
   const job = existing ?? await createCaptureJob({
     purpose: "INVENTORY_AUDIT",
+    ownerSessionId: capture.ownerSessionId,
     binAuditId: capture.binAuditId,
     workflowCaptureId: id,
     workflowAttempt: capture.attempt,
@@ -901,7 +911,20 @@ export async function processAuditCameraCapture(id: string, input: {
  * now). RETRY resets the same row for the next capture — reused, never
  * duplicated. Human capture/review states deliberately carry no short expiry.
  */
-export async function decideAuditCapture(captureId: string, decision: AuditCaptureDecision): Promise<void> {
+export async function decideAuditCapture(
+  captureId: string,
+  decision: AuditCaptureDecision,
+  ownerSessionId?: string,
+): Promise<void> {
+  if (ownerSessionId) {
+    const owner = await prisma.auditCaptureRequest.findUnique({
+      where: { id: captureId },
+      select: { ownerSessionId: true },
+    });
+    if (!owner || owner.ownerSessionId !== ownerSessionId) {
+      throw new Error("This audit capture belongs to another operator session.");
+    }
+  }
   const capture = await prisma.auditCaptureRequest.findUnique({
     where: { id: captureId },
     include: { binAudit: { include: { bin: true, expectedPart: true } } },

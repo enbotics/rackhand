@@ -8,7 +8,15 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { waitForCameraCapture } from "@/lib/camera/capture-client";
+import {
+  waitForCameraCapture,
+  type CameraCaptureJobView,
+} from "@/lib/camera/capture-client";
+import { warehouseBrowserSessionId } from "@/lib/warehouse/browser-session";
+import {
+  WAREHOUSE_SESSION_HEADER,
+  WAREHOUSE_SESSION_QUERY,
+} from "@/lib/warehouse/workflow-session";
 import type {
   PutawayCaptureDecision,
   PutawayCaptureView,
@@ -57,8 +65,11 @@ interface CaptureState {
   result: "success" | "failure" | null;
   analysis: CaptureAnalysis | null;
   deciding: boolean;
+  reanalyzing: boolean;
   error: string | null;
+  cameraJob: CameraCaptureJobView | null;
   capture: () => Promise<void>;
+  reanalyze: () => Promise<void>;
   decide: (decision: CaptureDecision) => Promise<void>;
   close: () => void;
 }
@@ -76,12 +87,17 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
   const [result, setResult] = useState<CaptureState["result"]>(null);
   const [analysis, setAnalysis] = useState<CaptureAnalysis | null>(null);
   const [deciding, setDeciding] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cameraJob, setCameraJob] = useState<CameraCaptureJobView | null>(null);
   const inFlight = useRef(false);
   const handledId = useRef<string | null>(null);
 
   useEffect(() => {
-    const source = new EventSource("/api/warehouse/captures/events");
+    const sessionId = warehouseBrowserSessionId();
+    const source = new EventSource(
+      `/api/warehouse/captures/events?${WAREHOUSE_SESSION_QUERY}=${encodeURIComponent(sessionId)}`,
+    );
     const handlePending = (event: Event) => {
       try {
         const data = JSON.parse((event as MessageEvent<string>).data) as {
@@ -119,8 +135,6 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
             setAnalysis(null);
             setResult(null);
           }
-        } else if (!data.captureId && !inFlight.current) {
-          setPending(null);
         }
       } catch {
         /* A later authoritative Realtime event will replace malformed data. */
@@ -140,13 +154,16 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     if (!pending || inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
+    setCameraJob(null);
     setError(null);
     try {
+      const sessionId = warehouseBrowserSessionId();
       const kind = captureRouteKind(pending.purpose);
       const response = await fetch(
         `/api/warehouse/${kind}/captures/${pending.captureId}`,
         {
           method: "POST",
+          headers: { [WAREHOUSE_SESSION_HEADER]: sessionId },
         },
       );
       const requested = (await response.json()) as {
@@ -177,6 +194,8 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
       const completed = await waitForCameraCapture<CaptureAnalysis>(
         requested.captureJobId,
         {
+          sessionId,
+          onStatus: (job) => setCameraJob(job),
           // The durable server state owns recovery. The browser follows the
           // Realtime stream until a terminal state instead of inventing a
           // second, shorter timeout.
@@ -185,6 +204,7 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
       if (!completed.result)
         throw new Error("The capture completed without an analysis result.");
       handledId.current = pending.captureId;
+      setCameraJob(completed);
       setAnalysis(completed.result);
       setResult("success");
     } catch (captureError) {
@@ -208,17 +228,66 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     await runCapture();
   }
 
+  async function reanalyze() {
+    if (!pending || pending.purpose === "AUDIT" || inFlight.current) return;
+    const previousAnalysis = analysis;
+    inFlight.current = true;
+    setSubmitting(true);
+    setReanalyzing(true);
+    setResult(null);
+    setError(null);
+    try {
+      const sessionId = warehouseBrowserSessionId();
+      const kind = captureRouteKind(pending.purpose);
+      const response = await fetch(
+        `/api/warehouse/${kind}/captures/${pending.captureId}/reanalyze`,
+        {
+          method: "POST",
+          headers: { [WAREHOUSE_SESSION_HEADER]: sessionId },
+        },
+      );
+      const body = (await response.json().catch(() => ({}))) as {
+        result?: CaptureAnalysis;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.result) {
+        throw new Error(
+          body.error?.message ?? "The saved photo could not be analyzed again.",
+        );
+      }
+      handledId.current = pending.captureId;
+      setAnalysis(body.result);
+      setResult("success");
+    } catch (analysisError) {
+      setAnalysis(previousAnalysis);
+      setResult(previousAnalysis ? "success" : null);
+      setError(
+        analysisError instanceof Error
+          ? analysisError.message
+          : "The saved photo could not be analyzed again.",
+      );
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+      setReanalyzing(false);
+    }
+  }
+
   async function decide(decision: CaptureDecision) {
     if (!pending || deciding) return;
     setDeciding(true);
     setError(null);
     try {
+      const sessionId = warehouseBrowserSessionId();
       const kind = captureRouteKind(pending.purpose);
       const response = await fetch(
         `/api/warehouse/${kind}/captures/${pending.captureId}/decision`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            [WAREHOUSE_SESSION_HEADER]: sessionId,
+          },
           body: JSON.stringify({ decision }),
         },
       );
@@ -235,6 +304,7 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         handledId.current = null;
         setResult(null);
         setAnalysis(null);
+        setCameraJob(null);
         // The Retry click IS the operator's "go again" signal — don't make
         // them confirm a second time on the popup that reappears after it.
         void runCapture();
@@ -242,6 +312,7 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         setResult(null);
         setAnalysis(null);
         setPending(null);
+        setCameraJob(null);
       }
     } catch (decisionError) {
       setError(
@@ -260,6 +331,7 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     setAnalysis(null);
     setPending(null);
     setError(null);
+    setCameraJob(null);
   }
 
   return (
@@ -270,8 +342,11 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         result,
         analysis,
         deciding,
+        reanalyzing,
         error,
+        cameraJob,
         capture,
+        reanalyze,
         decide,
         close,
       }}
@@ -388,7 +463,9 @@ export function AuditCaptureDialog() {
       result &&
       ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
     const warning =
-      result?.outcome === "FOREIGN_OBJECTS"
+      result?.outcome === "ANALYSIS_FAILED"
+        ? result.notes || "The saved frame could not be analyzed. Retry analysis without taking another photo."
+        : result?.outcome === "FOREIGN_OBJECTS"
         ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
         : result?.outcome === "LOW_CONFIDENCE"
           ? "The count is not confident enough to change inventory. Improve the view and retry."
@@ -452,7 +529,7 @@ export function AuditCaptureDialog() {
               inventory is changed.
             </p>
           )}
-          {result?.notes && (
+          {result?.notes && result.outcome !== "ANALYSIS_FAILED" && (
             <p className="text-xs text-ink-muted">{result.notes}</p>
           )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
@@ -479,6 +556,16 @@ export function AuditCaptureDialog() {
                   ? "Removed · retry photo"
                   : "Retry photo"}
             </button>
+            {result?.outcome === "ANALYSIS_FAILED" && !simulation && (
+              <button
+                type="button"
+                disabled={audit.deciding || audit.submitting || closing}
+                onClick={() => void audit.reanalyze()}
+                className={BUTTON_VARIANTS.approve}
+              >
+                Retry analysis
+              </button>
+            )}
             {canAccept && (
               <button
                 type="button"
@@ -507,7 +594,9 @@ export function AuditCaptureDialog() {
       result &&
       ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
     const warning =
-      result?.outcome === "FOREIGN_OBJECTS"
+      result?.outcome === "ANALYSIS_FAILED"
+        ? result.notes || "The saved frame could not be analyzed. Retry analysis without taking another photo."
+        : result?.outcome === "FOREIGN_OBJECTS"
         ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
         : result?.outcome === "LOW_CONFIDENCE"
           ? "The count is not confident enough to check out this bin. Improve the view and retry."
@@ -571,7 +660,7 @@ export function AuditCaptureDialog() {
               before the bin is checked out.
             </p>
           )}
-          {result?.notes && (
+          {result?.notes && result.outcome !== "ANALYSIS_FAILED" && (
             <p className="text-xs text-ink-muted">{result.notes}</p>
           )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
@@ -586,7 +675,7 @@ export function AuditCaptureDialog() {
             </button>
             <button
               type="button"
-              disabled={audit.deciding || closing}
+              disabled={audit.deciding || audit.submitting || closing}
               onClick={() => beginDecision("RETRY")}
               className={BUTTON_VARIANTS.secondary}
             >
@@ -598,6 +687,16 @@ export function AuditCaptureDialog() {
                   ? "Removed · retry photo"
                   : "Retry photo"}
             </button>
+            {result?.outcome === "ANALYSIS_FAILED" && !simulation && (
+              <button
+                type="button"
+                disabled={audit.deciding || audit.submitting || closing}
+                onClick={() => void audit.reanalyze()}
+                className={BUTTON_VARIANTS.approve}
+              >
+                Retry analysis
+              </button>
+            )}
             {canAccept && (
               <button
                 type="button"
@@ -751,7 +850,39 @@ export function AuditCaptureDialog() {
         </div>
       </Modal>
     );
-  if (audit.submitting) return null;
+  if (audit.submitting) {
+    const status = audit.cameraJob?.status;
+    const position = audit.cameraJob?.queuePosition;
+    const headline = audit.reanalyzing
+      ? "Reanalyzing the saved photo"
+      : status === "PROCESSING" || status === "UPLOADED"
+      ? "Analyzing captured frame"
+      : status === "CLAIMED" || position === 0
+        ? "Pi camera is capturing now"
+        : typeof position === "number" && position > 1
+          ? `Waiting for Pi camera · position ${position}`
+          : typeof position === "number"
+            ? "Next in the Pi camera queue"
+            : "Joining the Pi camera queue";
+    return (
+      <Modal
+        title={`${audit.reanalyzing ? "Saved photo" : "Camera queue"} · ${audit.pending.binCode}`}
+        onClose={() => {}}
+        dismissible={false}
+        maxWidthClassName="max-w-md"
+      >
+        <div className="rounded-2xl border border-line bg-bg-elevated p-6 text-center">
+          <div className="mx-auto h-3 w-3 animate-pulse rounded-full bg-success" />
+          <p className="mt-4 text-sm font-semibold text-ink">{headline}</p>
+          <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+            {audit.reanalyzing
+              ? "No new camera capture is being taken. The existing durable frame is being inspected again."
+              : "Your request is private to this tab. The Raspberry Pi processes one capture at a time."}
+          </p>
+        </div>
+      </Modal>
+    );
+  }
   const popupTitle =
     audit.pending.purpose === "PUTAWAY"
       ? "Putaway snapshot"
