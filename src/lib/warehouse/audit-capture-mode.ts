@@ -45,7 +45,10 @@ export function isAuditCaptureMode(value: unknown): value is AuditCaptureMode {
  * for a bin with no such folder would have nothing real to show, so scoping
  * it to bins that are actually set up for it keeps every other bin honest.
  */
-export const SIMULATION_ELIGIBLE_BINS = ["B1-01", "B2-02"];
+// B2-02 can be added when its snapshot.jpg and pool/ fixtures land. Keeping
+// eligibility equal to the assets that actually exist prevents Simulation
+// mode from ever falling through to the physical Pi camera.
+export const SIMULATION_ELIGIBLE_BINS = ["B1-01"];
 
 export function isSimulationEligibleBin(binCode: string): boolean {
   return SIMULATION_ELIGIBLE_BINS.includes(binCode.toUpperCase());
@@ -70,23 +73,5 @@ export class SimulationScopeError extends Error {
         "Switch Audit Capture Mode to Prod to operate on this bin.",
     );
     this.name = "SimulationScopeError";
-  }
-}
-
-/**
- * Simulation resolves from a cached demo photo plus one Gemini call — often
- * under a second — and no capture popup ever opens for it (simulation skips
- * creating that row entirely, see SIMULATION_ELIGIBLE_BINS above), so an
- * instant result reads as "nothing happened" rather than "the demo camera
- * has no UI." Padding it out to a believable capture-and-analyze duration is
- * purely cosmetic — callers should time from just before the simulated work
- * starts and await this before returning the result.
- */
-export const SIMULATED_CAPTURE_MIN_DURATION_MS = 3_000;
-
-export async function waitOutSimulatedCaptureDuration(startedAt: number): Promise<void> {
-  const remaining = SIMULATED_CAPTURE_MIN_DURATION_MS - (Date.now() - startedAt);
-  if (remaining > 0) {
-    await new Promise((resolve) => setTimeout(resolve, remaining));
   }
 }

@@ -66,13 +66,6 @@ const CARD_FADE_MS = 450;
 /** Approval outcomes that are answers. EXECUTING and DECIDING are still in flight. */
 const SETTLED_OUTCOMES = new Set(["SETTLED", "CANCELLED", "EXPIRED", "REJECTED"]);
 
-/** Audit run statuses the server writes exactly once, at the end of a run. */
-const TERMINAL_AUDIT_STATUSES = new Set([
-  "COMPLETED",
-  "COMPLETED_WITH_ISSUES",
-  "FAILED",
-]);
-
 /**
  * A trailing "current state" card that clears itself once it is finished.
  *
@@ -83,9 +76,10 @@ const TERMINAL_AUDIT_STATUSES = new Set([
  * to read the outcome, after which the transcript is just the transcript.
  *
  * WHAT IT NEVER DOES: dismiss anything still live, and it never auto-dismisses
- * a FAILURE. `settled` is false for PENDING/RUNNING/EXECUTING states, a
- * BLOCKED workflow (waiting on a person), and — deliberately — a SETTLED
- * approval whose Movement came back FAILED: that can mean reconciliation is
+ * a FAILURE — for ANY of the three cards below (approval, workflow, audit),
+ * not just one of them. `settled` is false for PENDING/RUNNING/EXECUTING
+ * states, a BLOCKED workflow (waiting on a person), and — deliberately —
+ * a terminal FAILED status: that can mean physical reconciliation is
  * required, and silently wiping it after 8 seconds could hide the one thing
  * an operator still needed to see. A failed card instead gets `dismissible`,
  * a manual close, so it never auto-hides but also never sits there forever
@@ -611,8 +605,11 @@ export function AgentPanel({
               cardKey={`workflow:${workflow.operationId}:${workflow.status}`}
               // BLOCKED is not finished — it is a workflow waiting on a human
               // decision, and hiding it would hide the reason for the card
-              // right next to it.
-              settled={workflow.status === "COMPLETED" || workflow.status === "FAILED"}
+              // right next to it. FAILED must not auto-hide either, same
+              // reasoning as the approval card above: it can mean physical
+              // reconciliation is needed, so it gets a manual Dismiss instead.
+              settled={workflow.status === "COMPLETED"}
+              dismissible={workflow.status === "FAILED"}
               onDismissed={scrollToLatest}
             >
               <WorkflowPanel workflow={workflow} />
@@ -625,11 +622,14 @@ export function AgentPanel({
               // A bin still awaiting a human's apply/dismiss decision must
               // never auto-hide, even once the run itself finished — the run
               // reaching a terminal status only means the machine is done;
-              // it says nothing about whether a person has answered yet.
+              // it says nothing about whether a person has answered yet. A
+              // FAILED run must not auto-hide either, same reasoning as the
+              // approval card above — it gets a manual Dismiss instead.
               settled={
-                TERMINAL_AUDIT_STATUSES.has(latestAudit.status) &&
+                (latestAudit.status === "COMPLETED" || latestAudit.status === "COMPLETED_WITH_ISSUES") &&
                 !latestAudit.bins.some((bin) => bin.awaitingConfirmation)
               }
+              dismissible={latestAudit.status === "FAILED"}
               onDismissed={scrollToLatest}
             >
               <InventoryAuditPanel audit={latestAudit} onChanged={onAuditChanged} />

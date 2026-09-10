@@ -13,21 +13,41 @@
 /**
  * What the caller asks for.
  *
- * Identity is authoritative — a SKU or an internal part id, never free text.
- * Natural-language interpretation ("a 6204 bearing") happens BEFORE this
- * boundary, using the read-only tools; by the time a physical operation is
- * requested, the part must already be pinned down.
+ * Identity is authoritative — never a name the model liked ("a 6204
+ * bearing"). Natural-language interpretation happens BEFORE this boundary,
+ * using the read-only tools; by the time a physical operation is requested,
+ * the part must already be pinned down. There are two authoritative paths,
+ * not one:
  *
- * The gantry moves the entire physical bin to OUTPUT. Inventory quantity is
- * therefore observed and reconciled when that same bin later returns through
- * putaway; retrieval never guesses how many units the client removed.
+ *   - sku/partId: catalog identity, resolved anywhere it is stocked.
+ *   - sourceBinCode ALONE (sku and partId both omitted): spatial identity.
+ *     A bin holds at most one SKU at a time — the same invariant
+ *     get_bin_status already relies on — so naming a bin IS a deterministic
+ *     identity, resolved by reading what that bin actually holds, never
+ *     guessed. An empty bin fails cleanly rather than picking anything.
+ *
+ * Supplying both sku/partId AND sourceBinCode keeps today's meaning: the
+ * catalog identity is authoritative and the bin is just where to take it
+ * from, revalidated to actually hold that part.
+ *
+ * The gantry moves the entire physical bin to OUTPUT, where a fresh camera
+ * photo (see retrieval-verification.ts) confirms its contents against the
+ * last-verified count before the checkout is finalized — a low/uncertain
+ * read sends the bin back to its shelf instead of completing. The verified
+ * count becomes checkedOutQuantity; inventory quantity itself is untouched
+ * until that same bin later returns through putaway.
  */
 export interface RetrievalRequest {
   sku?: string;
   partId?: string;
   /** Deprecated compatibility input. The physical operation always checks out the whole bin. */
   quantity?: number;
-  /** Optional. Omitted means the deterministic lowest-bin-code policy chooses. */
+  /**
+   * A specific bin to retrieve from. With sku/partId, just narrows where to
+   * take it from. Alone (sku and partId both omitted), IS the identity —
+   * the part is resolved from that bin's own contents. Omitted entirely
+   * (with sku/partId given), the deterministic lowest-bin-code policy chooses.
+   */
   sourceBinCode?: string;
   /**
    * Idempotency key. Supply a stable value and a retry returns the original
@@ -44,6 +64,8 @@ export const RETRIEVAL_FAILURE_REASONS = [
   "part_not_found",
   "out_of_stock",
   "source_bin_not_found",
+  /** Bin-only identity (no sku/partId given) resolved to a bin holding nothing. */
+  "source_bin_empty",
   "source_inventory_mismatch",
   "inventory_conflict",
   "gantry_busy",
@@ -53,6 +75,9 @@ export const RETRIEVAL_FAILURE_REASONS = [
   "retrieval_in_progress",
   /** Simulation mode is on and this bin isn't one of the two it covers. */
   "simulation_scope_violation",
+  /** Mirrors putaway's own vocabulary for these exact situations. */
+  "photo_required",
+  "photo_upload_failed",
 ] as const;
 export type RetrievalFailureReason = (typeof RETRIEVAL_FAILURE_REASONS)[number];
 

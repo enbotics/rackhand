@@ -13,17 +13,22 @@ function outcomeTone(status: string): string {
 
 /** Short, reason-specific line — the chat message stays brief precisely because this card carries the detail. */
 function reviewMessage(bin: BinAuditView): string {
+  const retry = bin.captureMode === "SIMULATION"
+    ? "Run the audit again to analyze the next simulated capture."
+    : "Retry the audit with a fresh photo.";
   switch (bin.reason) {
     case "audit_pending_confirmation":
-      return "Confident, safe count — just lower than what's on file. Confirm it or leave the record as it is.";
+      return bin.captureMode === "SIMULATION"
+        ? "The simulated count was confidently lower. Inventory was left unchanged; run the audit again for the next simulation."
+        : "Confident, safe count — just lower than what's on file. Confirm it or leave the record as it is.";
     case "foreign_object_suspected":
-      return "An unexpected object was seen alongside the part. This count can't be trusted — retry the audit once it's cleared.";
+      return `An unexpected object was seen alongside the part. This count can't be trusted. ${retry}`;
     case "audit_capacity_exceeded":
-      return "The observed count exceeds this bin's capacity. Correct the contents, then retry the audit.";
+      return `The observed count exceeds this bin's capacity. ${retry}`;
     case "physical_stock_without_record":
       return "Stock is visible but no catalog record expects any here. Resolve this from bin management, not this card.";
     default:
-      return "The image wasn't clear or confident enough to trust. Retry the audit for a fresh photo.";
+      return `The image wasn't clear or confident enough to trust. ${retry}`;
   }
 }
 

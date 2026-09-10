@@ -14,7 +14,7 @@
  * nodes, with different reasons.
  */
 import { prisma } from "../db";
-import { getInventoryForPart } from "../inventory-service";
+import { getInventoryByBin, getInventoryForPart } from "../inventory-service";
 import { getBinByCode, getPartById, getPartBySku } from "../repository";
 import {
   chooseRetrievalSourceBinCode,
@@ -94,20 +94,28 @@ export class RetrievalValidateNode extends WorkflowNode<
   protected async run({ request, data }: RetrievalContext): Promise<NodeOutcome> {
     const sku = typeof request?.sku === "string" ? request.sku.trim() : "";
     const partId = typeof request?.partId === "string" ? request.partId.trim() : "";
-    if (Boolean(sku) === Boolean(partId)) {
-      return {
-        kind: "BLOCKED",
-        reason: "invalid_request",
-        message: "Provide exactly one of sku or partId to identify the part to retrieve.",
-      };
-    }
-
     const source = request.sourceBinCode;
     if (source !== undefined && (typeof source !== "string" || source.trim() === "")) {
       return {
         kind: "BLOCKED",
         reason: "source_bin_not_found",
         message: "The requested source bin code is not a usable bin code.",
+      };
+    }
+    if (sku && partId) {
+      return {
+        kind: "BLOCKED",
+        reason: "invalid_request",
+        message: "Provide at most one of sku or partId, not both.",
+      };
+    }
+    // Neither sku nor partId is fine when a bin was named — the bin IS the
+    // identity in that case (see RetrievalPartNode), never a guess.
+    if (!sku && !partId && !source) {
+      return {
+        kind: "BLOCKED",
+        reason: "invalid_request",
+        message: "Provide a sku, a partId, or a sourceBinCode to identify what to retrieve.",
       };
     }
 
@@ -120,7 +128,9 @@ export class RetrievalValidateNode extends WorkflowNode<
       kind: "PROCEED",
       summary: data.duplicate
         ? "This request already completed and will be replayed without movement."
-        : `The bin holding ${sku || partId} will be checked out to ${RETRIEVAL_DESTINATION}.`,
+        : sku || partId
+          ? `The bin holding ${sku || partId} will be checked out to ${RETRIEVAL_DESTINATION}.`
+          : `Bin ${source!.trim().toUpperCase()} will be checked out to ${RETRIEVAL_DESTINATION}.`,
     };
   }
 }
@@ -141,6 +151,42 @@ export class RetrievalPartNode extends WorkflowNode<RetrievalGraphRequest, Retri
   protected async run({ request, data }: RetrievalContext): Promise<NodeOutcome> {
     const sku = request.sku?.trim() ?? "";
     const partId = request.partId?.trim() ?? "";
+
+    if (!sku && !partId) {
+      // Bin-only identity: the bin IS the identity, resolved from what it
+      // actually holds — a bin holds at most one SKU, the same invariant
+      // get_bin_status already relies on, so this is never a guess.
+      const requestedBinCode = request.sourceBinCode?.trim().toUpperCase() ?? "";
+      const bin = await getBinByCode(requestedBinCode);
+      if (!bin) {
+        return {
+          kind: "BLOCKED",
+          reason: "source_bin_not_found",
+          message: `No bin has code "${requestedBinCode}".`,
+        };
+      }
+      const [holding] = (await getInventoryByBin(bin.code)).filter((row) => row.quantity > 0);
+      if (!holding) {
+        return {
+          kind: "BLOCKED",
+          reason: "source_bin_empty",
+          message: `Bin ${bin.code} is empty; there is nothing to retrieve.`,
+        };
+      }
+      const part = await getPartBySku(holding.sku);
+      if (!part) {
+        return {
+          kind: "BLOCKED",
+          reason: "part_not_found",
+          message: `Bin ${bin.code} holds SKU "${holding.sku}", which no longer matches a catalog part.`,
+        };
+      }
+      data.partId = part.id;
+      data.sku = part.sku;
+      data.canonicalName = part.canonicalName;
+      return { kind: "PROCEED", summary: `${part.sku} — ${part.canonicalName}, resolved from bin ${bin.code}.` };
+    }
+
     const part = sku ? await getPartBySku(sku) : await getPartById(partId);
 
     if (!part) {
@@ -417,8 +463,12 @@ export class RetrievalExecuteNode extends WorkflowNode<
 /**
  * Read-only coherence check. Reports, never repairs, and never retries.
  *
- * A checkout deliberately keeps the last-known count. Verification therefore
- * proves that the bin is marked CHECKED_OUT and its baseline was not mutated.
+ * A checkout now carries the CAMERA-VERIFIED count, not necessarily the
+ * pre-checkout baseline (data.sourceQuantityBefore) — a passing verification
+ * legitimately updates Inventory.quantity when the fresh photo disagrees
+ * with the last-recorded number, same as putaway's own accepted verification
+ * already does. Coherence here means the database agrees with what the
+ * service REPORTED (result.checkedOutQuantity), not that nothing changed.
  */
 export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, RetrievalGraphData> {
   constructor() {
@@ -464,13 +514,6 @@ export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, Ret
         problems.push(
           `${bin.code} records ${remaining}, but the retrieval reported ${result.checkedOutQuantity} checked out`,
         );
-      }
-      if (result?.ok && data.sourceQuantityBefore !== undefined) {
-        if (remaining !== data.sourceQuantityBefore) {
-          problems.push(
-            `the last-known count changed from ${data.sourceQuantityBefore} to ${remaining} during checkout`,
-          );
-        }
       }
       if (bin.status !== "CHECKED_OUT") {
         problems.push(`bin ${bin.code} is ${bin.status}, not CHECKED_OUT`);

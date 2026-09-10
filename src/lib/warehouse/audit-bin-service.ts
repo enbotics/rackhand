@@ -1,21 +1,32 @@
-import { readFile, readdir } from "node:fs/promises";
-import path from "node:path";
+import sharp from "sharp";
 import {
   captureProcessingHeartbeatMilliseconds,
   createCaptureJob,
 } from "@/lib/camera/capture-job-service";
 import { prisma } from "./db";
 import { getGantryController } from "@/lib/gantry/factory";
-import { countAuditImage, type AuditExpectedContext } from "@/lib/geminiAuditCount";
 import { setInventoryQuantity } from "./inventory-service";
+import {
+  assessBinInspection,
+  inspectBinImage,
+} from "./bin-inspection-service";
 import {
   getAuditCaptureMode,
   isOutOfSimulationScope,
   isSimulationEligibleBin,
-  waitOutSimulatedCaptureDuration,
+  SimulationScopeError,
 } from "./audit-capture-mode";
 import { captureProcessingDeadline } from "./capture-deadlines";
 import { scheduleSimulationRevert } from "./simulation-revert";
+import {
+  clearSimulatedWorkflowCapture,
+  hasSimulationEvidence,
+  isSimulationEvidenceUrl,
+  isSimulatedWorkflowCapture,
+  markSimulatedWorkflowCapture,
+  nextSimulationEvidence,
+  simulationBaselineUrl,
+} from "./simulation-evidence";
 import {
   AUDIT_CAPTURE_CONFIDENCE_THRESHOLD,
   type AuditCaptureDecision,
@@ -51,34 +62,6 @@ function isAuditSimulationMode(): boolean {
   return getAuditCaptureMode() === "SIMULATION";
 }
 
-function shuffled<T>(items: T[]): T[] {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
-}
-
-/** Every evidence photo this bin has ever had — a putaway verification or a past audit's capture. Used only for the simulation demo pool, where variety matters more than "was it accepted." */
-async function findBinEvidenceHistory(binId: string): Promise<string[]> {
-  const [putaways, audits] = await Promise.all([
-    prisma.movement.findMany({
-      where: { destinationBinId: binId, verificationImageUrl: { not: null } },
-      select: { verificationImageUrl: true },
-    }),
-    prisma.binAudit.findMany({
-      where: { binId, evidenceUrl: { not: null } },
-      select: { evidenceUrl: true },
-    }),
-  ]);
-  const urls = [
-    ...putaways.map((row) => row.verificationImageUrl),
-    ...audits.map((row) => row.evidenceUrl),
-  ].filter((url): url is string => url !== null);
-  return [...new Set(urls)];
-}
-
 /**
  * This bin's most recent ACCEPTED evidence — the "before" half of the
  * comparison dialog. Accepted means a putaway verification (always trusted
@@ -111,43 +94,12 @@ async function findLatestAcceptedSnapshot(binId: string): Promise<string | null>
     : audit.evidenceUrl;
 }
 
-const LOCAL_SIMULATION_ROOT = path.join(process.cwd(), "public", "audit-simulation");
-
-/**
- * A bin-specific folder of demo photos checked straight into the repo
- * (public/audit-simulation/<BIN_CODE>/pool/*) — curated simulation evidence
- * for a bin that has no real audit history yet. These ship with the app like
- * any other file under /public, so no Supabase Storage upload is needed:
- * their public URL path IS their evidenceUrl, on Vercel exactly as in dev.
- */
-async function findLocalSimulationPool(binCode: string): Promise<string[]> {
-  const dir = path.join(LOCAL_SIMULATION_ROOT, binCode, "pool");
-  let files: string[];
-  try {
-    files = await readdir(dir);
-  } catch {
-    return [];
-  }
-  return files
-    .filter((file) => /\.(jpe?g|png)$/i.test(file))
-    .map((file) => `/audit-simulation/${binCode}/pool/${file}`);
-}
-
-/** evidenceUrl is either a real Supabase URL or a local /audit-simulation/... path. */
-async function loadImageBytes(evidenceUrl: string): Promise<Buffer> {
-  if (evidenceUrl.startsWith("/")) {
-    return readFile(path.join(process.cwd(), "public", evidenceUrl));
-  }
-  const response = await fetch(evidenceUrl);
-  if (!response.ok) throw new Error(`status ${response.status}`);
-  return Buffer.from(await response.arrayBuffer());
-}
-
 async function failAudit(
   binAuditId: string,
   binCode: string,
   expectedQuantity: number,
   reason: string,
+  captureMode: "PROD" | "SIMULATION" = "PROD",
 ): Promise<BinAuditResult> {
   const existing = await prisma.binAudit.findUnique({
     where: { id: binAuditId },
@@ -158,6 +110,7 @@ async function failAudit(
     data: { status: "FAILED", errorCode: reason, errorMessage: reason, completedAt: new Date() },
   });
   return {
+    captureMode,
     binAuditId,
     binCode,
     status: "FAILED",
@@ -174,32 +127,29 @@ async function failAudit(
 }
 
 /**
- * Same decision policy for a real capture and a simulated one, and the
- * one place foreign objects, confidence, occlusion, identity, capacity and
- * the expected/observed comparison are actually weighed. Gemini itself never
- * decides anything — it only reports what it saw; this function is the only
- * thing allowed to turn that observation into a database-changing decision.
+ * Audit-specific decision policy for a real or simulated capture. The shared
+ * inspection service handles evidence safety; this function alone decides how
+ * a safe expected/observed comparison affects audit reconciliation. Gemini
+ * itself never authorizes a database update.
  */
 export function classifyAuditVision(
   vision: AuditVisionResult,
   expected: { quantity: number; partId: string | null; capacity: number },
 ): AuditCaptureOutcome | "UNEXPECTED_STOCK" {
-  const observed = vision.observedCount;
-  const foreignObjects = vision.foreignObjects ?? [];
-  if (vision.foreignObjectSuspected || foreignObjects.length > 0) return "FOREIGN_OBJECTS";
+  const assessment = assessBinInspection(vision, {
+    confidenceThreshold: AUDIT_CAPTURE_CONFIDENCE_THRESHOLD,
+    capacity: expected.capacity,
+    requireExpectedPart: expected.partId !== null,
+  });
+  if (assessment.gate !== "CLEAR") return assessment.gate;
 
-  const uncertain =
-    !vision.countable ||
-    observed === null ||
-    vision.countConfidence <= AUDIT_CAPTURE_CONFIDENCE_THRESHOLD ||
-    (vision.occlusion !== "NONE" && vision.occlusion !== "LOW") ||
-    (observed > 0 && expected.partId !== null && !vision.expectedPartPresent);
-  if (uncertain) return "LOW_CONFIDENCE";
-
-  if (observed! > expected.capacity) return "CAPACITY_EXCEEDED";
-  if (expected.partId === null) return observed! > 0 ? "UNEXPECTED_STOCK" : "VERIFIED";
-  if (observed! === expected.quantity) return "VERIFIED";
-  return observed! > expected.quantity ? "AUTO_RECONCILED" : "REVIEW_DECREASE";
+  if (expected.partId === null) {
+    return assessment.observedQuantity > 0 ? "UNEXPECTED_STOCK" : "VERIFIED";
+  }
+  if (assessment.observedQuantity === expected.quantity) return "VERIFIED";
+  return assessment.observedQuantity > expected.quantity
+    ? "AUTO_RECONCILED"
+    : "REVIEW_DECREASE";
 }
 
 type CaptureWaitResult =
@@ -259,6 +209,11 @@ export async function pendingAuditCapture() {
   });
   if (!capture) return { captureId: null };
 
+  const captureMode = isSimulatedWorkflowCapture(capture.id)
+    || (isAuditSimulationMode() && isSimulationEligibleBin(capture.binAudit.bin.code))
+    ? "SIMULATION" as const
+    : "PROD" as const;
+
   let analysis: AuditCaptureView | null = null;
   if (capture.status !== "WAITING_FOR_CAMERA") {
     const vision = visionFromCaptureRow(capture);
@@ -269,6 +224,7 @@ export async function pendingAuditCapture() {
     });
     const foreignObjects = vision.foreignObjects ?? [];
     analysis = {
+      captureMode,
       captureId: capture.id,
       binCode: capture.binAudit.bin.code,
       status: capture.status,
@@ -291,41 +247,11 @@ export async function pendingAuditCapture() {
     binAuditId: capture.binAuditId,
     binCode: capture.binAudit.bin.code,
     purpose: "AUDIT" as const,
+    captureMode,
     status: capture.status,
     expiresAt: capture.expiresAt?.toISOString() ?? null,
     analysis,
   };
-}
-
-/**
- * AUDIT_CAPTURE_MODE=SIMULATION stand-in for a live camera capture: no
- * physical camera opens and no browser is involved. Instead a real photo is
- * sampled at random from the bin's demo pool and sent through the exact
- * same live Gemini call a genuine capture would use. Nothing about the
- * vision analysis is scripted or static; only the source of the image bytes
- * is swapped out. No operator is present to retry or confirm anything, so
- * simulation always resolves in one shot through the same classify/finalize
- * path a real capture's automatic outcomes use.
- */
-async function simulateCapture(
-  bin: { id: string; code: string },
-  expected: AuditExpectedContext,
-): Promise<{ ok: true; evidenceUrl: string; vision: AuditVisionResult } | { ok: false; reason: string }> {
-  const localPool = await findLocalSimulationPool(bin.code);
-  const history = localPool.length > 0 ? localPool : await findBinEvidenceHistory(bin.id);
-  if (history.length === 0) return { ok: false, reason: "audit_simulation_no_evidence" };
-  const evidenceUrl = shuffled(history)[0];
-
-  let imageBuffer: Buffer;
-  try {
-    imageBuffer = await loadImageBytes(evidenceUrl);
-  } catch (error) {
-    console.error(`[inventory-audit] simulation evidence fetch failed bin=${bin.code}`, error);
-    return { ok: false, reason: "audit_simulation_fetch_failed" };
-  }
-
-  const vision = await countAuditImage(imageBuffer, expected);
-  return { ok: true, evidenceUrl, vision };
 }
 
 /** Extracts the foreign-object names Gemini reported, never their count. */
@@ -500,10 +426,15 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   // Refuse before touching bin/gantry state: Simulation mode must never
   // silently fall through to a real capture on a bin it doesn't cover.
   if (isOutOfSimulationScope(bin.code)) {
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, "simulation_scope_violation");
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "simulation_scope_violation", "SIMULATION");
+  }
+  const simulated = isAuditSimulationMode() && isSimulationEligibleBin(bin.code);
+  const simulatedBaseline = simulated ? await simulationBaselineUrl(bin.code) : null;
+  if (simulated && (!simulatedBaseline || !await hasSimulationEvidence(bin.code))) {
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_simulation_no_evidence", "SIMULATION");
   }
   if (!["AVAILABLE", "OCCUPIED"].includes(originalStatus)) {
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, "bin_audit_conflict");
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "bin_audit_conflict", simulated ? "SIMULATION" : "PROD");
   }
 
   const gantry = getGantryController();
@@ -512,7 +443,7 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
     data: { status: "AUDITING" },
   });
   if (claimed.count !== 1) {
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, "bin_audit_conflict");
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "bin_audit_conflict", simulated ? "SIMULATION" : "PROD");
   }
   try {
     await prisma.binAudit.update({ where: { id: audit.id }, data: { status: "RUNNING" } });
@@ -527,53 +458,34 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   const presented = await gantry.presentBinForAudit({ binCode: bin.code }).catch(() => null);
   if (!presented || presented.status !== "COMPLETED") {
     await prisma.bin.updateMany({ where: { id: bin.id, status: "AUDITING" }, data: { status: originalStatus } });
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_move_failed");
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_move_failed", simulated ? "SIMULATION" : "PROD");
   }
 
   // Physical safety: the bin stays at SCAN_STATION for the ENTIRE capture,
   // retry and confirmation dance below — it is only returned once a
   // terminal result exists (accepted, or this run has genuinely given up).
-  const simulated = isAuditSimulationMode() && isSimulationEligibleBin(bin.code);
   let captured: CaptureWaitResult;
+  let workflowCaptureId: string | null = null;
   try {
-    if (simulated) {
-      // No AuditCaptureRequest row is ever created for this run — the
-      // Warehouse Command Center's Realtime capture stream watches for that row to
-      // decide whether to open its capture popup, so skipping it entirely is
-      // what keeps simulation invisible to the browser. There is no operator
-      // to retry or confirm, so a simulated capture is finalized in one shot
-      // by executeBinAudit itself rather than the capture route.
-      const expected: AuditExpectedContext = {
-        binCode: bin.code,
-        sku: audit.expectedPart?.sku ?? null,
-        canonicalName: audit.expectedPart?.canonicalName ?? null,
-        dimensions: audit.expectedPart
-          ? { lengthMM: audit.expectedPart.lengthMM, widthMM: audit.expectedPart.widthMM, heightMM: audit.expectedPart.heightMM }
-          : null,
-      };
-      const startedAt = Date.now();
-      const result = await simulateCapture(bin, expected);
-      await waitOutSimulatedCaptureDuration(startedAt);
-      captured = result.ok ? { ok: true, finalized: false, evidenceUrl: result.evidenceUrl, vision: result.vision } : result;
-    } else {
-      const previousImageUrl = await findLatestAcceptedSnapshot(bin.id);
-      const capture = await prisma.auditCaptureRequest.create({
-        data: {
-          binAuditId: audit.id,
-          status: "WAITING_FOR_CAMERA",
-          expectedQuantity: audit.expectedQuantity,
-          previousImageUrl,
-          expiresAt: null,
-        },
-      });
-      // Trusted idle-assistance has no operator present to press the capture
-      // button. It still uses the exact same durable Pi job and vision gates;
-      // only creation of the camera request is automatic.
-      if (isTrusted) {
-        await requestAuditCameraCapture(capture.id);
-      }
-      captured = await waitForTerminalCapture(capture.id, isTrusted);
+    const previousImageUrl = simulatedBaseline ?? await findLatestAcceptedSnapshot(bin.id);
+    const capture = await prisma.auditCaptureRequest.create({
+      data: {
+        binAuditId: audit.id,
+        status: "WAITING_FOR_CAMERA",
+        expectedQuantity: audit.expectedQuantity,
+        previousImageUrl,
+        expiresAt: null,
+      },
+    });
+    workflowCaptureId = capture.id;
+    if (simulated) markSimulatedWorkflowCapture(capture.id);
+    // Trusted idle-assistance has no operator present to press the capture
+    // button. It still uses the same capture and vision gates; only creation
+    // of the capture request is automatic.
+    if (isTrusted) {
+      await requestAuditCameraCapture(capture.id);
     }
+    captured = await waitForTerminalCapture(capture.id, isTrusted);
   } catch (error) {
     console.error(`[inventory-audit] capture handshake failed bin=${bin.code}`, error);
     captured = { ok: false, reason: "capture_handshake_failed" };
@@ -585,7 +497,8 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   const returned = await gantry.returnBinFromAudit({ binCode: bin.code }).catch(() => null);
   if (!returned || returned.status !== "COMPLETED") {
     // AUDITING deliberately remains set: physical location is uncertain.
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_return_failed");
+    if (workflowCaptureId) clearSimulatedWorkflowCapture(workflowCaptureId);
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_return_failed", simulated ? "SIMULATION" : "PROD");
   }
   if (returned.status === "COMPLETED" && captured.ok && captured.finalized) {
     // An accepted result means nothing is carried on the arm — safe to park.
@@ -595,8 +508,9 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   }
 
   if (!captured.ok) {
+    if (workflowCaptureId) clearSimulatedWorkflowCapture(workflowCaptureId);
     await prisma.bin.updateMany({ where: { id: bin.id, status: "AUDITING" }, data: { status: originalStatus } });
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, captured.reason);
+    return failAudit(audit.id, bin.code, audit.expectedQuantity, captured.reason, simulated ? "SIMULATION" : "PROD");
   }
 
   const { vision, evidenceUrl } = captured;
@@ -619,19 +533,9 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
       vision,
       evidenceUrl,
     });
-    // A simulated capture is never a real physical count — undo the write a
-    // few seconds after it happened rather than let demo data corrupt real
-    // stock. A real trusted/idle audit that genuinely reconciled is left
-    // exactly as it is; only `simulated` reaches this with a fake write.
-    if (simulated && applied.inventoryUpdated && audit.expectedPartId) {
-      scheduleSimulationRevert({
-        partId: audit.expectedPartId,
-        binId: bin.id,
-        previousQuantity: audit.expectedQuantity,
-        source: "audit",
-      });
-    }
+    if (workflowCaptureId) clearSimulatedWorkflowCapture(workflowCaptureId);
     return {
+      captureMode: simulated ? "SIMULATION" : "PROD",
       binAuditId: audit.id,
       binCode: bin.code,
       status: applied.status,
@@ -651,7 +555,9 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   // finalized Inventory and this BinAudit row via the capture/decision
   // route — read that authoritative result back rather than recomputing it.
   const finalAudit = await prisma.binAudit.findUniqueOrThrow({ where: { id: audit.id } });
+  if (workflowCaptureId) clearSimulatedWorkflowCapture(workflowCaptureId);
   return {
+    captureMode: simulated ? "SIMULATION" : "PROD",
     binAuditId: audit.id,
     binCode: bin.code,
     status: finalAudit.status as BinAuditOutcomeStatus,
@@ -774,8 +680,11 @@ const DISPLAY_CAPTURE_OUTCOME: Record<
   UNEXPECTED_STOCK: "LOW_CONFIDENCE",
 };
 
-/** Request one physical Raspberry Pi frame for a pending inventory audit. */
-export async function requestAuditCameraCapture(id: string) {
+/** Analyze the next simulation fixture, or request one physical Pi frame. */
+export async function requestAuditCameraCapture(id: string): Promise<
+  | { captureMode: "SIMULATION"; result: AuditCaptureView }
+  | { captureMode: "PROD"; job: Awaited<ReturnType<typeof createCaptureJob>> }
+> {
   const capture = await prisma.auditCaptureRequest.findUnique({
     where: { id },
     include: { binAudit: { include: { bin: true } } },
@@ -786,6 +695,30 @@ export async function requestAuditCameraCapture(id: string) {
   if (capture.binAudit.status !== "RUNNING" || capture.binAudit.bin.status !== "AUDITING") {
     throw new Error("This bin is no longer positioned for auditing.");
   }
+  const binCode = capture.binAudit.bin.code;
+  if (isOutOfSimulationScope(binCode)) {
+    throw new SimulationScopeError(binCode);
+  }
+  const simulated = isSimulatedWorkflowCapture(id)
+    || (isAuditSimulationMode() && isSimulationEligibleBin(binCode));
+  if (simulated) {
+    markSimulatedWorkflowCapture(id);
+    const sample = await nextSimulationEvidence(binCode);
+    const metadata = await sharp(sample.bytes).metadata();
+    const requestedAt = new Date();
+    const result = await processAuditCameraCapture(id, {
+      imageBuffer: sample.bytes,
+      evidenceUrl: sample.url,
+      imageWidth: metadata.width ?? 1,
+      imageHeight: metadata.height ?? 1,
+      capturedAt: requestedAt,
+      requestedAt,
+      workflowAttempt: capture.attempt,
+      captureMode: "SIMULATION",
+    });
+    return { captureMode: "SIMULATION", result };
+  }
+
   const existing = await prisma.cameraCaptureJob.findFirst({
     where: {
       purpose: "INVENTORY_AUDIT",
@@ -794,15 +727,16 @@ export async function requestAuditCameraCapture(id: string) {
     },
     orderBy: { requestedAt: "desc" },
   });
-  return existing ?? createCaptureJob({
+  const job = existing ?? await createCaptureJob({
     purpose: "INVENTORY_AUDIT",
     binAuditId: capture.binAuditId,
     workflowCaptureId: id,
     workflowAttempt: capture.attempt,
   });
+  return { captureMode: "PROD", job };
 }
 
-/** Analyze a Raspberry Pi frame with the same audit policy used by simulation. */
+/** Analyze a production or simulated frame through one shared audit policy. */
 export async function processAuditCameraCapture(id: string, input: {
   imageBuffer: Buffer;
   evidenceUrl: string;
@@ -811,13 +745,15 @@ export async function processAuditCameraCapture(id: string, input: {
   capturedAt: Date;
   requestedAt: Date;
   workflowAttempt: number;
+  captureMode?: "PROD" | "SIMULATION";
 }): Promise<AuditCaptureView> {
+  const captureMode = input.captureMode ?? "PROD";
   if (!Buffer.isBuffer(input.imageBuffer) || input.imageBuffer.length === 0
     || !input.evidenceUrl
     || !Number.isInteger(input.imageWidth) || input.imageWidth <= 0
     || !Number.isInteger(input.imageHeight) || input.imageHeight <= 0
     || !Number.isFinite(input.capturedAt.getTime())) {
-    throw new Error("A fresh Raspberry Pi frame and valid metadata are required.");
+    throw new Error("A fresh capture frame and valid metadata are required.");
   }
   const claimed = await prisma.auditCaptureRequest.updateMany({
     where: { id, status: "WAITING_FOR_CAMERA", attempt: input.workflowAttempt },
@@ -853,7 +789,7 @@ export async function processAuditCameraCapture(id: string, input: {
     }, captureProcessingHeartbeatMilliseconds());
     let vision: AuditVisionResult;
     try {
-      vision = await countAuditImage(input.imageBuffer, {
+      vision = await inspectBinImage(input.imageBuffer, {
         binCode: binAudit.bin.code,
         sku: part?.sku ?? null,
         canonicalName: part?.canonicalName ?? null,
@@ -885,11 +821,24 @@ export async function processAuditCameraCapture(id: string, input: {
       capturedAt: input.capturedAt,
       workflowAttempt: input.workflowAttempt,
     });
+    if (
+      captureMode === "SIMULATION" &&
+      outcome === "AUTO_RECONCILED" &&
+      binAudit.expectedPartId
+    ) {
+      scheduleSimulationRevert({
+        partId: binAudit.expectedPartId,
+        binId: binAudit.binId,
+        previousQuantity: binAudit.expectedQuantity,
+        source: "audit",
+      });
+    }
     await prisma.auditCaptureRequest.update({
       where: { id },
       data: { imageWidth: input.imageWidth, imageHeight: input.imageHeight },
     });
     return {
+      captureMode,
       captureId: id,
       binCode: binAudit.bin.code,
       status,
@@ -905,14 +854,16 @@ export async function processAuditCameraCapture(id: string, input: {
         : vision.notes,
     };
   } catch (error) {
-    console.error(`[inventory-audit] Raspberry Pi capture failed id=${id}`, error);
+    console.error(`[inventory-audit] ${captureMode.toLowerCase()} capture failed id=${id}`, error);
     await prisma.auditCaptureRequest.updateMany({
       where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
       data: {
         status: "RETRY_REQUIRED",
         evidenceUrl: input.evidenceUrl,
         errorCode: "capture_failed",
-        notes: "The image could not be analyzed. Request a fresh Raspberry Pi photo.",
+        notes: captureMode === "SIMULATION"
+          ? "The simulated frame could not be analyzed. Run the next simulated capture."
+          : "The image could not be analyzed. Request a fresh Raspberry Pi photo.",
         expiresAt: null,
       },
     });
@@ -927,6 +878,7 @@ export async function processAuditCameraCapture(id: string, input: {
       include: { binAudit: { include: { bin: true } } },
     });
     return {
+      captureMode,
       captureId: id,
       binCode: failed.binAudit.bin.code,
       status: "RETRY_REQUIRED",
@@ -946,7 +898,7 @@ export async function processAuditCameraCapture(id: string, input: {
  * A human's decision on a pending audit capture: ACCEPT either dismisses an
  * already-applied automatic result (PENDING_ACK) so the bin can be returned,
  * or explicitly confirms a REVIEW_DECREASE (which writes Inventory only
- * now). RETRY resets the same row for a fresh photo — reused, never
+ * now). RETRY resets the same row for the next capture — reused, never
  * duplicated. Human capture/review states deliberately carry no short expiry.
  */
 export async function decideAuditCapture(captureId: string, decision: AuditCaptureDecision): Promise<void> {
@@ -1089,6 +1041,14 @@ export async function decideAuditCapture(captureId: string, decision: AuditCaptu
       },
     });
   });
+  if (isSimulatedWorkflowCapture(captureId) && capture.binAudit.expectedPartId) {
+    scheduleSimulationRevert({
+      partId: capture.binAudit.expectedPartId,
+      binId: capture.binAudit.binId,
+      previousQuantity: capture.expectedQuantity,
+      source: "audit",
+    });
+  }
 }
 
 export type ConfirmBinAuditDecision = "APPLY" | "DISMISS";
@@ -1109,6 +1069,7 @@ function toConfirmationResult(
   status: BinAuditOutcomeStatus,
 ): BinAuditResult {
   return {
+    captureMode: isSimulationEvidenceUrl(audit.evidenceUrl) ? "SIMULATION" : "PROD",
     binAuditId: audit.id,
     binCode,
     status,
@@ -1158,6 +1119,9 @@ export async function confirmBinAuditObservation(
 
   if (!audit.expectedPartId || !audit.expectedPart || audit.observedQuantity === null) {
     throw new Error("bin_audit_not_confirmable");
+  }
+  if (isSimulationEvidenceUrl(audit.evidenceUrl)) {
+    throw new Error("simulation_audit_not_applicable");
   }
   // Defense in depth: only a REVIEW_DECREASE-style rejection means "this
   // count is trustworthy, just lower than what's on file" — every other

@@ -135,6 +135,7 @@ model Movement {
   verificationImageUrl   String?
   verificationCapturedAt DateTime?
   putawayCapture         PutawayCaptureRequest?
+  retrievalCapture       RetrievalCaptureRequest?
   destinationBin         Bin?                   @relation("MovementDestination", fields: [destinationBinId], references: [id])
   part                   Part                   @relation(fields: [partId], references: [id])
   sourceBin              Bin?                   @relation("MovementSource", fields: [sourceBinId], references: [id])
@@ -150,6 +151,46 @@ model Movement {
 /// the accepted quantity is committed by the parent Movement after gantry
 /// completion.
 model PutawayCaptureRequest {
+  id                     String    @id @default(cuid())
+  movementId             String    @unique
+  /// WAITING_FOR_CAMERA | CAPTURING | READY | REVIEW_DECREASE |
+  /// RETRY_REQUIRED | ACCEPTED | FAILED
+  status                 String    @default("WAITING_FOR_CAMERA")
+  expectedQuantity       Int
+  observedQuantity       Int?
+  countConfidence        Float?
+  countable              Boolean?
+  expectedPartPresent    Boolean?
+  foreignObjectSuspected Boolean?
+  foreignObjectsJson     String?
+  occlusion              String?
+  notes                  String?
+  previousImageUrl       String?
+  evidenceUrl            String?
+  imageWidth             Int?
+  imageHeight            Int?
+  attempt                Int       @default(0)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  /// Processing lease. Null while waiting for a human; renewed only while
+  /// server-side image analysis is actively running.
+  expiresAt              DateTime?
+  capturedAt             DateTime?
+  movement               Movement  @relation(fields: [movementId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+
+/// Durable Raspberry Pi camera and human-review state for one retrieval.
+/// Unlike putaway's verification (taken before any gantry motion, since the
+/// bin already sits somewhere the camera can see), this runs AFTER the
+/// gantry has already carried the bin to OUTPUT — the shelf itself is never
+/// camera-visible. expectedQuantity is the bin's last-verified count before
+/// pickup; a passing photo becomes the new checked-out quantity, and a
+/// failing one sends the bin back to its shelf slot rather than completing
+/// the checkout. Same status vocabulary and comparison/decision flow as
+/// PutawayCaptureRequest.
+model RetrievalCaptureRequest {
   id                     String    @id @default(cuid())
   movementId             String    @unique
   /// WAITING_FOR_CAMERA | CAPTURING | READY | REVIEW_DECREASE |
@@ -434,11 +475,12 @@ model CameraCaptureJob {
   deviceId          String
   status            String    @default("PENDING")
   binAuditId        String?
-  /// The PutawayCaptureRequest or AuditCaptureRequest this image must satisfy.
-  /// Null only for standalone MANUAL_SCAN jobs.
+  /// The PutawayCaptureRequest, RetrievalCaptureRequest or AuditCaptureRequest
+  /// this image must satisfy. Null only for standalone MANUAL_SCAN jobs.
   workflowCaptureId String?
-  /// Attempt number of the owning putaway/audit capture. Late results from a
-  /// superseded retry are rejected instead of mutating the current attempt.
+  /// Attempt number of the owning putaway/retrieval/audit capture. Late
+  /// results from a superseded retry are rejected instead of mutating the
+  /// current attempt.
   workflowAttempt   Int?
   evidenceUrl       String?
   imageWidth        Int?

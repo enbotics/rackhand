@@ -1,17 +1,56 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { waitForCameraCapture } from "@/lib/camera/capture-client";
-import type { PutawayCaptureDecision, PutawayCaptureView } from "@/lib/warehouse/putaway-capture-types";
-import type { AuditCaptureDecision, AuditCaptureView } from "@/lib/warehouse/audit-capture-types";
+import type {
+  PutawayCaptureDecision,
+  PutawayCaptureView,
+} from "@/lib/warehouse/putaway-capture-types";
+import type {
+  RetrievalCaptureDecision,
+  RetrievalCaptureView,
+} from "@/lib/warehouse/retrieval-capture-types";
+import type {
+  AuditCaptureDecision,
+  AuditCaptureView,
+} from "@/lib/warehouse/audit-capture-types";
 import { CapturePopup } from "./capture-popup";
 import { Modal } from "./modal";
 import { BUTTON_VARIANTS, Metric } from "./ui";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
 
-interface PendingCapture { captureId: string; binCode: string; purpose: "AUDIT" | "PUTAWAY" }
-type CaptureDecision = PutawayCaptureDecision | AuditCaptureDecision;
-type CaptureAnalysis = PutawayCaptureView | AuditCaptureView;
+interface PendingCapture {
+  captureId: string;
+  binCode: string;
+  purpose: "AUDIT" | "PUTAWAY" | "RETRIEVAL";
+  captureMode: "PROD" | "SIMULATION";
+}
+type CaptureDecision =
+  | PutawayCaptureDecision
+  | RetrievalCaptureDecision
+  | AuditCaptureDecision;
+type CaptureAnalysis =
+  | PutawayCaptureView
+  | RetrievalCaptureView
+  | AuditCaptureView;
+
+/** "putaway" | "retrieval" | "audits" — the API route segment for this purpose. */
+function captureRouteKind(
+  purpose: PendingCapture["purpose"],
+): "putaway" | "retrieval" | "audits" {
+  return purpose === "PUTAWAY"
+    ? "putaway"
+    : purpose === "RETRIEVAL"
+      ? "retrieval"
+      : "audits";
+}
 interface CaptureState {
   pending: PendingCapture | null;
   submitting: boolean;
@@ -48,7 +87,8 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         const data = JSON.parse((event as MessageEvent<string>).data) as {
           captureId: string | null;
           binCode?: string;
-          purpose?: "PUTAWAY" | "AUDIT";
+          purpose?: "PUTAWAY" | "RETRIEVAL" | "AUDIT";
+          captureMode?: "PROD" | "SIMULATION";
           analysis?: CaptureAnalysis | null;
         };
         if (data.captureId && data.purpose) {
@@ -58,11 +98,16 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
           // that has already been committed to the database.
           if (inFlight.current && !data.analysis) return;
           if (data.captureId === handledId.current && !data.analysis) return;
-          setPending((previous) => previous?.captureId === data.captureId ? previous : {
-            captureId: data.captureId!,
-            binCode: data.binCode ?? "bin",
-            purpose: data.purpose!,
-          });
+          setPending((previous) =>
+            previous?.captureId === data.captureId
+              ? previous
+              : {
+                  captureId: data.captureId!,
+                  binCode: data.binCode ?? "bin",
+                  purpose: data.purpose!,
+                  captureMode: data.captureMode ?? "PROD",
+                },
+          );
           if (data.analysis) {
             // Restore an analyzed-but-undecided putaway after navigation,
             // refresh, or an SSE reconnect. The durable row—not component
@@ -77,7 +122,9 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         } else if (!data.captureId && !inFlight.current) {
           setPending(null);
         }
-      } catch { /* A later authoritative Realtime event will replace malformed data. */ }
+      } catch {
+        /* A later authoritative Realtime event will replace malformed data. */
+      }
     };
     source.addEventListener("pending", handlePending);
     return () => {
@@ -86,36 +133,79 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  async function capture() {
-    if (!pending || inFlight.current || result !== null) return;
+  /** The actual capture attempt, with no gate on `result` — used both by the
+   * manual capture button and to auto-run the next attempt right after a
+   * RETRY decision succeeds, instead of making the operator click twice. */
+  async function runCapture() {
+    if (!pending || inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
     setError(null);
     try {
-      const kind = pending.purpose === "PUTAWAY" ? "putaway" : "audits";
-      const response = await fetch(`/api/warehouse/${kind}/captures/${pending.captureId}`, {
-        method: "POST",
-      });
-      const requested = await response.json() as {
+      const kind = captureRouteKind(pending.purpose);
+      const response = await fetch(
+        `/api/warehouse/${kind}/captures/${pending.captureId}`,
+        {
+          method: "POST",
+        },
+      );
+      const requested = (await response.json()) as {
+        captureMode?: "PROD" | "SIMULATION";
         captureJobId?: string;
+        result?: CaptureAnalysis;
         error?: { message?: string };
       };
-      if (!response.ok || !requested.captureJobId) {
-        throw new Error(requested.error?.message ?? "The Raspberry Pi capture could not be requested.");
+      if (!response.ok) {
+        throw new Error(
+          requested.error?.message ?? "The capture could not be requested.",
+        );
       }
-      const completed = await waitForCameraCapture<CaptureAnalysis>(requested.captureJobId, {
-        // The durable server state owns recovery. The browser follows the
-        // Realtime stream until a terminal state instead of inventing a
-        // second, shorter timeout.
-      });
-      if (!completed.result) throw new Error("The Raspberry Pi capture completed without an analysis result.");
+      if (requested.captureMode === "SIMULATION" && requested.result) {
+        handledId.current = pending.captureId;
+        setAnalysis(requested.result);
+        setResult("success");
+        return;
+      }
+      if (!requested.captureJobId) {
+        throw new Error(
+          requested.error?.message ??
+            (pending.captureMode === "SIMULATION"
+              ? "The simulated capture could not be started."
+              : "The Raspberry Pi capture could not be requested."),
+        );
+      }
+      const completed = await waitForCameraCapture<CaptureAnalysis>(
+        requested.captureJobId,
+        {
+          // The durable server state owns recovery. The browser follows the
+          // Realtime stream until a terminal state instead of inventing a
+          // second, shorter timeout.
+        },
+      );
+      if (!completed.result)
+        throw new Error("The capture completed without an analysis result.");
       handledId.current = pending.captureId;
       setAnalysis(completed.result);
       setResult("success");
     } catch (captureError) {
-      setError(captureError instanceof Error ? captureError.message : "The Raspberry Pi capture failed.");
+      setError(
+        captureError instanceof Error
+          ? captureError.message
+          : "The capture failed.",
+      );
       setResult(null);
-    } finally { inFlight.current = false; setSubmitting(false); }
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  /** The button-triggered entry point: only the FIRST attempt on a fresh
+   * pending capture goes through here, gated on no result yet existing —
+   * a retry re-runs via runCapture() directly from decide() below. */
+  async function capture() {
+    if (result !== null) return;
+    await runCapture();
   }
 
   async function decide(decision: CaptureDecision) {
@@ -123,29 +213,42 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
     setDeciding(true);
     setError(null);
     try {
-      const kind = pending.purpose === "PUTAWAY" ? "putaway" : "audits";
-      const response = await fetch(`/api/warehouse/${kind}/captures/${pending.captureId}/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
-      });
-      const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
+      const kind = captureRouteKind(pending.purpose);
+      const response = await fetch(
+        `/api/warehouse/${kind}/captures/${pending.captureId}/decision`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+        },
+      );
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
       if (!response.ok) {
-        throw new Error(body.error?.message ?? "The verification decision could not be applied.");
+        throw new Error(
+          body.error?.message ??
+            "The verification decision could not be applied.",
+        );
       }
       if (decision === "RETRY") {
         handledId.current = null;
         setResult(null);
         setAnalysis(null);
+        // The Retry click IS the operator's "go again" signal — don't make
+        // them confirm a second time on the popup that reappears after it.
+        void runCapture();
       } else {
         setResult(null);
         setAnalysis(null);
         setPending(null);
       }
     } catch (decisionError) {
-      setError(decisionError instanceof Error
-        ? decisionError.message
-        : "The verification decision could not be applied.");
+      setError(
+        decisionError instanceof Error
+          ? decisionError.message
+          : "The verification decision could not be applied.",
+      );
     } finally {
       setDeciding(false);
     }
@@ -153,22 +256,45 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
 
   function close() {
     if (inFlight.current) return;
-    setResult(null); setAnalysis(null); setPending(null); setError(null);
+    setResult(null);
+    setAnalysis(null);
+    setPending(null);
+    setError(null);
   }
 
-  return <CaptureContext.Provider value={{ pending, submitting, result, analysis, deciding, error, capture, decide, close }}>
-    {children}
-    <AuditCaptureDialog />
-  </CaptureContext.Provider>;
+  return (
+    <CaptureContext.Provider
+      value={{
+        pending,
+        submitting,
+        result,
+        analysis,
+        deciding,
+        error,
+        capture,
+        decide,
+        close,
+      }}
+    >
+      {children}
+      <AuditCaptureDialog />
+    </CaptureContext.Provider>
+  );
 }
 
-const AUDIT_COPY: Record<AuditCaptureView["outcome"], {
-  headline: string;
-  tone: "success" | "warn";
-  message: (view: AuditCaptureView) => string;
-  primary: { label: string | ((view: AuditCaptureView) => string); decision: AuditCaptureDecision };
-  secondary?: { label: string; decision: AuditCaptureDecision };
-}> = {
+const AUDIT_COPY: Record<
+  AuditCaptureView["outcome"],
+  {
+    headline: string;
+    tone: "success" | "warn";
+    message: (view: AuditCaptureView) => string;
+    primary: {
+      label: string | ((view: AuditCaptureView) => string);
+      decision: AuditCaptureDecision;
+    };
+    secondary?: { label: string; decision: AuditCaptureDecision };
+  }
+> = {
   VERIFIED: {
     headline: "Verified",
     tone: "success",
@@ -178,32 +304,41 @@ const AUDIT_COPY: Record<AuditCaptureView["outcome"], {
   AUTO_RECONCILED: {
     headline: "Updated automatically",
     tone: "success",
-    message: (view) => `Higher quantity detected. Inventory has already been updated to ${view.observedQuantity ?? "—"}.`,
+    message: (view) =>
+      `Higher quantity detected. Inventory has already been updated to ${view.observedQuantity ?? "—"}.`,
     primary: { label: "Done", decision: "ACCEPT" },
   },
   REVIEW_DECREASE: {
     headline: "Confirm the lower count",
     tone: "warn",
-    message: (view) => `Recorded quantity ${view.expectedQuantity}; observed quantity ${view.observedQuantity ?? "—"}.`,
-    primary: { label: (view) => `Confirm ${view.observedQuantity ?? ""} and continue`, decision: "ACCEPT" },
+    message: (view) =>
+      `Recorded quantity ${view.expectedQuantity}; observed quantity ${view.observedQuantity ?? "—"}.`,
+    primary: {
+      label: (view) => `Confirm ${view.observedQuantity ?? ""} and continue`,
+      decision: "ACCEPT",
+    },
     secondary: { label: "Retry photo", decision: "RETRY" },
   },
   FOREIGN_OBJECTS: {
     headline: "Unexpected object detected",
     tone: "warn",
-    message: (view) => `Remove: ${view.foreignObjects.length ? view.foreignObjects.join(", ") : "the unexpected object"}.`,
+    message: (view) =>
+      `Remove: ${view.foreignObjects.length ? view.foreignObjects.join(", ") : "the unexpected object"}.`,
     primary: { label: "Removed · retry photo", decision: "RETRY" },
   },
   LOW_CONFIDENCE: {
     headline: "Needs a clearer photo",
     tone: "warn",
-    message: (view) => view.notes || "The count is not confident enough to act on. Improve the view and retry.",
+    message: (view) =>
+      view.notes ||
+      "The count is not confident enough to act on. Improve the view and retry.",
     primary: { label: "Retry photo", decision: "RETRY" },
   },
   CAPACITY_EXCEEDED: {
     headline: "Exceeds bin capacity",
     tone: "warn",
-    message: (view) => `Observed quantity ${view.observedQuantity ?? "—"} exceeds this bin's capacity. Correct the contents, then retry.`,
+    message: (view) =>
+      `Observed quantity ${view.observedQuantity ?? "—"} exceeds this bin's capacity. Correct the contents, then retry.`,
     primary: { label: "Retry photo", decision: "RETRY" },
   },
 };
@@ -245,48 +380,236 @@ export function AuditCaptureDialog() {
 
   if (audit.result !== null && audit.pending.purpose === "PUTAWAY") {
     const result = audit.analysis as PutawayCaptureView | null;
-    const canAccept = result && ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
-    const warning = result?.outcome === "FOREIGN_OBJECTS"
-      ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then take a fresh photo.`
-      : result?.outcome === "LOW_CONFIDENCE"
-        ? "The count is not confident enough to change inventory. Improve the view and retry."
-        : result?.outcome === "CAPACITY_EXCEEDED"
-          ? "The observed quantity exceeds this bin’s capacity. Correct the contents or choose another bin."
-          : audit.result === "failure" ? "The image could not be analyzed. Take a fresh photo and retry." : null;
+    const simulation = result?.captureMode === "SIMULATION";
+    const retryCapture = simulation
+      ? "run the next simulated capture"
+      : "take a fresh photo";
+    const canAccept =
+      result &&
+      ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
+    const warning =
+      result?.outcome === "FOREIGN_OBJECTS"
+        ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
+        : result?.outcome === "LOW_CONFIDENCE"
+          ? "The count is not confident enough to change inventory. Improve the view and retry."
+          : result?.outcome === "CAPACITY_EXCEEDED"
+            ? "The observed quantity exceeds this bin’s capacity. Correct the contents or choose another bin."
+            : audit.result === "failure"
+              ? `The image could not be analyzed. ${simulation ? "Run the next simulated capture." : "Take a fresh photo and retry."}`
+              : null;
     return (
-      <Modal title={`Putaway comparison · ${audit.pending.binCode}`} onClose={() => {}} closing={closing}
-        onExitComplete={completeDecision} dismissible={false} maxWidthClassName="max-w-3xl">
+      <Modal
+        title={`Putaway comparison · ${audit.pending.binCode}`}
+        onClose={() => {}}
+        closing={closing}
+        onExitComplete={completeDecision}
+        dismissible={false}
+        maxWidthClassName="max-w-3xl"
+      >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <ComparisonImage label="Previous snapshot" src={result?.previousImageUrl ?? null} />
-            <ComparisonImage label="Current verification" src={result?.currentImageUrl ?? null} />
+            <ComparisonImage
+              label={simulation ? "Simulation baseline" : "Previous snapshot"}
+              src={result?.previousImageUrl ?? null}
+            />
+            <ComparisonImage
+              label={simulation ? "Simulated capture" : "Current verification"}
+              src={result?.currentImageUrl ?? null}
+            />
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <Metric label="Recorded qty" value={result?.expectedQuantity ?? "—"} />
-            <Metric label="Observed qty" value={result?.observedQuantity ?? "—"}
-              tone={result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"} />
-            <Metric label="Confidence" value={result?.confidencePercent ?? "—"} unit={result?.confidencePercent == null ? undefined : "%"}
-              tone={(result?.confidencePercent ?? 0) > 80 ? "ok" : "warn"} />
+            <Metric
+              label="Recorded qty"
+              value={result?.expectedQuantity ?? "—"}
+            />
+            <Metric
+              label="Observed qty"
+              value={result?.observedQuantity ?? "—"}
+              tone={result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
+            />
+            <Metric
+              label="Confidence"
+              value={result?.confidencePercent ?? "—"}
+              unit={result?.confidencePercent == null ? undefined : "%"}
+              tone={(result?.confidencePercent ?? 0) > 80 ? "ok" : "warn"}
+            />
           </div>
-          {warning && <div className="rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm text-warn">
-            <p className="font-semibold">Verification needs attention</p>
-            <p className="mt-1 text-xs leading-relaxed">{warning}</p>
-          </div>}
-          {result?.outcome === "INCREASED" && <p className="text-sm text-success">
-            Higher quantity detected. Inventory will update automatically after the gantry completes putaway.
-          </p>}
-          {result?.outcome === "REVIEW_DECREASE" && <p className="text-sm text-warn">
-            The quantity decreased. Confirm this observed count before inventory is changed.
-          </p>}
-          {result?.notes && <p className="text-xs text-ink-muted">{result.notes}</p>}
+          {warning && (
+            <div className="rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm text-warn">
+              <p className="font-semibold">Verification needs attention</p>
+              <p className="mt-1 text-xs leading-relaxed">{warning}</p>
+            </div>
+          )}
+          {result?.outcome === "INCREASED" && (
+            <p className="text-sm text-success">
+              Higher quantity detected. Inventory will update automatically
+              after the gantry completes putaway.
+            </p>
+          )}
+          {result?.outcome === "REVIEW_DECREASE" && (
+            <p className="text-sm text-warn">
+              The quantity decreased. Confirm this observed count before
+              inventory is changed.
+            </p>
+          )}
+          {result?.notes && (
+            <p className="text-xs text-ink-muted">{result.notes}</p>
+          )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
-            <button type="button" disabled={audit.deciding || closing} onClick={() => beginDecision("RETRY")} className={BUTTON_VARIANTS.secondary}>
-              {result?.outcome === "FOREIGN_OBJECTS" ? "Removed · retry photo" : "Retry photo"}
+            <button
+              type="button"
+              disabled={audit.deciding || closing}
+              onClick={() => beginDecision("CANCEL")}
+              className={BUTTON_VARIANTS.danger}
+            >
+              Cancel putaway
             </button>
-            {canAccept && <button type="button" disabled={audit.deciding || closing} onClick={() => beginDecision("ACCEPT")} className={BUTTON_VARIANTS.approve}>
-              {result?.outcome === "REVIEW_DECREASE" ? `Confirm ${result.observedQuantity} & continue` : "Continue putaway"}
-            </button>}
+            <button
+              type="button"
+              disabled={audit.deciding || closing}
+              onClick={() => beginDecision("RETRY")}
+              className={BUTTON_VARIANTS.secondary}
+            >
+              {simulation
+                ? result?.outcome === "FOREIGN_OBJECTS"
+                  ? "Removed · next simulation"
+                  : "Run next simulation"
+                : result?.outcome === "FOREIGN_OBJECTS"
+                  ? "Removed · retry photo"
+                  : "Retry photo"}
+            </button>
+            {canAccept && (
+              <button
+                type="button"
+                disabled={audit.deciding || closing}
+                onClick={() => beginDecision("ACCEPT")}
+                className={BUTTON_VARIANTS.approve}
+              >
+                {result?.outcome === "REVIEW_DECREASE"
+                  ? `Confirm ${result.observedQuantity} & continue`
+                  : "Continue putaway"}
+              </button>
+            )}
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  if (audit.result !== null && audit.pending.purpose === "RETRIEVAL") {
+    const result = audit.analysis as RetrievalCaptureView | null;
+    const simulation = result?.captureMode === "SIMULATION";
+    const retryCapture = simulation
+      ? "run the next simulated capture"
+      : "take a fresh photo";
+    const canAccept =
+      result &&
+      ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
+    const warning =
+      result?.outcome === "FOREIGN_OBJECTS"
+        ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
+        : result?.outcome === "LOW_CONFIDENCE"
+          ? "The count is not confident enough to check out this bin. Improve the view and retry."
+          : result?.outcome === "CAPACITY_EXCEEDED"
+            ? "The observed quantity exceeds this bin’s capacity — the reading looks wrong. Retry the photo."
+            : audit.result === "failure"
+              ? `The image could not be analyzed. ${simulation ? "Run the next simulated capture." : "Take a fresh photo and retry."}`
+              : null;
+    return (
+      <Modal
+        title={`Retrieval comparison · ${audit.pending.binCode}`}
+        onClose={() => {}}
+        closing={closing}
+        onExitComplete={completeDecision}
+        dismissible={false}
+        maxWidthClassName="max-w-3xl"
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ComparisonImage
+              label={simulation ? "Simulation baseline" : "Previous snapshot"}
+              src={result?.previousImageUrl ?? null}
+            />
+            <ComparisonImage
+              label={simulation ? "Simulated capture" : "Current verification"}
+              src={result?.currentImageUrl ?? null}
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <Metric
+              label="Recorded qty"
+              value={result?.expectedQuantity ?? "—"}
+            />
+            <Metric
+              label="Observed qty"
+              value={result?.observedQuantity ?? "—"}
+              tone={result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
+            />
+            <Metric
+              label="Confidence"
+              value={result?.confidencePercent ?? "—"}
+              unit={result?.confidencePercent == null ? undefined : "%"}
+              tone={(result?.confidencePercent ?? 0) > 80 ? "ok" : "warn"}
+            />
+          </div>
+          {warning && (
+            <div className="rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm text-warn">
+              <p className="font-semibold">Verification needs attention</p>
+              <p className="mt-1 text-xs leading-relaxed">{warning}</p>
+            </div>
+          )}
+          {result?.outcome === "INCREASED" && (
+            <p className="text-sm text-success">
+              Higher quantity detected. The checked-out quantity will reflect
+              this photo once retrieval completes.
+            </p>
+          )}
+          {result?.outcome === "REVIEW_DECREASE" && (
+            <p className="text-sm text-warn">
+              The quantity is lower than recorded. Confirm this observed count
+              before the bin is checked out.
+            </p>
+          )}
+          {result?.notes && (
+            <p className="text-xs text-ink-muted">{result.notes}</p>
+          )}
+          {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              disabled={audit.deciding || closing}
+              onClick={() => beginDecision("CANCEL")}
+              className={BUTTON_VARIANTS.danger}
+            >
+              Cancel · return to shelf
+            </button>
+            <button
+              type="button"
+              disabled={audit.deciding || closing}
+              onClick={() => beginDecision("RETRY")}
+              className={BUTTON_VARIANTS.secondary}
+            >
+              {simulation
+                ? result?.outcome === "FOREIGN_OBJECTS"
+                  ? "Removed · next simulation"
+                  : "Run next simulation"
+                : result?.outcome === "FOREIGN_OBJECTS"
+                  ? "Removed · retry photo"
+                  : "Retry photo"}
+            </button>
+            {canAccept && (
+              <button
+                type="button"
+                disabled={audit.deciding || closing}
+                onClick={() => beginDecision("ACCEPT")}
+                className={BUTTON_VARIANTS.approve}
+              >
+                {result?.outcome === "REVIEW_DECREASE"
+                  ? `Confirm ${result.observedQuantity} & continue`
+                  : "Continue retrieval"}
+              </button>
+            )}
           </div>
         </div>
       </Modal>
@@ -298,44 +621,97 @@ export function AuditCaptureDialog() {
   // unexpected-stock capture finalizes straight to ACCEPTED server-side
   // (nothing on file to confirm or retry against), so it falls through to
   // the plain fallback screen below instead of offering a stale "Retry".
-  if (audit.result !== null && audit.pending.purpose === "AUDIT" && audit.result === "success"
-    && (audit.analysis as AuditCaptureView).status !== "ACCEPTED") {
+  if (
+    audit.result !== null &&
+    audit.pending.purpose === "AUDIT" &&
+    audit.result === "success" &&
+    (audit.analysis as AuditCaptureView).status !== "ACCEPTED"
+  ) {
     const result = audit.analysis as AuditCaptureView;
+    const simulation = result.captureMode === "SIMULATION";
     const copy = AUDIT_COPY[result.outcome];
     return (
-      <Modal title={`Audit comparison · ${audit.pending.binCode}`} onClose={() => {}} closing={closing}
-        onExitComplete={completeDecision} dismissible={false} maxWidthClassName="max-w-3xl">
+      <Modal
+        title={`Audit comparison · ${audit.pending.binCode}`}
+        onClose={() => {}}
+        closing={closing}
+        onExitComplete={completeDecision}
+        dismissible={false}
+        maxWidthClassName="max-w-3xl"
+      >
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <ComparisonImage label="Previous accepted snapshot" src={result.previousImageUrl} />
-            <ComparisonImage label="Newly captured snapshot" src={result.currentImageUrl} />
+            <ComparisonImage
+              label={
+                simulation
+                  ? "Simulation baseline"
+                  : "Previous accepted snapshot"
+              }
+              src={result.previousImageUrl}
+            />
+            <ComparisonImage
+              label={
+                simulation ? "Simulated capture" : "Newly captured snapshot"
+              }
+              src={result.currentImageUrl}
+            />
           </div>
           <div className="grid grid-cols-3 gap-2">
             <Metric label="Recorded qty" value={result.expectedQuantity} />
-            <Metric label="Observed qty" value={result.observedQuantity ?? "—"}
-              tone={copy.tone === "warn" ? "warn" : "accent"} />
-            <Metric label="Confidence" value={result.confidencePercent ?? "—"} unit={result.confidencePercent == null ? undefined : "%"}
-              tone={(result.confidencePercent ?? 0) > 80 ? "ok" : "warn"} />
+            <Metric
+              label="Observed qty"
+              value={result.observedQuantity ?? "—"}
+              tone={copy.tone === "warn" ? "warn" : "accent"}
+            />
+            <Metric
+              label="Confidence"
+              value={result.confidencePercent ?? "—"}
+              unit={result.confidencePercent == null ? undefined : "%"}
+              tone={(result.confidencePercent ?? 0) > 80 ? "ok" : "warn"}
+            />
           </div>
-          <div className={`rounded-xl border p-3 text-sm ${copy.tone === "warn" ? "border-warn/40 bg-warn-soft text-warn" : "border-success/40 bg-success-soft text-success"}`}>
+          <div
+            className={`rounded-xl border p-3 text-sm ${copy.tone === "warn" ? "border-warn/40 bg-warn-soft text-warn" : "border-success/40 bg-success-soft text-success"}`}
+          >
             <p className="font-semibold">{copy.headline}</p>
-            <p className="mt-1 text-xs leading-relaxed">{copy.message(result)}</p>
+            <p className="mt-1 text-xs leading-relaxed">
+              {copy.message(result)}
+            </p>
           </div>
-          {result.notes && result.outcome !== "LOW_CONFIDENCE" && <p className="text-xs text-ink-muted">{result.notes}</p>}
+          {result.notes && result.outcome !== "LOW_CONFIDENCE" && (
+            <p className="text-xs text-ink-muted">{result.notes}</p>
+          )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
             {copy.secondary && (
-              <button type="button" disabled={audit.deciding || closing} onClick={() => beginDecision(copy.secondary!.decision)} className={BUTTON_VARIANTS.secondary}>
-                {copy.secondary.label}
+              <button
+                type="button"
+                disabled={audit.deciding || closing}
+                onClick={() => beginDecision(copy.secondary!.decision)}
+                className={BUTTON_VARIANTS.secondary}
+              >
+                {simulation && copy.secondary.decision === "RETRY"
+                  ? "Run next simulation"
+                  : copy.secondary.label}
               </button>
             )}
             <button
               type="button"
               disabled={audit.deciding || closing}
               onClick={() => beginDecision(copy.primary.decision)}
-              className={copy.primary.decision === "ACCEPT" ? BUTTON_VARIANTS.approve : BUTTON_VARIANTS.secondary}
+              className={
+                copy.primary.decision === "ACCEPT"
+                  ? BUTTON_VARIANTS.approve
+                  : BUTTON_VARIANTS.secondary
+              }
             >
-              {typeof copy.primary.label === "function" ? copy.primary.label(result) : copy.primary.label}
+              {copy.primary.decision === "RETRY" && simulation
+                ? result.outcome === "FOREIGN_OBJECTS"
+                  ? "Removed · next simulation"
+                  : "Run next simulation"
+                : typeof copy.primary.label === "function"
+                  ? copy.primary.label(result)
+                  : copy.primary.label}
             </button>
           </div>
         </div>
@@ -343,34 +719,87 @@ export function AuditCaptureDialog() {
     );
   }
 
-  if (audit.result !== null) return (
-    <Modal title={`Capture · ${audit.pending.binCode}`} onClose={audit.close} maxWidthClassName="max-w-lg">
-      <div className="space-y-4">
-        <p className={audit.result === "success" ? "text-success" : "text-danger"}>
-          {audit.result === "success" ? "Frame analyzed" : "Capture could not be confirmed"}
-        </p>
-        <p className="text-sm text-ink-muted">{audit.result === "failure"
-          ? "Audit capture failed. Follow the safe return and review outcome in the Warehouse Agent conversation."
-          : "Photo verification finished. Follow the audit result in the Warehouse Agent conversation."}</p>
-        <button type="button" onClick={audit.close} className={BUTTON_VARIANTS.secondary}>Back to warehouse</button>
-      </div>
-    </Modal>
-  );
+  if (audit.result !== null)
+    return (
+      <Modal
+        title={`Capture · ${audit.pending.binCode}`}
+        onClose={audit.close}
+        maxWidthClassName="max-w-lg"
+      >
+        <div className="space-y-4">
+          <p
+            className={
+              audit.result === "success" ? "text-success" : "text-danger"
+            }
+          >
+            {audit.result === "success"
+              ? "Frame analyzed"
+              : "Capture could not be confirmed"}
+          </p>
+          <p className="text-sm text-ink-muted">
+            {audit.result === "failure"
+              ? "Audit capture failed. Follow the safe return and review outcome in the Warehouse Agent conversation."
+              : "Photo verification finished. Follow the audit result in the Warehouse Agent conversation."}
+          </p>
+          <button
+            type="button"
+            onClick={audit.close}
+            className={BUTTON_VARIANTS.secondary}
+          >
+            Back to warehouse
+          </button>
+        </div>
+      </Modal>
+    );
   if (audit.submitting) return null;
+  const popupTitle =
+    audit.pending.purpose === "PUTAWAY"
+      ? "Putaway snapshot"
+      : audit.pending.purpose === "RETRIEVAL"
+        ? "Retrieval verification"
+        : "Audit capture";
+  const popupCaptureLabel =
+    audit.pending.captureMode === "SIMULATION"
+      ? "Run simulated capture"
+      : audit.pending.purpose === "PUTAWAY"
+        ? "Verify with Pi camera"
+        : audit.pending.purpose === "RETRIEVAL"
+          ? "Verify with Pi camera"
+          : "Capture bin with Pi camera";
   return (
-    <CapturePopup key={audit.pending.captureId} title={`${audit.pending.purpose === "PUTAWAY" ? "Putaway snapshot" : "Audit capture"} · ${audit.pending.binCode}`}
-      onClose={audit.close} dismissible={false}
-      onCapture={() => void audit.capture()} captureLabel={audit.pending.purpose === "PUTAWAY" ? "Verify with Pi camera" : "Capture bin with Pi camera"} error={audit.error} />
+    <CapturePopup
+      key={audit.pending.captureId}
+      title={`${popupTitle} · ${audit.pending.binCode}`}
+      onClose={audit.close}
+      dismissible={false}
+      onCapture={() => void audit.capture()}
+      captureMode={audit.pending.captureMode}
+      captureLabel={popupCaptureLabel}
+      error={audit.error}
+    />
   );
 }
 
-function ComparisonImage({ label, src }: { label: string; src: string | null }) {
-  return <figure className="overflow-hidden rounded-xl border border-line bg-bg-elevated">
-    <div className="flex aspect-[4/3] items-center justify-center bg-black/20">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      {src ? <img src={src} alt={label} className="h-full w-full object-contain" />
-        : <span className="text-xs text-ink-faint">No previous snapshot</span>}
-    </div>
-    <figcaption className="border-t border-line px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-ink-muted">{label}</figcaption>
-  </figure>;
+function ComparisonImage({
+  label,
+  src,
+}: {
+  label: string;
+  src: string | null;
+}) {
+  return (
+    <figure className="overflow-hidden rounded-xl border border-line bg-bg-elevated">
+      <div className="flex aspect-[4/3] items-center justify-center bg-black/20">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        {src ? (
+          <img src={src} alt={label} className="h-full w-full object-contain" />
+        ) : (
+          <span className="text-xs text-ink-faint">No previous snapshot</span>
+        )}
+      </div>
+      <figcaption className="border-t border-line px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-ink-muted">
+        {label}
+      </figcaption>
+    </figure>
+  );
 }
