@@ -4,6 +4,7 @@ export type PutawayCaptureOutcome =
   | "READY"
   | "INCREASED"
   | "REVIEW_DECREASE"
+  | "ANALYSIS_FAILED"
   | "LOW_CONFIDENCE"
   | "CAPACITY_EXCEEDED"
   | "FOREIGN_OBJECTS";

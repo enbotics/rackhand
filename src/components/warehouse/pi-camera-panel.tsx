@@ -23,8 +23,12 @@ function getStatusText(capture: CameraCaptureJobView | null) {
   switch (capture.status) {
     case "PENDING":
       return {
-        title: "Waiting for camera",
-        detail: "The server is waiting for the Raspberry Pi camera worker.",
+        title:
+          capture.queuePosition && capture.queuePosition > 1
+            ? `Waiting for camera · position ${capture.queuePosition}`
+            : "Next in camera queue",
+        detail:
+          "The Raspberry Pi processes one operator capture at a time.",
       };
 
     case "CLAIMED":

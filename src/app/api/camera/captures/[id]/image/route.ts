@@ -1,5 +1,4 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import { readCameraCapture } from "@/lib/camera/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,14 +19,8 @@ export async function GET(
     });
   }
 
-  const root =
-    process.env.CAMERA_CAPTURE_DIR ??
-    path.join(process.cwd(), "data", "camera-captures");
-
-  const filepath = path.join(root, `${safeId}.jpg`);
-
   try {
-    const buffer = await fs.readFile(filepath);
+    const buffer = await readCameraCapture(safeId);
 
     return new Response(buffer, {
       status: 200,

@@ -1,9 +1,14 @@
+import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 /** Same-origin proxy for the Pi's LAN-only MJPEG stream. */
 export async function GET(request: Request) {
+  if (!warehouseSessionIdFromRequest(request)) {
+    return new Response("A valid warehouse session is required.", { status: 400 });
+  }
   const configured = process.env.CAMERA_STREAM_URL?.trim()
     || "http://warehouse-pi.local:8000/stream.mjpg";
   let streamUrl: URL;

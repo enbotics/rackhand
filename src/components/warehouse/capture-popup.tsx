@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./modal";
 import { BUTTON_VARIANTS, ErrorNote } from "./ui";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
+import { warehouseBrowserSessionId } from "@/lib/warehouse/browser-session";
+import { WAREHOUSE_SESSION_QUERY } from "@/lib/warehouse/workflow-session";
 
 /** Dismiss smoothly, then run the workflow's selected capture source. */
 export function CapturePopup({ title, onCapture, onClose, disabled = false, error, captureLabel = "Capture & identify", dismissible = true, captureMode = "PROD" }: {
@@ -21,10 +23,16 @@ export function CapturePopup({ title, onCapture, onClose, disabled = false, erro
   const [previewReady, setPreviewReady] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const exitStarted = useRef(false);
   const reduced = usePrefersReducedMotion();
   const callbacks = useRef({ onCapture, onClose });
   callbacks.current = { onCapture, onClose };
+  useEffect(() => {
+    setPreviewUrl(
+      `/api/camera/live?${WAREHOUSE_SESSION_QUERY}=${encodeURIComponent(warehouseBrowserSessionId())}`,
+    );
+  }, []);
   useEffect(() => {
     if (!exit || !reduced) return;
     const frame = requestAnimationFrame(() => completeExit());
@@ -66,10 +74,10 @@ export function CapturePopup({ title, onCapture, onClose, disabled = false, erro
               </p>
             </div>
           </div>
-        ) : !previewFailed && (
+        ) : previewUrl && !previewFailed && (
           <img
             key={previewAttempt}
-            src="/api/camera/live"
+            src={previewUrl}
             alt="Live Raspberry Pi camera preview"
             className={`h-full w-full object-cover transition-opacity duration-500 ${previewReady ? "opacity-100" : "opacity-0"}`}
             onLoad={() => setPreviewReady(true)}
