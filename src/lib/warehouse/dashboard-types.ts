@@ -94,6 +94,7 @@ export interface MovementRowView {
 }
 
 export interface BinAuditView {
+  captureMode: "PROD" | "SIMULATION";
   binAuditId: string;
   binCode: string;
   sku: string | null;

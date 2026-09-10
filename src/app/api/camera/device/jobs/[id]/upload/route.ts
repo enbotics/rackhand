@@ -21,6 +21,7 @@ import {
   measureImageBuffer,
 } from "@/lib/measurement/measure-image-buffer";
 import { processPutawayCameraCapture } from "@/lib/warehouse/putaway-verification";
+import { processRetrievalCameraCapture } from "@/lib/warehouse/retrieval-verification";
 import { processAuditCameraCapture } from "@/lib/warehouse/audit-bin-service";
 
 export const runtime = "nodejs";
@@ -80,6 +81,19 @@ async function processUploadedCapture(jobId: string, imageBuffer: Buffer) {
           throw new Error("Putaway camera job has no workflow capture attempt.");
         }
         result = await processPutawayCameraCapture(
+          processingJob.workflowCaptureId,
+          {
+            ...captureInput,
+            requestedAt: processingJob.requestedAt,
+            workflowAttempt: processingJob.workflowAttempt,
+          },
+        );
+        break;
+      case "RETRIEVAL_VERIFICATION":
+        if (!processingJob.workflowCaptureId || processingJob.workflowAttempt === null) {
+          throw new Error("Retrieval camera job has no workflow capture attempt.");
+        }
+        result = await processRetrievalCameraCapture(
           processingJob.workflowCaptureId,
           {
             ...captureInput,

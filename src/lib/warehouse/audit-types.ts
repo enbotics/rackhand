@@ -24,6 +24,7 @@ export type BinAuditOutcomeStatus =
   | "FAILED";
 
 export interface BinAuditResult {
+  captureMode: "PROD" | "SIMULATION";
   binAuditId: string;
   binCode: string;
   status: BinAuditOutcomeStatus;

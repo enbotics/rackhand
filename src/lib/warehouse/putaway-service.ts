@@ -10,7 +10,7 @@ import { prisma } from "./db";
 import { matchScanToCatalog } from "./catalog-matcher";
 import { resolveCatalogIdentity } from "./catalog-identity";
 import { evaluatePutawayDestination } from "./putaway-destination";
-import { getBinByCode, listPutawayDestinations, updateMovementStatus } from "./repository";
+import { getBinByCode, listPutawayDestinations } from "./repository";
 import { collectScanResultIssues } from "./scan-result";
 import { requirePutawayVerification } from "./putaway-verification";
 import {
@@ -31,6 +31,7 @@ import type { Bin, Movement, Part } from "@/generated/prisma/client";
 import { compareBinsInShelfOrder } from "./bin-layout";
 import { recoverAbandonedPutaways } from "./putaway-recovery-service";
 import { scheduleSimulationRevert } from "./simulation-revert";
+import { SimulationEvidenceError } from "./simulation-evidence";
 
 function logPutaway(fields: string): void {
   if (process.env.NODE_ENV !== "test") console.log(`[putaway] ${fields}`);
@@ -401,7 +402,9 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     return fail(
       scanId,
       "photo_upload_failed",
-      "Fresh photo verification failed or timed out, so the gantry did not move. Check the camera and retry putaway.",
+      error instanceof SimulationEvidenceError
+        ? `${error.message} The gantry did not move.`
+        : "Fresh photo verification failed or timed out, so the gantry did not move. Check the camera and retry putaway.",
       { movementId: movement.id },
     );
   }
@@ -412,7 +415,21 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
 
   let operation: GantryOperation;
   try {
-    await updateMovementStatus(movement.id, "RUNNING");
+    const claimedForMotion = await prisma.movement.updateMany({
+      where: {
+        id: movement.id,
+        status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] },
+      },
+      data: { status: "RUNNING" },
+    });
+    if (claimedForMotion.count !== 1) {
+      return fail(
+        scanId,
+        "putaway_in_progress",
+        `The putaway for bin ${bin.code} was superseded before gantry motion. Start putaway again.`,
+        { movementId: movement.id },
+      );
+    }
     operation = checkedOutReturn
       ? await gantry.returnBin({ source: PUTAWAY_RETURN_SOURCE, destination })
       : await gantry.putaway({ source: PUTAWAY_SOURCE, destination });
@@ -560,13 +577,61 @@ export interface CheckedOutReturnRequest {
   binCode?: string;
 }
 
-/** Return a checked-out bin only after a fresh manual snapshot. Quantity is
- * preserved here; inventory auditing is solely responsible for recounting it. */
+/** Return a checked-out bin only after a fresh manual comparison snapshot. */
 export async function returnCheckedOutBin(
   input: CheckedOutReturnRequest,
 ): Promise<PutawayResult> {
   await recoverAbandonedPutaways();
   const requestedCode = input.binCode?.trim().toUpperCase();
+
+  const reservedReturnMovements = requestedCode
+    ? []
+    : await prisma.movement.findMany({
+        where: {
+          type: "PUTAWAY",
+          sourceLocation: PUTAWAY_RETURN_SOURCE,
+          status: { in: ["VALIDATED", "AWAITING_PLACEMENT", "RUNNING"] },
+          destinationBin: { status: "RESERVED" },
+        },
+        include: { destinationBin: true },
+        orderBy: { createdAt: "desc" },
+      });
+  const reservedCodes = requestedCode
+    ? [requestedCode]
+    : [...new Set(reservedReturnMovements.flatMap((movement) =>
+        movement.destinationBin ? [movement.destinationBin.code] : [],
+      ))];
+
+  // recoverAbandonedPutaways() already ran above, so anything still pending
+  // here for one of these bins is genuinely active, not merely abandoned —
+  // never steal it, and never infer a physical location for one that
+  // reached RUNNING (the gantry may have already moved it for real).
+  for (const code of reservedCodes) {
+    const activeReturn = await prisma.movement.findFirst({
+      where: {
+        type: "PUTAWAY",
+        sourceLocation: PUTAWAY_RETURN_SOURCE,
+        destinationBin: { code },
+        status: { in: ["VALIDATED", "AWAITING_PLACEMENT", "RUNNING"] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!activeReturn) continue;
+    if (activeReturn.status === "RUNNING" || activeReturn.gantryOperationId) {
+      return fail(
+        "",
+        "bin_unavailable",
+        `Bin ${code} is reserved by a workflow whose physical state cannot be safely inferred. Manual reconciliation is required.`,
+        { movementId: activeReturn.id },
+      );
+    }
+    return fail(
+      "",
+      "putaway_in_progress",
+      `Bin ${code} already has an active putaway verification. Continue that capture instead of starting another return.`,
+      { movementId: activeReturn.id },
+    );
+  }
 
   const checkedOutBins = await prisma.bin.findMany({
     where: { status: "CHECKED_OUT" },
@@ -661,14 +726,30 @@ export async function returnCheckedOutBin(
     return fail(
       "",
       "photo_required",
-      "Fresh photo verification failed or timed out, so the gantry did not move. Check the camera and retry putaway.",
+      error instanceof SimulationEvidenceError
+        ? `${error.message} The gantry did not move.`
+        : "Fresh photo verification failed or timed out, so the gantry did not move. Check the camera and retry putaway.",
       { movementId: movement.id },
     );
   }
 
   let operation: GantryOperation;
   try {
-    await updateMovementStatus(movement.id, "RUNNING");
+    const claimedForMotion = await prisma.movement.updateMany({
+      where: {
+        id: movement.id,
+        status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] },
+      },
+      data: { status: "RUNNING" },
+    });
+    if (claimedForMotion.count !== 1) {
+      return fail(
+        "",
+        "putaway_in_progress",
+        `Bin ${bin.code}'s return was superseded before gantry motion. Start putaway again.`,
+        { movementId: movement.id },
+      );
+    }
     operation = await gantry.returnBin({ source: PUTAWAY_RETURN_SOURCE, destination: bin.code });
   } catch (error) {
     const busy = isGantryError(error) && error.code === "gantry_busy";

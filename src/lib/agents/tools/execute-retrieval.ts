@@ -8,14 +8,20 @@
  *
  *   Strands tool -> RetrievalService -> catalog + inventory + GantryController
  *
- * IDENTITY IS AUTHORITATIVE, NEVER FREE TEXT. The tool takes a SKU or a part
- * id, not "a 6204 bearing". Interpreting an operator's phrasing is what the
+ * IDENTITY IS AUTHORITATIVE, NEVER FREE TEXT. The tool takes a SKU, a part
+ * id, or a bin code — not "a 6204 bearing". A bin holds at most one SKU at a
+ * time (the same invariant get_bin_status relies on), so naming ONLY a bin
+ * is itself authoritative identity, resolved from what that bin actually
+ * holds — never a guess. Interpreting an operator's phrasing is what the
  * read-only tools are for; by the time the gantry is asked to move, the part
- * must already be pinned down. The service revalidates it regardless.
+ * (or the bin standing in for it) must already be pinned down. The service
+ * revalidates it regardless.
  *
- * The machine checks out the entire source bin. Its last verified quantity is
- * preserved until the bin returns through photographed putaway, when the
- * deterministic service reconciles the observed remainder.
+ * The machine checks out the entire source bin. Once the gantry carries it to
+ * OUTPUT, a fresh camera photo confirms its contents against the last
+ * recorded count before the checkout is finalized — the same confidence/
+ * foreign-object/capacity gates putaway's own verification uses. A low or
+ * uncertain read sends the bin back to its shelf instead of completing.
  *
  * IDEMPOTENCY IS SERVER-OWNED. The HTTP request id is used, so one operator
  * message can cause at most one physical retrieval. It is deliberately absent
@@ -36,8 +42,8 @@ export const executeRetrievalInputSchema = z
       .trim()
       .min(1)
       .optional()
-      .describe("Exact catalog SKU, e.g. \"BRG-6204\". Resolve it with search_catalog or search_inventory first."),
-    partId: z.string().trim().min(1).optional().describe("Internal catalog part id."),
+      .describe("Exact catalog SKU, e.g. \"BRG-6204\". Resolve it with search_catalog or search_inventory first. Omit if identifying by bin alone."),
+    partId: z.string().trim().min(1).optional().describe("Internal catalog part id. Omit if identifying by bin alone."),
     sourceBinCode: z
       .string()
       .trim()
@@ -45,17 +51,18 @@ export const executeRetrievalInputSchema = z
       .max(20)
       .optional()
       .describe(
-        "Optional bin to take it from, e.g. \"B2-01\". Omit it unless the operator named a bin; the warehouse otherwise picks deterministically.",
+        "A bin to take it from, e.g. \"B2-01\". With sku/partId, just narrows where to take it from. WITHOUT sku or partId, this alone IS the identity — the operator named a bin and nothing else, e.g. \"retrieve B2-01\": pass only sourceBinCode and the part is resolved from that bin's own contents (a bin holds at most one SKU). Omit entirely, with sku/partId given, to let the warehouse pick a bin deterministically.",
       ),
   })
-  .refine((value) => Boolean(value.sku) !== Boolean(value.partId), {
-    message: "provide exactly one of sku or partId",
-  });
+  .refine(
+    (value) => !(value.sku && value.partId) && Boolean(value.sku || value.partId || value.sourceBinCode),
+    { message: "provide a sku, a partId, or a sourceBinCode" },
+  );
 
 export const executeRetrievalTool = tool({
   name: EXECUTE_RETRIEVAL_TOOL_NAME,
   description:
-    "Check out the entire physical bin holding an exact catalog part and move that bin to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. Resolve an exact SKU or part id first; the service independently revalidates stock and source-bin occupancy.",
+    "Check out one entire physical bin and move it to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Identify what to retrieve either by an exact SKU/part id (optionally narrowed to one bin), or by sourceBinCode ALONE when the operator only named a bin — a bin holds at most one SKU, so the bin code is itself authoritative identity, resolved server-side from that bin's contents, never guessed. A fresh camera photo at OUTPUT must confirm the bin's contents at strictly above 80% confidence before the checkout is finalized — foreign objects, occlusion, low confidence, or capacity overflow send the bin back to its shelf instead of completing, and a lower-than-recorded count requires explicit human confirmation, mirroring execute_putaway's own verification gate. On success the bin is marked CHECKED_OUT with the camera-verified quantity, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. The service independently revalidates identity, stock and source-bin occupancy.",
   inputSchema: executeRetrievalInputSchema,
   callback: async ({ sku, partId, sourceBinCode }) => {
     try {
@@ -74,9 +81,9 @@ export const executeRetrievalTool = tool({
       const result = run.result;
       logTool(
         EXECUTE_RETRIEVAL_TOOL_NAME,
-        `part="${sku ?? partId}" bin="${sourceBinCode ?? "auto"}"`,
+        `part="${sku ?? partId ?? "(from bin)"}" bin="${sourceBinCode ?? "auto"}"`,
         result.ok
-          ? `CHECKED_OUT ${result.sourceBinCode} with ${result.checkedOutQuantity} last-verified unit(s)`
+          ? `CHECKED_OUT ${result.sourceBinCode} with ${result.checkedOutQuantity} camera-verified unit(s)`
           : result.reason,
       );
       return result;

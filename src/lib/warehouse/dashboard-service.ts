@@ -22,6 +22,7 @@ import type {
   MovementRowView,
   WarehouseOverview,
 } from "./dashboard-types";
+import { isSimulationEvidenceUrl } from "./simulation-evidence";
 import { confidencePercent } from "./audit-types";
 import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
@@ -267,6 +268,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
         startedAt: latestAudit.startedAt.getTime(),
         completedAt: latestAudit.completedAt?.getTime() ?? null,
         bins: latestAudit.binAudits.map((audit) => ({
+          captureMode: isSimulationEvidenceUrl(audit.evidenceUrl) ? "SIMULATION" as const : "PROD" as const,
           binAuditId: audit.id,
           binCode: audit.bin.code,
           sku: audit.expectedPart?.sku ?? null,
@@ -292,7 +294,9 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
           // "confident and safe, just lower than what's on file." Every
           // other REVIEW_REQUIRED reason means the count can't be trusted at
           // all, so applying it would defeat the point of flagging it.
-          canApply: audit.errorCode === "audit_pending_confirmation",
+          canApply:
+            audit.errorCode === "audit_pending_confirmation" &&
+            !isSimulationEvidenceUrl(audit.evidenceUrl),
           reason: audit.errorCode,
         })),
       }

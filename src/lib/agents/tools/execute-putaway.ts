@@ -61,7 +61,7 @@ export const executePutawayInputSchema = z.object({
 export const executePutawayTool = tool({
   name: EXECUTE_PUTAWAY_TOOL_NAME,
   description:
-    "Call this tool immediately for an explicit putaway or CHECKED_OUT-bin return; never ask for a photo in chat. After client HITL it opens a manual comparison flow. One fresh image is counted at strictly over 80% confidence: equal proceeds, higher auto-updates after movement, lower requires human confirmation, and foreign objects/low confidence/occlusion/capacity overflow require a fresh retry. The gantry runs only after acceptance. ok:true means movement and database commit completed.",
+    "Call this tool immediately for an explicit putaway or CHECKED_OUT-bin return; never ask for a photo in chat. After client HITL it opens the comparison flow. Production uses one fresh Pi frame; Simulation uses the next controlled fixture through the same Gemini and decision gates. Strictly over 80% confidence is required: equal proceeds, higher auto-updates after movement, lower requires human confirmation, and foreign objects/low confidence/occlusion/capacity overflow require the appropriate next capture. The gantry runs only after acceptance. ok:true means movement and database commit completed.",
   inputSchema: executePutawayInputSchema,
   callback: async ({ destinationBinCode, binCode }) => {
     // The scan the API validated — never one the model wrote.

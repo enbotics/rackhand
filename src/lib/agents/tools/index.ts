@@ -1,7 +1,7 @@
 /**
  * The Warehouse Agent's approved tool list — its entire capability boundary.
  *
- * Eight READ-ONLY tools plus three high-level physical tools: execute_putaway,
+ * Nine READ-ONLY tools plus three high-level physical tools: execute_putaway,
  * execute_retrieval and execute_inventory_audit. The Inventory Auditor agent
  * is mounted dynamically by warehouse-agent.ts as an additional read-only
  * orchestration tool for client calls. Every tool delegates to a warehouse service, repository
@@ -29,6 +29,7 @@ import { getPartTool, GET_PART_TOOL_NAME } from "./get-part";
 import { searchInventoryTool, SEARCH_INVENTORY_TOOL_NAME } from "./search-inventory";
 import { getBinStatusTool, GET_BIN_STATUS_TOOL_NAME } from "./get-bin-status";
 import { listAvailableBinsTool, LIST_AVAILABLE_BINS_TOOL_NAME } from "./list-available-bins";
+import { listBinsTool, LIST_BINS_TOOL_NAME } from "./list-bins";
 import { matchCatalogTool, MATCH_CATALOG_TOOL_NAME } from "./match-catalog";
 import { executePutawayTool, EXECUTE_PUTAWAY_TOOL_NAME } from "./execute-putaway";
 import { executeRetrievalTool, EXECUTE_RETRIEVAL_TOOL_NAME } from "./execute-retrieval";
@@ -58,6 +59,7 @@ export const WAREHOUSE_AGENT_TOOLS = [
   searchInventoryTool,
   getBinStatusTool,
   listAvailableBinsTool,
+  listBinsTool,
   matchCatalogTool,
   executePutawayTool,
   executeRetrievalTool,
@@ -81,6 +83,7 @@ export const APPROVAL_FREE_TOOL_NAMES = [
   SEARCH_INVENTORY_TOOL_NAME,
   GET_BIN_STATUS_TOOL_NAME,
   LIST_AVAILABLE_BINS_TOOL_NAME,
+  LIST_BINS_TOOL_NAME,
   MATCH_CATALOG_TOOL_NAME,
   INVENTORY_AUDITOR_TOOL_NAME,
 ] as const;
@@ -101,6 +104,7 @@ export const WAREHOUSE_AGENT_TOOL_NAMES = [
   SEARCH_INVENTORY_TOOL_NAME,
   GET_BIN_STATUS_TOOL_NAME,
   LIST_AVAILABLE_BINS_TOOL_NAME,
+  LIST_BINS_TOOL_NAME,
   MATCH_CATALOG_TOOL_NAME,
   EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
@@ -123,6 +127,8 @@ export {
   GET_BIN_STATUS_TOOL_NAME,
   listAvailableBinsTool,
   LIST_AVAILABLE_BINS_TOOL_NAME,
+  listBinsTool,
+  LIST_BINS_TOOL_NAME,
   matchCatalogTool,
   MATCH_CATALOG_TOOL_NAME,
   requestGuidedPutawayTool,

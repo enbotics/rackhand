@@ -3,22 +3,25 @@ import { CAMERA_SSE_HEADERS, sseEvent, sseHeartbeat } from "@/lib/camera/sse";
 import { createRealtimeAdminClient } from "@/lib/supabase/realtime-admin";
 import { pendingAuditCapture } from "@/lib/warehouse/audit-bin-service";
 import { pendingPutawayCapture } from "@/lib/warehouse/putaway-verification";
+import { pendingRetrievalCapture } from "@/lib/warehouse/retrieval-verification";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 async function pendingCapture() {
-  const [putaway, audit] = await Promise.all([
+  const [putaway, retrieval, audit] = await Promise.all([
     pendingPutawayCapture(),
+    pendingRetrievalCapture(),
     pendingAuditCapture(),
   ]);
   if (putaway.captureId) return { ...putaway, purpose: "PUTAWAY" as const };
+  if (retrieval.captureId) return { ...retrieval, purpose: "RETRIEVAL" as const };
   if (audit.captureId) return audit;
   return { captureId: null };
 }
 
-/** Pushes newly requested putaway/audit captures to the shared popup. */
+/** Pushes newly requested putaway/retrieval/audit captures to the shared popup. */
 export function GET(request: Request) {
   const supabase = createRealtimeAdminClient();
   let cleanup: (() => void) | undefined;
@@ -57,6 +60,11 @@ export function GET(request: Request) {
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "PutawayCaptureRequest" },
+          () => void pushCurrent(),
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "RetrievalCaptureRequest" },
           () => void pushCurrent(),
         )
         .on(

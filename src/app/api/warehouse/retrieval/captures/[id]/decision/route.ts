@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { decidePutawayCapture } from "@/lib/warehouse/putaway-verification";
-import type { PutawayCaptureDecision } from "@/lib/warehouse/putaway-capture-types";
+import { decideRetrievalCapture } from "@/lib/warehouse/retrieval-verification";
+import type { RetrievalCaptureDecision } from "@/lib/warehouse/retrieval-capture-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,12 +18,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: { message: "Decision must be ACCEPT, RETRY or CANCEL." } }, { status: 422 });
   }
   try {
-    return NextResponse.json(await decidePutawayCapture(id, decision as PutawayCaptureDecision));
+    return NextResponse.json(await decideRetrievalCapture(id, decision as RetrievalCaptureDecision));
   } catch (error) {
     const reason = error instanceof Error ? error.message : "";
-    const message = reason.startsWith("This ") || reason.startsWith("The putaway ")
+    const message = reason.startsWith("This ") || reason.startsWith("The retrieval ")
       ? reason
-      : "The putaway verification decision could not be applied.";
+      : "The retrieval verification decision could not be applied.";
     return NextResponse.json({
       error: { message },
     }, { status: 409 });

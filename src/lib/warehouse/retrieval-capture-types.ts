@@ -1,6 +1,7 @@
-export const PUTAWAY_CAPTURE_CONFIDENCE_THRESHOLD = 0.8;
+/** Mirrors putaway-capture-types.ts — same comparison UI, same decision shape. */
+export const RETRIEVAL_CAPTURE_CONFIDENCE_THRESHOLD = 0.8;
 
-export type PutawayCaptureOutcome =
+export type RetrievalCaptureOutcome =
   | "READY"
   | "INCREASED"
   | "REVIEW_DECREASE"
@@ -8,12 +9,12 @@ export type PutawayCaptureOutcome =
   | "CAPACITY_EXCEEDED"
   | "FOREIGN_OBJECTS";
 
-export interface PutawayCaptureView {
+export interface RetrievalCaptureView {
   captureMode: "PROD" | "SIMULATION";
   captureId: string;
   binCode: string;
   status: string;
-  outcome: PutawayCaptureOutcome;
+  outcome: RetrievalCaptureOutcome;
   expectedQuantity: number;
   observedQuantity: number | null;
   confidencePercent: number | null;
@@ -23,4 +24,4 @@ export interface PutawayCaptureView {
   notes: string | null;
 }
 
-export type PutawayCaptureDecision = "ACCEPT" | "RETRY" | "CANCEL";
+export type RetrievalCaptureDecision = "ACCEPT" | "RETRY" | "CANCEL";

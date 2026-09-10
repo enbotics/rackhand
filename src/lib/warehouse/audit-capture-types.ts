@@ -14,6 +14,7 @@ export type AuditCaptureOutcome =
   | "FOREIGN_OBJECTS";
 
 export interface AuditCaptureView {
+  captureMode: "PROD" | "SIMULATION";
   captureId: string;
   binCode: string;
   status: string;

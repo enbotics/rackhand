@@ -21,7 +21,7 @@
  * unavailable until photographed return putaway reconciles it.
  */
 import { prisma } from "./db";
-import { getInventoryForPart } from "./inventory-service";
+import { getInventoryByBin, getInventoryForPart } from "./inventory-service";
 import { getBinByCode, getPartById, getPartBySku, updateMovementStatus } from "./repository";
 import {
   RETRIEVAL_DESTINATION,
@@ -37,6 +37,7 @@ import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Movement } from "@/generated/prisma/client";
 import { compareBinsInShelfOrder } from "./bin-layout";
 import { isOutOfSimulationScope, SIMULATION_ELIGIBLE_BINS } from "./audit-capture-mode";
+import { requireRetrievalVerification } from "./retrieval-verification";
 
 /**
  * Retrieval and putaway share one `Movement.idempotencyKey` column, so the
@@ -85,16 +86,23 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   const requestId = input?.requestId?.trim() || createRetrievalRequestId();
   const idempotencyKey = `${RETRIEVAL_IDEMPOTENCY_PREFIX}${requestId}`;
 
-  /* 1 — the request itself. Exactly one identifier: accepting both would need
-     a precedence rule the caller cannot see, and a request naming two
-     different parts is a mistake worth reporting. */
-  const sku = typeof input?.sku === "string" ? input.sku.trim() : "";
-  const partId = typeof input?.partId === "string" ? input.partId.trim() : "";
-  if (Boolean(sku) === Boolean(partId)) {
+  /* 1 — the request itself. At most one of sku/partId — accepting both
+     would need a precedence rule the caller cannot see, and a request
+     naming two different parts is a mistake worth reporting. Neither is
+     required: a bin ALONE is itself authoritative identity (see the
+     RetrievalRequest doc comment), so a request needs sku, partId, or a
+     sourceBinCode to identify by — never none of the three. */
+  let sku = typeof input?.sku === "string" ? input.sku.trim() : "";
+  let partId = typeof input?.partId === "string" ? input.partId.trim() : "";
+  const requestedBinCode = typeof input?.sourceBinCode === "string" ? input.sourceBinCode.trim().toUpperCase() : "";
+  if (sku && partId) {
+    return fail(requestId, "invalid_request", "Provide at most one of sku or partId, not both.");
+  }
+  if (!sku && !partId && !requestedBinCode) {
     return fail(
       requestId,
       "invalid_request",
-      "Provide exactly one of sku or partId to identify the part to retrieve.",
+      "Provide a sku, a partId, or a sourceBinCode to identify what to retrieve.",
     );
   }
 
@@ -102,6 +110,28 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   const claimed = await prisma.movement.findUnique({ where: { idempotencyKey } });
   if (claimed) {
     return replayOrReject(claimed, requestId);
+  }
+
+  /* 2.5 — bin-only identity: the bin IS the identity, resolved from its own
+     contents rather than asked for separately — a bin holds at most one
+     SKU, the same invariant get_bin_status already relies on, so this is
+     never a guess. Falls through to the sku/partId path below with sku now
+     populated, which naturally re-validates this exact bin still holds it. */
+  if (!sku && !partId) {
+    const bin = await getBinByCode(requestedBinCode);
+    if (!bin) {
+      return fail(requestId, "source_bin_not_found", `No bin has code "${requestedBinCode}".`);
+    }
+    const [holding] = (await getInventoryByBin(bin.code)).filter((row) => row.quantity > 0);
+    if (!holding) {
+      return fail(
+        requestId,
+        "source_bin_empty",
+        `Bin ${bin.code} is empty; there is nothing to retrieve.`,
+        { sourceBinCode: bin.code },
+      );
+    }
+    sku = holding.sku;
   }
 
   /* 3 — authoritative catalog identity. Never a name the model liked. */
@@ -289,8 +319,54 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     });
   }
 
-  /* 10 — COMMIT TRANSACTION. Inventory stays at its last verified baseline;
-     only its physical availability changes until return putaway recounts it. */
+  /* 9.5 — verify what's actually in the bin before the checkout is final.
+     The gantry already carried it to OUTPUT (the shelf itself is never
+     camera-visible); a failed verification sends it back rather than
+     completing the checkout. */
+  let verification: Awaited<ReturnType<typeof requireRetrievalVerification>>;
+  try {
+    verification = await requireRetrievalVerification(movement.id);
+  } catch (err) {
+    console.error(
+      `[retrieval] verification failed request=${requestId} movement=${movement.id}`,
+      err,
+    );
+    try {
+      // The bin already physically moved to OUTPUT — send it back before
+      // reverting any DB state, so a failed verification never silently
+      // completes a checkout nobody confirmed.
+      const returned = await gantry.returnBin({ source: RETRIEVAL_DESTINATION, destination: source });
+      if (returned.status !== "COMPLETED") throw new Error("bin_return_incomplete");
+    } catch (returnErr) {
+      // The bin may still be physically at OUTPUT. Mirrors retrieval_commit_failed
+      // below: never claim a status the database can't back up — leave the
+      // movement RUNNING and the bin RESERVED for a human to reconcile.
+      console.error(
+        `[retrieval] INCONSISTENT movement=${movement.id} bin=${source} — verification failed and the ` +
+          "bin could not be confirmed returned to its shelf. Reconciliation is required.",
+        returnErr,
+      );
+      return fail(
+        requestId,
+        "photo_upload_failed",
+        "Verification failed and the bin could not be confirmed returned to its shelf. Reconciliation is required.",
+        { movementId: movement.id, partId: part.id, sourceBinCode: source },
+      );
+    }
+    await releaseClaim(movement.id, sourceBin.id);
+    return fail(
+      requestId,
+      "photo_required",
+      "The camera verification failed, so the bin was returned to its shelf without being checked out.",
+      { movementId: movement.id, partId: part.id, sourceBinCode: source },
+    );
+  }
+
+  /* 10 — COMMIT TRANSACTION. The freshly verified count becomes both the
+     checked-out quantity and the new Inventory baseline — camera-confirmed
+     at the moment of removal rather than merely carried over from whatever
+     the database last recorded. Still hidden from availability purely by
+     Bin.status !== OCCUPIED, same as before. */
   try {
     await prisma.$transaction(async (tx) => {
       const stock = await tx.inventory.findUnique({
@@ -304,12 +380,20 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
         data: { status: "CHECKED_OUT" },
       });
       if (checkedOut.count !== 1) throw new Error("retrieval reservation was lost during movement");
+      await tx.inventory.update({
+        where: { id: stock.id },
+        data: { quantity: verification.quantity },
+      });
       await tx.movement.update({
         where: { id: movement.id },
         data: {
           status: "COMPLETED",
           completedAt: new Date(),
           gantryOperationId: operation.operationId,
+          quantity: verification.quantity,
+          imageUrl: verification.imageUrl,
+          verificationImageUrl: verification.imageUrl,
+          verificationCapturedAt: verification.capturedAt,
         },
       });
     });
@@ -338,7 +422,7 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   }
 
   logRetrieval(
-    `movement=${movement.id} gantry=${operation.operationId} status=COMPLETED checkedOut=${sourceQuantityBefore}`,
+    `movement=${movement.id} gantry=${operation.operationId} status=COMPLETED checkedOut=${verification.quantity}`,
   );
 
   return {
@@ -349,9 +433,9 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     destination: RETRIEVAL_DESTINATION,
     movementId: movement.id,
     gantryOperationId: operation.operationId,
-    checkedOutQuantity: sourceQuantityBefore,
+    checkedOutQuantity: verification.quantity,
     inventoryQuantityRemoved: 0,
-    remainingQuantityInBin: sourceQuantityBefore,
+    remainingQuantityInBin: verification.quantity,
     binStatus: "CHECKED_OUT",
     status: "COMPLETED",
   };

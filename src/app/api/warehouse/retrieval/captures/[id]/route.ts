@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { requestPutawayCameraCapture } from "@/lib/warehouse/putaway-verification";
+import { requestRetrievalCameraCapture } from "@/lib/warehouse/retrieval-verification";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   try {
-    const capture = await requestPutawayCameraCapture(id);
+    const capture = await requestRetrievalCameraCapture(id);
     if (capture.captureMode === "SIMULATION") {
       return NextResponse.json({
         captureMode: capture.captureMode,
