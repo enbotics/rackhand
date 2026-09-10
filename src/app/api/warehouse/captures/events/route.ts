@@ -31,6 +31,7 @@ export function GET(request: Request) {
       { status: 400 },
     );
   }
+  const sessionId = ownerSessionId;
   const supabase = createRealtimeAdminClient();
   let cleanup: (() => void) | undefined;
   const stream = new ReadableStream<Uint8Array>({
@@ -49,7 +50,7 @@ export function GET(request: Request) {
         try {
           do {
             pushAgain = false;
-            const capture = await pendingCapture(ownerSessionId);
+            const capture = await pendingCapture(sessionId);
             if (!closed) controller.enqueue(sseEvent("pending", capture));
           } while (pushAgain && !closed);
         } catch (error) {
