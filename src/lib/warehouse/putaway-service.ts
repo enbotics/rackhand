@@ -29,6 +29,8 @@ import { isGantryError } from "@/lib/gantry/errors";
 import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Bin, Movement, Part } from "@/generated/prisma/client";
 import { compareBinsInShelfOrder } from "./bin-layout";
+import { recoverAbandonedPutaways } from "./putaway-recovery-service";
+import { scheduleSimulationRevert } from "./simulation-revert";
 
 function logPutaway(fields: string): void {
   if (process.env.NODE_ENV !== "test") console.log(`[putaway] ${fields}`);
@@ -228,7 +230,11 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     return fail(scanId, "invalid_scan", `The scan is not valid: ${issues.join("; ")}`);
   }
 
-  // Idempotent replay needs no fresh photo or gantry readiness: it reports the
+  // A dead camera/review request must not reserve a bin forever. Recovery is
+  // fail-closed and only releases movements that never reached RUNNING.
+  await recoverAbandonedPutaways();
+
+  // Idempotent replay needs no fresh photo: it reports the
   // already committed operation and cannot move anything again.
   const claimed = await prisma.movement.findUnique({ where: { idempotencyKey: scanId } });
   if (claimed) {
@@ -296,10 +302,6 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
   const destination: WarehouseBinCode = bin.code;
 
   const gantry = getGantryController();
-  const status = await gantry.getStatus();
-  if (status.state !== "IDLE" || status.activeOperationId !== null) {
-    return fail(scanId, "gantry_busy", `The gantry is ${status.state} and cannot start a putaway.`);
-  }
 
   let movement: Movement;
   try {
@@ -387,10 +389,12 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
 
   let imageUrl: string;
   let verifiedQuantity: number;
+  let simulatedVerification = false;
   try {
     const verified = await requirePutawayVerification(movement.id);
     imageUrl = verified.imageUrl;
     verifiedQuantity = verified.quantity;
+    simulatedVerification = verified.simulated;
   } catch (error) {
     await releaseClaim(movement.id, bin.id, bin.status, undefined, relocatingCheckout ? checkedOutBin : null);
     console.error(`[putaway] photo upload failed scan=${scanId} movement=${movement.id}`, error);
@@ -517,6 +521,18 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     );
   }
 
+  if (simulatedVerification && inventoryAfter !== baselineQuantity) {
+    // The inventory transaction must win before its demo-only compensation is
+    // scheduled. Starting this timer during analysis let the later commit
+    // overwrite the revert.
+    scheduleSimulationRevert({
+      partId: part.id,
+      binId: bin.id,
+      previousQuantity: baselineQuantity,
+      source: "putaway",
+    });
+  }
+
   const delta = inventoryAfter - baselineQuantity;
   logPutaway(`movement=${movement.id} gantry=${operation.operationId} status=COMPLETED quantity=${inventoryAfter}`);
   return {
@@ -549,6 +565,7 @@ export interface CheckedOutReturnRequest {
 export async function returnCheckedOutBin(
   input: CheckedOutReturnRequest,
 ): Promise<PutawayResult> {
+  await recoverAbandonedPutaways();
   const requestedCode = input.binCode?.trim().toUpperCase();
 
   const checkedOutBins = await prisma.bin.findMany({
@@ -585,10 +602,6 @@ export async function returnCheckedOutBin(
   const quantity = inventoryRow.quantity;
 
   const gantry = getGantryController();
-  const status = await gantry.getStatus();
-  if (status.state !== "IDLE" || status.activeOperationId !== null) {
-    return fail("", "gantry_busy", `The gantry is ${status.state} and cannot start a return.`);
-  }
 
   let movement: Movement;
   try {
@@ -636,10 +649,12 @@ export async function returnCheckedOutBin(
 
   let imageUrl: string;
   let verifiedQuantity: number;
+  let simulatedVerification = false;
   try {
     const verified = await requirePutawayVerification(movement.id, true);
     imageUrl = verified.imageUrl;
     verifiedQuantity = verified.quantity;
+    simulatedVerification = verified.simulated;
   } catch (error) {
     await releaseClaim(movement.id, bin.id, "CHECKED_OUT");
     console.error(`[putaway] return verification failed bin=${bin.code} movement=${movement.id}`, error);
@@ -716,6 +731,15 @@ export async function returnCheckedOutBin(
       "The gantry completed the move but database reconciliation failed. Manual reconciliation is required.",
       { movementId: movement.id, gantryOperationId: operation.operationId },
     );
+  }
+
+  if (simulatedVerification && verifiedQuantity !== quantity) {
+    scheduleSimulationRevert({
+      partId: part.id,
+      binId: bin.id,
+      previousQuantity: quantity,
+      source: "putaway-return",
+    });
   }
 
   logPutaway(

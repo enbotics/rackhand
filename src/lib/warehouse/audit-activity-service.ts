@@ -1,4 +1,3 @@
-import { getGantryController } from "@/lib/gantry/factory";
 import { compareBinsInShelfOrder } from "./bin-layout";
 import { prisma } from "./db";
 
@@ -25,7 +24,6 @@ export interface DailyBinActivity {
 export interface DailyAuditObservation {
   observedFrom: string;
   observedTo: string;
-  gantryIdle: boolean;
   recommendedBinCode: string | null;
   candidates: DailyBinActivity[];
 }
@@ -63,7 +61,7 @@ function hoursSince(date: Date, now: Date): number {
  */
 export async function observeDailyBinActivity(now: Date = new Date()): Promise<DailyAuditObservation> {
   const observedFrom = new Date(now.getTime() - OBSERVATION_WINDOW_HOURS * 3_600_000);
-  const [bins, movements, gantryStatus] = await Promise.all([
+  const [bins, movements] = await Promise.all([
     prisma.bin.findMany({
       where: { status: { in: ["AVAILABLE", "OCCUPIED"] } },
       include: {
@@ -86,7 +84,6 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
         createdAt: true,
       },
     }),
-    getGantryController().getStatus(),
   ]);
 
   const byBin = new Map<string, MovementActivity>();
@@ -115,7 +112,6 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
     }
   }
 
-  const gantryIdle = gantryStatus.state === "IDLE" && !gantryStatus.activeOperationId;
   const mostRetrievals = Math.max(
     0,
     ...Array.from(byBin.values(), (activity) => activity.retrievals),
@@ -171,7 +167,6 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
       lastAuditStatus: lastAudit?.status ?? null,
       priorityScore,
       eligibleNow:
-        gantryIdle &&
         !inCooldown &&
         (highActivity || mostRetrieved || recentlyAdjusted || priorIssue),
       reasons,
@@ -187,7 +182,6 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
   return {
     observedFrom: observedFrom.toISOString(),
     observedTo: now.toISOString(),
-    gantryIdle,
     recommendedBinCode: candidates.find((candidate) => candidate.eligibleNow)?.binCode ?? null,
     candidates,
   };

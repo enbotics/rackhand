@@ -92,8 +92,7 @@ const globalForApprovals = globalThis as unknown as {
 };
 const pending = (globalForApprovals.warehousePendingApprovals ??= new Map());
 
-function sweep(): void {
-  const now = Date.now();
+function sweepLocal(now = Date.now()): void {
   for (const [id, entry] of pending) {
     if (entry.expiresAt <= now) pending.delete(id);
   }
@@ -103,6 +102,15 @@ function sweep(): void {
     if (oldest === undefined) break;
     pending.delete(oldest);
   }
+}
+
+/** Expire durable audit rows even when their original browser never returns. */
+async function sweepExpiredApprovals(now = new Date()): Promise<void> {
+  sweepLocal(now.getTime());
+  await prisma.actionApproval.updateMany({
+    where: { status: "PENDING", expiresAt: { lte: now } },
+    data: { status: "EXPIRED", resolvedAt: now },
+  });
 }
 
 export async function createPendingApproval(input: {
@@ -118,7 +126,7 @@ export async function createPendingApproval(input: {
   traceId: string | null;
   sessionId: string | null;
 }): Promise<PendingApprovalView> {
-  sweep();
+  await sweepExpiredApprovals();
 
   const approvalId = `approval_${randomUUID()}`;
   const expiresAt = Date.now() + APPROVAL_TTL_MS;
@@ -183,7 +191,7 @@ export async function claimApproval(approvalId: string): Promise<ApprovalLookup>
   if (audit.status !== "PENDING") {
     return {
       ok: false,
-      reason: "approval_not_pending",
+      reason: audit.status === "EXPIRED" ? "approval_expired" : "approval_not_pending",
       status: audit.status as ApprovalStatus,
       traceId: audit.traceId,
       createdAt: audit.createdAt,

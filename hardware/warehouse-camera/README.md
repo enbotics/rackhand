@@ -8,8 +8,9 @@ One `Picamera2` process owns Camera Module 3 NoIR for both:
 The worker holds an authenticated SSE connection to the Next.js app. Supabase
 Realtime wakes that connection when `CameraCaptureJob` is inserted. On every
 connect/wake, the worker calls the existing atomic claim endpoint once and
-drains any durable backlog. Realtime messages therefore improve latency but
-never become warehouse truth.
+drains any durable backlog. The server also sends an explicit periodic wake,
+so a missed Realtime notification self-heals without requiring a reconnect.
+Realtime messages therefore improve latency but never become warehouse truth.
 
 Queued jobs do not expire during normal operator/network delays. After the Pi
 claims a job it renews a short ownership lease until the full-resolution JPEG

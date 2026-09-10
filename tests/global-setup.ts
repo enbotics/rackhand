@@ -1,27 +1,29 @@
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
 
 /**
  * Builds the test database from the committed migrations, so the suite also
  * proves prisma/migrations actually applies cleanly to an empty database.
  */
-const TEST_DB_PATH = "prisma/test-warehouse.db";
-const TEST_DATABASE_URL = `file:./${TEST_DB_PATH}`;
+const FALLBACK_TEST_DATABASE_URL =
+  "postgresql://test-warehouse:test-warehouse@127.0.0.1:5432/test-warehouse";
 
 export default function setup() {
-  // vitest.config.ts sets this for the workers; assert it here too so a
-  // misconfiguration can never point the suite at the development database.
-  const configured = process.env.DATABASE_URL;
-  if (configured && !configured.includes("test-warehouse")) {
-    throw new Error(`Test suite refuses to run against DATABASE_URL="${configured}".`);
+  const testDatabaseUrl = process.env.TEST_DATABASE_URL ?? FALLBACK_TEST_DATABASE_URL;
+  if (!testDatabaseUrl.includes("test-warehouse")) {
+    throw new Error(
+      "Test suite refuses to run: TEST_DATABASE_URL must identify a dedicated database containing `test-warehouse`.",
+    );
   }
 
-  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
-    rmSync(`${TEST_DB_PATH}${suffix}`, { force: true });
-  }
-
+  // Override BOTH names. prisma.config.ts intentionally uses DIRECT_URL; only
+  // replacing DATABASE_URL could otherwise migrate the configured production
+  // database while a developer believed tests were isolated.
   execFileSync("npx", ["prisma", "migrate", "deploy"], {
-    env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
+    env: {
+      ...process.env,
+      DATABASE_URL: testDatabaseUrl,
+      DIRECT_URL: testDatabaseUrl,
+    },
     stdio: "pipe",
   });
 }

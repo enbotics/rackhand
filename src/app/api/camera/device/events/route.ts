@@ -22,20 +22,18 @@ export async function GET(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
-      let heartbeat: ReturnType<typeof setInterval> | undefined;
-      let channel: ReturnType<typeof supabase.channel> | undefined;
       const close = () => {
         if (closed) return;
         closed = true;
-        if (heartbeat) clearInterval(heartbeat);
-        if (channel) void supabase.removeChannel(channel);
+        clearInterval(heartbeat);
+        void supabase.removeChannel(channel);
       };
       cleanup = close;
 
       const wake = () => {
         if (!closed) controller.enqueue(sseEvent("camera-job", { deviceId: auth.deviceId }));
       };
-      channel = supabase
+      const channel = supabase
         .channel(`camera-device-${auth.deviceId}-${randomUUID()}`)
         .on(
           "postgres_changes",
@@ -74,8 +72,14 @@ export async function GET(request: Request) {
           }
         });
 
-      heartbeat = setInterval(() => {
-        if (!closed) controller.enqueue(sseHeartbeat());
+      const heartbeat = setInterval(() => {
+        if (!closed) {
+          controller.enqueue(sseHeartbeat());
+          // Explicit periodic queue poll. Supabase Realtime is the low-latency
+          // path, but delivery of one notification is never a correctness
+          // requirement for a durable job.
+          wake();
+        }
       }, 15_000);
 
       request.signal.addEventListener("abort", close, { once: true });

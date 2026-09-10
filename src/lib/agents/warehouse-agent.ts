@@ -160,7 +160,7 @@ export function createTrustedWarehouseAgent(
 }
 
 const TRUSTED_ACTIVITY_OBSERVATION_PROMPT =
-  "Review the current rolling 24-hour warehouse activity. If the gantry is idle and exactly one shelf bin is currently eligible for a useful audit, choose the strongest candidate from the observed database evidence and delegate that exact bin to the Inventory Auditor. Otherwise perform no physical action and briefly report why.";
+  "Review the current rolling 24-hour warehouse activity. If exactly one shelf bin is currently eligible for a useful audit, choose the strongest candidate from the observed database evidence and delegate that exact bin to the Inventory Auditor. Otherwise perform no physical action and briefly report why.";
 
 /**
  * Server-only, event-invoked observation entry point.

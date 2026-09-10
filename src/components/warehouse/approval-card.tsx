@@ -134,7 +134,7 @@ export function ApprovalCard({
           <div className="flex items-center gap-3">
             <div className="animate-spin-slow h-4 w-4 shrink-0 rounded-full border-2 border-line border-t-accent" />
             <p className="text-xs text-ink-muted">
-              Executing… the warehouse service is validating and driving the gantry.
+              Executing… the warehouse service is validating the request. Camera verification may require your confirmation before the gantry runs.
             </p>
           </div>
           {/*

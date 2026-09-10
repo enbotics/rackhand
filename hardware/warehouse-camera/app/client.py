@@ -48,6 +48,8 @@ class WarehouseServerClient:
                         yield True
                     else:
                         # Let the worker observe shutdown between SSE events.
+                        # The server also emits an explicit camera-job wake on
+                        # every heartbeat interval for durable queue polling.
                         yield False
                     event_name = None
                     data_lines = []

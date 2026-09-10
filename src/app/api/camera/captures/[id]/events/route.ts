@@ -42,7 +42,6 @@ export async function GET(
       let pushing = false;
       let pushAgain = false;
       let expiryTimer: ReturnType<typeof setTimeout> | undefined;
-      let heartbeat: ReturnType<typeof setInterval> | undefined;
 
       const channel = supabase
         .channel(`camera-job-${id}-${randomUUID()}`)
@@ -67,7 +66,7 @@ export async function GET(
       const stop = (closeController = false) => {
         if (closed) return;
         closed = true;
-        if (heartbeat) clearInterval(heartbeat);
+        clearInterval(heartbeat);
         if (expiryTimer) clearTimeout(expiryTimer);
         void supabase.removeChannel(channel);
         if (closeController) controller.close();
@@ -109,8 +108,13 @@ export async function GET(
         }
       }
 
-      heartbeat = setInterval(() => {
-        if (!closed) controller.enqueue(sseHeartbeat());
+      const heartbeat = setInterval(() => {
+        if (!closed) {
+          controller.enqueue(sseHeartbeat());
+          // A missed Realtime UPDATE must not leave the browser waiting after
+          // the durable camera job has already reached a terminal state.
+          void pushCurrent();
+        }
       }, 15_000);
       request.signal.addEventListener("abort", () => stop(false), { once: true });
     },

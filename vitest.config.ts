@@ -2,10 +2,9 @@ import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 /**
- * Warehouse service tests run against a throwaway SQLite file, never the
- * development database. DATABASE_URL is set here (before any module loads, so
- * lib/warehouse/db.ts picks it up) and the file itself is created from the
- * committed migrations in tests/global-setup.ts.
+ * Warehouse service tests run against a dedicated PostgreSQL database, never
+ * the development/production database. Both URLs contain the required
+ * `test-warehouse` marker checked again by destructive test setup.
  *
  * One SQLite file is shared by the suite, so files run serially and each test
  * resets the warehouse tables first.
@@ -19,7 +18,12 @@ export default defineConfig({
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     globalSetup: ["./tests/global-setup.ts"],
     env: {
-      DATABASE_URL: "file:./prisma/test-warehouse.db",
+      DATABASE_URL:
+        process.env.TEST_DATABASE_URL ??
+        "postgresql://test-warehouse:test-warehouse@127.0.0.1:5432/test-warehouse",
+      DIRECT_URL:
+        process.env.TEST_DATABASE_URL ??
+        "postgresql://test-warehouse:test-warehouse@127.0.0.1:5432/test-warehouse",
       // The putaway tests drive real simulator operations; the default 300/200
       // ms phases would add seconds per test for no coverage. Tests that need
       // a slow operation (the gantry-busy race) set their own delay and reset

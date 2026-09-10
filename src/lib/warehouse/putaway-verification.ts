@@ -5,7 +5,6 @@ import {
   createCaptureJob,
 } from "@/lib/camera/capture-job-service";
 import { countAuditImage, type AuditExpectedContext } from "@/lib/geminiAuditCount";
-import { getGantryController } from "@/lib/gantry/factory";
 import { prisma } from "./db";
 import { confidencePercent, type AuditVisionResult } from "./audit-types";
 import {
@@ -16,7 +15,10 @@ import {
   waitOutSimulatedCaptureDuration,
 } from "./audit-capture-mode";
 import { captureProcessingDeadline } from "./capture-deadlines";
-import { scheduleSimulationRevert } from "./simulation-revert";
+import {
+  putawayInactivityTimeoutMs,
+  recoverAbandonedPutaways,
+} from "./putaway-recovery-service";
 import {
   PUTAWAY_CAPTURE_CONFIDENCE_THRESHOLD,
   type PutawayCaptureDecision,
@@ -27,6 +29,7 @@ import {
 export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN"];
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
 const RETRYABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE", "RETRY_REQUIRED"];
+const RECOVERABLE_CAPTURE_STATUSES = ["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES];
 
 function isPutawaySimulationMode(binCode: string): boolean {
   return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode);
@@ -95,11 +98,9 @@ async function simulatePutawayVerification(input: {
   movementId: string;
   binCode: string;
   binId: string;
-  partId: string;
   expectedQuantity: number;
-  previousQuantity: number;
   expected: AuditExpectedContext;
-}): Promise<{ imageUrl: string; capturedAt: Date; quantity: number } | null> {
+}): Promise<{ imageUrl: string; capturedAt: Date; quantity: number; simulated: true } | null> {
   const sample = await loadSimulationImage(input.binCode);
   if (!sample) return null;
   const vision = await countAuditImage(sample.bytes, input.expected);
@@ -115,15 +116,7 @@ async function simulatePutawayVerification(input: {
     data: { newQuantity: observed, imageUrl: sample.url, verificationImageUrl: sample.url, verificationCapturedAt: capturedAt },
   });
 
-  if (observed !== input.previousQuantity) {
-    scheduleSimulationRevert({
-      partId: input.partId,
-      binId: input.binId,
-      previousQuantity: input.previousQuantity,
-      source: "putaway",
-    });
-  }
-  return { imageUrl: sample.url, capturedAt, quantity: observed };
+  return { imageUrl: sample.url, capturedAt, quantity: observed, simulated: true };
 }
 
 function parseForeignObjects(value: string | null): string[] {
@@ -165,6 +158,31 @@ function captureView(input: {
   };
 }
 
+function persistedCaptureOutcome(input: {
+  status: string;
+  expectedQuantity: number;
+  observedQuantity: number | null;
+  foreignObjectSuspected: boolean | null;
+  movement: { destinationBin: { capacity: number } | null };
+}): PutawayCaptureOutcome | null {
+  if (input.status === "REVIEW_DECREASE") return "REVIEW_DECREASE";
+  if (input.status === "READY") {
+    return (input.observedQuantity ?? input.expectedQuantity) > input.expectedQuantity
+      ? "INCREASED"
+      : "READY";
+  }
+  if (input.status !== "RETRY_REQUIRED") return null;
+  if (input.foreignObjectSuspected) return "FOREIGN_OBJECTS";
+  if (
+    input.observedQuantity !== null &&
+    input.movement.destinationBin &&
+    input.observedQuantity > input.movement.destinationBin.capacity
+  ) {
+    return "CAPACITY_EXCEEDED";
+  }
+  return "LOW_CONFIDENCE";
+}
+
 async function latestSnapshotBefore(binId: string, movementId: string): Promise<string | null> {
   const [putaway, audit] = await Promise.all([
     prisma.movement.findFirst({
@@ -191,17 +209,30 @@ async function latestSnapshotBefore(binId: string, movementId: string): Promise<
 }
 
 export async function pendingPutawayCapture() {
+  await recoverAbandonedPutaways();
   const capture = await prisma.putawayCaptureRequest.findFirst({
     where: {
-      status: "WAITING_FOR_CAMERA",
+      // A browser may reload after analysis but before the operator accepts or
+      // retries. Those review states still own the bin and must be surfaced
+      // again; otherwise the server waits forever while the UI sees nothing.
+      status: { in: RECOVERABLE_CAPTURE_STATUSES },
       movement: { status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] } },
     },
     include: { movement: { include: { destinationBin: true } } },
-    orderBy: { createdAt: "asc" },
+    // A leaked older attempt must not hide the operation the operator just
+    // started. Newest-first is also the least surprising recovery policy if
+    // an older server request died before releasing its reservation.
+    orderBy: { createdAt: "desc" },
   });
-  return capture
-    ? { captureId: capture.id, binCode: capture.movement.destinationBin?.code ?? "bin", purpose: "PUTAWAY" as const }
-    : { captureId: null };
+  if (!capture) return { captureId: null };
+
+  const outcome = persistedCaptureOutcome(capture);
+  return {
+    captureId: capture.id,
+    binCode: capture.movement.destinationBin?.code ?? "bin",
+    purpose: "PUTAWAY" as const,
+    analysis: outcome ? captureView(capture, outcome) : null,
+  };
 }
 
 /** Request one physical Raspberry Pi frame for a pending putaway check. */
@@ -216,11 +247,6 @@ export async function requestPutawayCameraCapture(id: string) {
   if (!["VALIDATED", "AWAITING_PLACEMENT"].includes(capture.movement.status)) {
     throw new Error("This putaway is no longer waiting for verification.");
   }
-  const gantry = await getGantryController().getStatus();
-  if (gantry.state !== "IDLE" || gantry.activeOperationId) {
-    throw new Error("Wait for the gantry to stop before requesting a photo.");
-  }
-
   const existing = await prisma.cameraCaptureJob.findFirst({
     where: {
       purpose: "PUTAWAY_VERIFICATION",
@@ -237,7 +263,10 @@ export async function requestPutawayCameraCapture(id: string) {
 }
 
 /** Blocks the machine workflow until the Raspberry Pi capture is analyzed and accepted. */
-export async function requirePutawayVerification(movementId: string, isReturn = false) {
+export async function requirePutawayVerification(
+  movementId: string,
+  isReturn = false,
+): Promise<{ imageUrl: string; capturedAt: Date; quantity: number; simulated: boolean }> {
   const movement = await prisma.movement.findUniqueOrThrow({
     where: { id: movementId },
     include: { destinationBin: true, part: true },
@@ -261,9 +290,7 @@ export async function requirePutawayVerification(movementId: string, isReturn = 
       movementId,
       binCode: movement.destinationBin.code,
       binId: movement.destinationBin.id,
-      partId: movement.partId,
       expectedQuantity,
-      previousQuantity: movement.previousQuantity ?? expectedQuantity,
       expected: {
         binCode: movement.destinationBin.code,
         sku: movement.part.sku,
@@ -296,7 +323,12 @@ export async function requirePutawayVerification(movementId: string, isReturn = 
     const current = await prisma.putawayCaptureRequest.findUniqueOrThrow({ where: { id: request.id } });
     if (current.status === "FAILED") throw new Error("Putaway verification failed.");
     if (current.status === "ACCEPTED" && current.evidenceUrl && current.capturedAt && current.observedQuantity !== null) {
-      return { imageUrl: current.evidenceUrl, capturedAt: current.capturedAt, quantity: current.observedQuantity };
+      return {
+        imageUrl: current.evidenceUrl,
+        capturedAt: current.capturedAt,
+        quantity: current.observedQuantity,
+        simulated: false,
+      };
     }
 
     // Only CAPTURING owns a lease. Human capture/review states intentionally
@@ -322,6 +354,13 @@ export async function requirePutawayVerification(movementId: string, isReturn = 
       });
       throw new Error("Camera verification timed out; the gantry did not move.");
     }
+    if (
+      current.status !== "CAPTURING" &&
+      current.updatedAt.getTime() <= Date.now() - putawayInactivityTimeoutMs()
+    ) {
+      await recoverAbandonedPutaways();
+      continue;
+    }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }
@@ -342,8 +381,6 @@ export async function processPutawayCameraCapture(id: string, input: {
     || !Number.isFinite(input.capturedAt.getTime())) {
     throw new Error("A fresh Raspberry Pi frame and valid metadata are required.");
   }
-  const gantry = await getGantryController().getStatus();
-  if (gantry.state !== "IDLE" || gantry.activeOperationId) throw new Error("Wait for the gantry to stop before capture.");
   const claimed = await prisma.putawayCaptureRequest.updateMany({
     where: { id, status: "WAITING_FOR_CAMERA", attempt: input.workflowAttempt },
     data: {
@@ -426,7 +463,7 @@ export async function processPutawayCameraCapture(id: string, input: {
       include: { movement: { include: { destinationBin: true } } },
     });
     return captureView(updated, outcome);
-  } catch (error) {
+  } catch {
     await prisma.putawayCaptureRequest.updateMany({
       where: { id, status: "CAPTURING", attempt: input.workflowAttempt },
       data: {

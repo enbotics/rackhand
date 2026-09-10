@@ -1,14 +1,14 @@
 import { prisma } from "@/lib/warehouse/db";
 import { SEED_BIN_CODES } from "@/lib/warehouse/types";
 
-/** Every test database path contains this marker; the development one does not. */
+/** Every dedicated test database URL contains this marker; production does not. */
 export const TEST_DATABASE_MARKER = "test-warehouse";
 
 /**
  * Hard stop before anything destructive.
  *
- * `db.ts` falls back to the development database when DATABASE_URL is unset,
- * so a misconfigured runner would silently point the wipe below at real data.
+ * A misconfigured runner must never let the destructive reset below point at
+ * the configured development or production database.
  * This turns that into a loud failure instead of a lost warehouse.
  */
 export function assertTestDatabase(): void {

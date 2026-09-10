@@ -197,18 +197,9 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   const sourceQuantityBefore =
     stocked.find((location) => location.binCode === source)?.quantity ?? 0;
 
-  /* 7 — gantry pre-check. Advisory: the authoritative guard is the
-     controller's own synchronous claim, handled at step 9. */
+  /* 7 — select the configured controller. Simulation does not require a
+     separate IDLE preflight; the operation itself owns execution state. */
   const gantry = getGantryController();
-  const status = await gantry.getStatus();
-  if (status.state !== "IDLE" || status.activeOperationId !== null) {
-    return fail(
-      requestId,
-      "gantry_busy",
-      `The gantry is ${status.state} and cannot start a retrieval right now.`,
-      { partId: part.id, sourceBinCode: source },
-    );
-  }
 
   /* 8 — atomically claim the bin and record the full last-verified count. */
   let movement: Movement;

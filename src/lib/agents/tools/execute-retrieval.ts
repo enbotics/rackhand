@@ -55,7 +55,7 @@ export const executeRetrievalInputSchema = z
 export const executeRetrievalTool = tool({
   name: EXECUTE_RETRIEVAL_TOOL_NAME,
   description:
-    "Check out the entire physical bin holding an exact catalog part and move that bin to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. Resolve an exact SKU or part id first; the service independently revalidates stock, source-bin occupancy and gantry readiness.",
+    "Check out the entire physical bin holding an exact catalog part and move that bin to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. Resolve an exact SKU or part id first; the service independently revalidates stock and source-bin occupancy.",
   inputSchema: executeRetrievalInputSchema,
   callback: async ({ sku, partId, sourceBinCode }) => {
     try {

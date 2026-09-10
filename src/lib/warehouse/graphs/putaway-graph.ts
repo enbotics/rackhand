@@ -62,7 +62,10 @@ export const PUTAWAY_GRAPH_CONFIG = {
   /** Comfortably above the six nodes, nowhere near a runaway. */
   maxSteps: 12,
   /** Wall-clock ceiling for the whole workflow. */
-  timeout: 180_000,
+  // The camera/review inactivity window is four minutes. Keep the graph below
+  // the route's five-minute ceiling while allowing that bounded wait to clean
+  // itself up and return a normal failure rather than being cut off first.
+  timeout: 290_000,
   /** The chain is strictly sequential; state it rather than relying on topology. */
   maxConcurrency: 1,
 } as const;

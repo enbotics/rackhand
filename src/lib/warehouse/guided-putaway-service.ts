@@ -354,10 +354,9 @@ export async function prepareGuidedPutaway(
     return failure(resolved.reason, resolved.message, { scanId });
   }
 
-  const [part, bin, gantryStatus] = await Promise.all([
+  const [part, bin] = await Promise.all([
     prisma.part.findUnique({ where: { id: resolved.identity.partId } }),
     getBinByCode(input.destinationBinCode),
-    getGantryController().getStatus(),
   ]);
   if (!part)
     return failure(
@@ -383,16 +382,6 @@ export async function prepareGuidedPutaway(
   if (!destination.eligible) {
     return destinationFailure(bin.code, bin.capacity, destination, scanId);
   }
-  if (
-    gantryStatus.state !== "IDLE" ||
-    gantryStatus.activeOperationId !== null
-  ) {
-    return failure("gantry_busy", `The gantry is ${gantryStatus.state}.`, {
-      scanId,
-      gantryStatus: "FAILED",
-    });
-  }
-
   let movement: Movement;
   try {
     movement = await prisma.$transaction(async (tx) => {

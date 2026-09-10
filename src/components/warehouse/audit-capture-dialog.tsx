@@ -7,7 +7,6 @@ import type { AuditCaptureDecision, AuditCaptureView } from "@/lib/warehouse/aud
 import { CapturePopup } from "./capture-popup";
 import { Modal } from "./modal";
 import { BUTTON_VARIANTS, Metric } from "./ui";
-import { useWarehouseSession } from "./session";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
 
 interface PendingCapture { captureId: string; binCode: string; purpose: "AUDIT" | "PUTAWAY" }
@@ -41,8 +40,6 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const handledId = useRef<string | null>(null);
-  const resultRef = useRef(result);
-  resultRef.current = result;
 
   useEffect(() => {
     const source = new EventSource("/api/warehouse/captures/events");
@@ -52,17 +49,32 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
           captureId: string | null;
           binCode?: string;
           purpose?: "PUTAWAY" | "AUDIT";
+          analysis?: CaptureAnalysis | null;
         };
-        if (inFlight.current) return;
-        if (data.captureId && data.purpose && data.captureId !== handledId.current) {
+        if (data.captureId && data.purpose) {
+          // An analyzed result is authoritative even while capture() is still
+          // awaiting the separate per-job stream. Ignoring this event while
+          // inFlight creates a race where one missed job update hides a result
+          // that has already been committed to the database.
+          if (inFlight.current && !data.analysis) return;
+          if (data.captureId === handledId.current && !data.analysis) return;
           setPending((previous) => previous?.captureId === data.captureId ? previous : {
             captureId: data.captureId!,
             binCode: data.binCode ?? "bin",
             purpose: data.purpose!,
           });
-          // Multi-bin runs must not wait for dismissal of the previous result.
-          setResult(null);
-        } else if (!data.captureId && resultRef.current === null) {
+          if (data.analysis) {
+            // Restore an analyzed-but-undecided putaway after navigation,
+            // refresh, or an SSE reconnect. The durable row—not component
+            // memory—owns whether the operator still needs to act.
+            setAnalysis(data.analysis);
+            setResult("success");
+          } else {
+            // Multi-bin runs must not wait for dismissal of the previous result.
+            setAnalysis(null);
+            setResult(null);
+          }
+        } else if (!data.captureId && !inFlight.current) {
           setPending(null);
         }
       } catch { /* A later authoritative Realtime event will replace malformed data. */ }
@@ -199,7 +211,6 @@ const AUDIT_COPY: Record<AuditCaptureView["outcome"], {
 /** Preview -> dismiss -> warehouse scanning animation -> result popup. */
 export function AuditCaptureDialog() {
   const audit = useAuditCapture();
-  const session = useWarehouseSession();
   const [closing, setClosing] = useState(false);
   const pendingDecision = useRef<CaptureDecision | null>(null);
   const reduced = usePrefersReducedMotion();
@@ -207,7 +218,8 @@ export function AuditCaptureDialog() {
   auditRef.current = audit;
 
   useEffect(() => {
-    setClosing(false);
+    const reset = setTimeout(() => setClosing(false), 0);
+    return () => clearTimeout(reset);
   }, [audit.pending?.captureId, audit.pending?.purpose, audit.result]);
 
   useEffect(() => {
@@ -347,7 +359,7 @@ export function AuditCaptureDialog() {
   if (audit.submitting) return null;
   return (
     <CapturePopup key={audit.pending.captureId} title={`${audit.pending.purpose === "PUTAWAY" ? "Putaway snapshot" : "Audit capture"} · ${audit.pending.binCode}`}
-      onClose={audit.close} dismissible={false} disabled={!!session.gantry?.activeOperationId}
+      onClose={audit.close} dismissible={false}
       onCapture={() => void audit.capture()} captureLabel={audit.pending.purpose === "PUTAWAY" ? "Verify with Pi camera" : "Capture bin with Pi camera"} error={audit.error} />
   );
 }

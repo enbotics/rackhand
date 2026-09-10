@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CAMERA_SSE_HEADERS, sseEvent, sseHeartbeat } from "@/lib/camera/sse";
 import { createRealtimeAdminClient } from "@/lib/supabase/realtime-admin";
-import { prisma } from "@/lib/warehouse/db";
+import { pendingAuditCapture } from "@/lib/warehouse/audit-bin-service";
 import { pendingPutawayCapture } from "@/lib/warehouse/putaway-verification";
 
 export const runtime = "nodejs";
@@ -11,20 +11,10 @@ export const maxDuration = 300;
 async function pendingCapture() {
   const [putaway, audit] = await Promise.all([
     pendingPutawayCapture(),
-    prisma.auditCaptureRequest.findFirst({
-      where: { status: "WAITING_FOR_CAMERA" },
-      orderBy: { createdAt: "asc" },
-      include: { binAudit: { include: { bin: true } } },
-    }),
+    pendingAuditCapture(),
   ]);
   if (putaway.captureId) return { ...putaway, purpose: "PUTAWAY" as const };
-  if (audit) {
-    return {
-      captureId: audit.id,
-      binCode: audit.binAudit.bin.code,
-      purpose: "AUDIT" as const,
-    };
-  }
+  if (audit.captureId) return audit;
   return { captureId: null };
 }
 
@@ -79,7 +69,13 @@ export function GET(request: Request) {
         });
 
       const heartbeat = setInterval(() => {
-        if (!closed) controller.enqueue(sseHeartbeat());
+        if (!closed) {
+          controller.enqueue(sseHeartbeat());
+          // Re-read durable state as well as keeping the connection alive.
+          // Supabase Realtime improves latency, but correctness must not
+          // depend on every postgres_changes notification arriving.
+          void pushCurrent();
+        }
       }, 15_000);
       const stop = () => {
         if (closed) return;

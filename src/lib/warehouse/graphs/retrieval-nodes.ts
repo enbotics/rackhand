@@ -26,7 +26,6 @@ import {
   RETRIEVAL_DESTINATION,
   type RetrievalResult,
 } from "../retrieval-types";
-import { getGantryController } from "@/lib/gantry/factory";
 import { RETRIEVAL_NODE_IDS } from "./workflow-types";
 import {
   createWorkflowRun,
@@ -343,18 +342,9 @@ export class RetrievalPreflightNode extends WorkflowNode<
       };
     }
 
-    const gantry = await getGantryController().getStatus();
-    if (gantry.state !== "IDLE" || gantry.activeOperationId !== null) {
-      return {
-        kind: "BLOCKED",
-        reason: "gantry_busy",
-        message: `The gantry is ${gantry.state} and cannot start a retrieval right now.`,
-      };
-    }
-
     return {
       kind: "PROCEED",
-      summary: `${data.sku} available in ${bin.code}, gantry ${gantry.state}.`,
+      summary: `${data.sku} available in ${bin.code}.`,
     };
   }
 }

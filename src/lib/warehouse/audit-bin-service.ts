@@ -37,6 +37,11 @@ const CAPTURE_POLL_MS = 400;
  * while the capture row went back to waiting for a photo nobody needs.
  */
 const RETRYABLE_CAPTURE_STATUSES = ["REVIEW_DECREASE", "RETRY_REQUIRED"];
+const RECOVERABLE_CAPTURE_STATUSES = [
+  "WAITING_FOR_CAMERA",
+  "PENDING_ACK",
+  ...RETRYABLE_CAPTURE_STATUSES,
+];
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -214,15 +219,81 @@ function visionFromCaptureRow(capture: {
   occlusion: string | null;
   notes: string | null;
 }): AuditVisionResult {
+  let foreignObjects: string[] = [];
+  let malformedForeignObjects = false;
+  if (capture.foreignObjectsJson) {
+    try {
+      const parsed: unknown = JSON.parse(capture.foreignObjectsJson);
+      if (Array.isArray(parsed)) {
+        foreignObjects = parsed.filter((item): item is string => typeof item === "string").slice(0, 8);
+      }
+    } catch {
+      // A malformed historical field is unsafe evidence, not a reason to kill
+      // the recovery stream. Zero confidence below keeps it in manual review.
+      malformedForeignObjects = true;
+    }
+  }
   return {
     countable: capture.countable ?? true,
     observedCount: capture.observedQuantity,
-    countConfidence: capture.countConfidence ?? 0,
+    countConfidence: malformedForeignObjects ? 0 : capture.countConfidence ?? 0,
     expectedPartPresent: capture.expectedPartPresent ?? true,
     foreignObjectSuspected: capture.foreignObjectSuspected ?? false,
-    foreignObjects: capture.foreignObjectsJson ? (JSON.parse(capture.foreignObjectsJson) as string[]) : [],
+    foreignObjects,
     occlusion: (capture.occlusion as AuditVisionResult["occlusion"]) ?? "NONE",
     notes: capture.notes ?? "",
+  };
+}
+
+/** Durable browser recovery for capture, review and acknowledgement states. */
+export async function pendingAuditCapture() {
+  const capture = await prisma.auditCaptureRequest.findFirst({
+    where: {
+      status: { in: RECOVERABLE_CAPTURE_STATUSES },
+      binAudit: { auditRun: { activeKey: "ACTIVE" } },
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      binAudit: { include: { bin: true, auditRun: true } },
+    },
+  });
+  if (!capture) return { captureId: null };
+
+  let analysis: AuditCaptureView | null = null;
+  if (capture.status !== "WAITING_FOR_CAMERA") {
+    const vision = visionFromCaptureRow(capture);
+    const outcome = classifyAuditVision(vision, {
+      quantity: capture.expectedQuantity,
+      partId: capture.binAudit.expectedPartId,
+      capacity: capture.binAudit.bin.capacity,
+    });
+    const foreignObjects = vision.foreignObjects ?? [];
+    analysis = {
+      captureId: capture.id,
+      binCode: capture.binAudit.bin.code,
+      status: capture.status,
+      outcome: DISPLAY_CAPTURE_OUTCOME[outcome],
+      expectedQuantity: capture.expectedQuantity,
+      observedQuantity: capture.observedQuantity,
+      confidencePercent: capture.countConfidence === null
+        ? null
+        : confidencePercent(capture.countConfidence),
+      previousImageUrl: capture.previousImageUrl,
+      currentImageUrl: capture.evidenceUrl,
+      foreignObjects,
+      notes: capture.notes,
+    };
+  }
+
+  return {
+    captureId: capture.id,
+    auditRunId: capture.binAudit.auditRunId,
+    binAuditId: capture.binAuditId,
+    binCode: capture.binAudit.bin.code,
+    purpose: "AUDIT" as const,
+    status: capture.status,
+    expiresAt: capture.expiresAt?.toISOString() ?? null,
+    analysis,
   };
 }
 
@@ -436,11 +507,6 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   }
 
   const gantry = getGantryController();
-  const gantryStatus = await gantry.getStatus();
-  if (gantryStatus.state !== "IDLE" || gantryStatus.activeOperationId) {
-    return failAudit(audit.id, bin.code, audit.expectedQuantity, "gantry_busy");
-  }
-
   const claimed = await prisma.bin.updateMany({
     where: { id: bin.id, status: originalStatus },
     data: { status: "AUDITING" },
@@ -720,11 +786,6 @@ export async function requestAuditCameraCapture(id: string) {
   if (capture.binAudit.status !== "RUNNING" || capture.binAudit.bin.status !== "AUDITING") {
     throw new Error("This bin is no longer positioned for auditing.");
   }
-  const gantry = await getGantryController().getStatus();
-  if (gantry.state !== "IDLE" || gantry.activeOperationId) {
-    throw new Error("Wait for the gantry to stop before requesting a photo.");
-  }
-
   const existing = await prisma.cameraCaptureJob.findFirst({
     where: {
       purpose: "INVENTORY_AUDIT",

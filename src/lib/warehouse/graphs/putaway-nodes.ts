@@ -16,8 +16,8 @@
  * will work", which is useful for routing and for the dashboard and is
  * worthless as a guarantee — warehouse state can change between this node and
  * the next. `executePutaway` re-runs the matcher, re-checks the bin inside the
- * reserving transaction and re-checks the gantry, exactly as it did in
- * Milestone 7. A passed preflight never lets the service skip anything.
+ * reserving transaction. A passed preflight never lets the service skip
+ * anything.
  */
 import { prisma } from "../db";
 import { matchScanToCatalog } from "../catalog-matcher";
@@ -30,7 +30,6 @@ import {
   PUTAWAY_SOURCE,
   type PutawayResult,
 } from "../putaway-types";
-import { getGantryController } from "@/lib/gantry/factory";
 import type { ScanResult } from "../scan-types";
 import { compareBinsInShelfOrder } from "../bin-layout";
 import { PUTAWAY_NODE_IDS } from "./workflow-types";
@@ -457,18 +456,9 @@ export class PutawayPreflightNode extends WorkflowNode<PutawayGraphRequest, Puta
       };
     }
 
-    const gantry = await getGantryController().getStatus();
-    if (gantry.state !== "IDLE" || gantry.activeOperationId !== null) {
-      return {
-        kind: "BLOCKED",
-        reason: "gantry_busy",
-        message: `The gantry is ${gantry.state} and cannot start a putaway right now.`,
-      };
-    }
-
     return {
       kind: "PROCEED",
-      summary: `${part.sku} → ${bin.code}, gantry ${gantry.state}.`,
+      summary: `${part.sku} → ${bin.code}.`,
     };
   }
 }
