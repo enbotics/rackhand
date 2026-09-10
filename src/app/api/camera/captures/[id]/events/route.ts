@@ -30,8 +30,9 @@ export async function GET(
       { status: 400 },
     );
   }
+  const sessionId = ownerSessionId;
   try {
-    await getCaptureJobStatus(id, ownerSessionId);
+    await getCaptureJobStatus(id, sessionId);
   } catch (error) {
     if (error instanceof CameraCaptureJobError) {
       return Response.json(
@@ -98,7 +99,7 @@ export async function GET(
           do {
             pushAgain = false;
             await expireStaleCaptureJobs();
-            const job = await getCaptureJobStatus(id, ownerSessionId);
+            const job = await getCaptureJobStatus(id, sessionId);
             if (closed) return;
             controller.enqueue(sseEvent("status", publicView(job)));
             if (expiryTimer) clearTimeout(expiryTimer);
