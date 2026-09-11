@@ -122,6 +122,43 @@ export interface BinAuditView {
   reason: string | null;
 }
 
+/** One SKU's requirement, as materials_planner determined it. */
+export interface MaterialRequirementView {
+  sku: string;
+  purpose: string;
+  category: string;
+  quantity: number;
+}
+
+/** One SKU's required-vs-audited-available comparison, once the sweep completes. */
+export interface MaterialAvailabilityView {
+  sku: string;
+  required: number;
+  available: number;
+  status: "AVAILABLE" | "SHORTAGE";
+}
+
+/**
+ * The operator's own latest build-plan stock check (materials-plan-service.ts).
+ * `binsPlanned`/`binsCompleted`/`currentBinCode` mirror the linked
+ * InventoryAuditRun's own live progress — the same fields InventoryAuditPanel
+ * already renders for a normal audit, reused rather than duplicated.
+ */
+export interface MaterialsPlanCheckView {
+  id: string;
+  requirements: MaterialRequirementView[];
+  /** RUNNING while the sweep is in progress; a terminal InventoryAuditRun status otherwise. */
+  status: string;
+  binsPlanned: number;
+  binsCompleted: number;
+  /** The bin the sweep is physically handling right now, if any. */
+  currentBinCode: string | null;
+  /** Null until the linked audit run reaches a terminal status. */
+  results: MaterialAvailabilityView[] | null;
+  createdAt: number;
+  completedAt: number | null;
+}
+
 /** Latest durable physical audit, including every per-bin database outcome. */
 export interface InventoryAuditView {
   auditRunId: string;

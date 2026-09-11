@@ -321,27 +321,54 @@ model TraceEvent {
 
 /// One explicitly requested inventory-audit run. There is no nightly scheduler;
 /// runs are started by the Warehouse Agent or a trusted internal invocation.
+/// trigger: CLIENT | TRUSTED_INTERNAL | PLAN_VERIFICATION — PLAN_VERIFICATION
+/// is the materials-plan stock check: same automatic-capture/no-approval
+/// behavior as TRUSTED_INTERNAL, but targets an explicit bin list and skips
+/// the daily-activity eligibility/cooldown gate, which has nothing to do
+/// with "does this build have enough stock."
 model InventoryAuditRun {
-  id                 String     @id @default(cuid())
+  id                 String              @id @default(cuid())
   trigger            String
-  status             String     @default("PENDING")
+  status             String              @default("PENDING")
   requestedBinCode   String?
   /// "ACTIVE" while running, null when terminal. The unique constraint is the
   /// cross-process lock that prevents two gantry audits from running together.
-  activeKey          String?    @unique
-  binsPlanned        Int        @default(0)
-  binsCompleted      Int        @default(0)
-  verifiedBins       Int        @default(0)
-  reconciledBins     Int        @default(0)
-  reviewRequiredBins Int        @default(0)
-  failedBins         Int        @default(0)
-  startedAt          DateTime   @default(now())
+  activeKey          String?             @unique
+  binsPlanned        Int                 @default(0)
+  binsCompleted      Int                 @default(0)
+  verifiedBins       Int                 @default(0)
+  reconciledBins     Int                 @default(0)
+  reviewRequiredBins Int                 @default(0)
+  failedBins         Int                 @default(0)
+  startedAt          DateTime            @default(now())
   completedAt        DateTime?
-  createdAt          DateTime   @default(now())
+  createdAt          DateTime            @default(now())
   binAudits          BinAudit[]
+  materialsPlanCheck MaterialsPlanCheck?
 
   @@index([status])
   @@index([createdAt])
+}
+
+/// Ties a Planner's requirements list to the InventoryAuditRun verifying it.
+/// Deliberately thin — bin-level detail and progress live entirely on the
+/// linked InventoryAuditRun/BinAudit rows; this only remembers what was asked
+/// for and the final per-SKU required/available comparison.
+model MaterialsPlanCheck {
+  id               String            @id @default(cuid())
+  /// Browser/operator workflow that requested this check.
+  ownerSessionId   String?
+  /// The Planner's raw structured output: [{ sku, purpose, category, quantity }]
+  requirementsJson String
+  auditRunId       String            @unique
+  auditRun         InventoryAuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  /// Filled once the linked audit run reaches a terminal status:
+  /// [{ sku, required, available, status: "AVAILABLE" | "SHORTAGE" }]
+  resultJson       String?
+  createdAt        DateTime          @default(now())
+  completedAt      DateTime?
+
+  @@index([ownerSessionId, createdAt])
 }
 
 /// Persisted physical-vs-digital observation for one bin.

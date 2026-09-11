@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GantryStatus } from "@/lib/gantry/types";
 import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
-import type { InventoryAuditView, MovementRowView } from "@/lib/warehouse/dashboard-types";
+import type {
+  InventoryAuditView,
+  MaterialRequirementView,
+  MaterialsPlanCheckView,
+  MovementRowView,
+} from "@/lib/warehouse/dashboard-types";
 import type {
   AgentTurn,
   ApprovalOutcome,
@@ -15,6 +20,8 @@ import { ApprovalCard } from "./approval-card";
 import { CatalogResolutionCard } from "./catalog-resolution-card";
 import { WorkflowPanel } from "./workflow-panel";
 import { InventoryAuditPanel } from "./inventory-audit-panel";
+import { MaterialsPlanPipelineCard } from "./materials-plan-pipeline-card";
+import { materialsCheckRunning } from "./materials-check-progress-card";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
 import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel } from "./ui";
 
@@ -53,7 +60,41 @@ const TOOL_LABELS: Record<string, string> = {
   execute_retrieval: "Retrieval workflow",
   inventory_auditor: "Inventory auditor agent",
   execute_inventory_audit: "Physical inventory audit",
+  materials_planner: "Materials planner agent",
+  verify_materials_availability: "Stock check started",
 };
+
+/**
+ * Phrasings that make an operator message look like a build-plan request.
+ *
+ * DELIBERATELY A GUESS, AND LABELLED AS ONE. The server decides what actually
+ * runs; the browser gets one blocking reply and sees no intermediate tool
+ * calls, so this can only ever say what is LIKELY happening while that reply
+ * is in flight. It mirrors the "BUILD PLAN" section of warehouse-prompt.ts so
+ * the guess is at least made on the same wording the agent is steered by.
+ */
+const BUILD_PLAN_HINTS = [
+  "what do i need",
+  "what would i need",
+  "what else would i need",
+  "what i need",
+  "i am building",
+  "i'm building",
+  "i will be building",
+  "i will be making",
+  "i'm making",
+  "i am making",
+  "going to build",
+  "going to make",
+  "not sure what i",
+  "everything i need",
+  "assemble",
+];
+
+function looksLikeBuildPlan(message: string): boolean {
+  const text = message.toLowerCase();
+  return BUILD_PLAN_HINTS.some((hint) => text.includes(hint));
+}
 
 /**
  * How long a settled trailing card stays before retiring itself, and how long
@@ -308,15 +349,23 @@ function ConversationTurn({
   );
 }
 
-function AgentWorking() {
+function AgentWorking({ buildPlanLikely = false }: { buildPlanLikely?: boolean }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const startedAt = Date.now();
     const timer = window.setInterval(() => setElapsed(Date.now() - startedAt), 500);
     return () => window.clearInterval(timer);
   }, []);
+  // "Probably" is load-bearing, not hedging politeness: a single blocking
+  // /api/agent round-trip tells the browser nothing about which tools ran
+  // until it returns, so the only honest thing a busy label can offer is a
+  // guess from the operator's own wording — and it has to read as one.
   const label =
-    elapsed < 1_500 ? "Contacting warehouse agent" : "Waiting for verified response";
+    elapsed < 1_500
+      ? "Contacting warehouse agent"
+      : buildPlanLikely
+        ? "Probably consulting the materials planner…"
+        : "Waiting for verified response";
 
   return (
     <div
@@ -372,6 +421,9 @@ export function AgentPanel({
   gantry,
   latestMovement,
   workflow,
+  materialsPlan,
+  materialsPlanCheck,
+  onDismissMaterialsPlan,
   latestAudit,
   onAuditChanged = () => {},
   detectedName,
@@ -402,6 +454,10 @@ export function AgentPanel({
   gantry: GantryStatus | null;
   latestMovement: MovementRowView | null;
   workflow: WarehouseGraphResult | null;
+  materialsPlan: { requirements: MaterialRequirementView[] } | null;
+  materialsPlanCheck: MaterialsPlanCheckView | null;
+  /** Retires the build-plan pipeline card for good — see the card's own comment below. */
+  onDismissMaterialsPlan: () => void;
   latestAudit: InventoryAuditView | null;
   /** Re-reads the warehouse snapshot after a human applies/dismisses an audit observation. */
   onAuditChanged?: () => void;
@@ -455,6 +511,25 @@ export function AgentPanel({
     return () => observer.disconnect();
   }, [scrollToLatest]);
 
+  // A live sweep is never closable: the Dismiss control appears only once
+  // there is nothing left running to watch. A plan with no check row yet IS
+  // dismissible — otherwise a plan whose stock check never materialised would
+  // be pinned with no way to clear it — and if a sweep then does start, the
+  // card comes back, which is correct: that is a machine physically moving.
+  // `session` is what actually forgets the check; the card's own fade would
+  // otherwise be undone by the very next poll, which keeps returning this
+  // browser session's latest check row.
+  const materialsPipelineDismissible =
+    materialsPlanCheck === null || !materialsCheckRunning(materialsPlanCheck);
+  const dismissMaterialsPipeline = useCallback(() => {
+    onDismissMaterialsPlan();
+    scrollToLatest();
+  }, [onDismissMaterialsPlan, scrollToLatest]);
+
+  // Only ever a guess about the reply still in flight — see looksLikeBuildPlan.
+  const pendingOperatorMessage =
+    busy && turns[turns.length - 1]?.role === "operator" ? turns[turns.length - 1].text : null;
+
   // A new trailing card (or an existing one changing state, e.g. approval ->
   // executing -> settled) should bring itself into view exactly like a new
   // turn does — this key changes whenever any of them meaningfully change.
@@ -466,6 +541,10 @@ export function AgentPanel({
     outcome?.kind,
     workflow?.workflow,
     workflow?.status,
+    materialsPlan?.requirements.length,
+    materialsPlanCheck?.id,
+    materialsPlanCheck?.status,
+    materialsPlanCheck?.binsCompleted,
     latestAudit?.auditRunId,
     latestAudit?.status,
   ].join("|");
@@ -543,7 +622,13 @@ export function AgentPanel({
             ))
           )}
 
-          {busy && <AgentWorking />}
+          {busy && (
+            <AgentWorking
+              buildPlanLikely={
+                pendingOperatorMessage !== null && looksLikeBuildPlan(pendingOperatorMessage)
+              }
+            />
+          )}
 
           {/* Trailing "current state" cards — the live tail of the conversation.
               Each one is the SAME component that used to sit beside the chat as
@@ -613,6 +698,39 @@ export function AgentPanel({
               onDismissed={scrollToLatest}
             >
               <WorkflowPanel workflow={workflow} />
+            </SettlingCard>
+          )}
+
+          {(materialsPlan || materialsPlanCheck) && (
+            <SettlingCard
+              // Keyed on the check, not on its status: a card the operator is
+              // reading must not restart its own life because the sweep moved
+              // from RUNNING to COMPLETED underneath them.
+              cardKey={`materials-pipeline:${
+                materialsPlanCheck?.id ?? `planning:${materialsPlan?.requirements.length ?? 0}`
+              }`}
+              // NEVER auto-fades, in ANY of its states. Same rule the approval
+              // and workflow cards apply to a FAILED outcome: this is the
+              // answer to a question the operator actually asked ("what do I
+              // need, and have we got it?"), and an all-SHORTAGE report is
+              // precisely the case where they need time to read it and decide
+              // what to source. It vanishing after eight seconds is the exact
+              // behaviour that was reported as confusing, so it gets a manual
+              // Dismiss instead — offered only once nothing is still running,
+              // since a live sweep must never be closable mid-flight.
+              settled={false}
+              dismissible={materialsPipelineDismissible}
+              onDismissed={dismissMaterialsPipeline}
+            >
+              <MaterialsPlanPipelineCard
+                // The polled check carries its own requirements copy, so the
+                // list survives later turns (which clear the per-turn
+                // materialsPlan) and a page reload.
+                requirements={
+                  materialsPlan?.requirements ?? materialsPlanCheck?.requirements ?? []
+                }
+                check={materialsPlanCheck}
+              />
             </SettlingCard>
           )}
 

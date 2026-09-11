@@ -39,6 +39,7 @@ import {
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
   EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
+  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
   WAREHOUSE_AGENT_TOOLS,
 } from "./tools";
 import {
@@ -59,6 +60,7 @@ import { getCatalogResolution } from "@/lib/warehouse/catalog-resolution-service
 import { prisma } from "@/lib/warehouse/db";
 import { listPutawayDestinations } from "@/lib/warehouse/repository";
 import { getInventoryForPart } from "@/lib/warehouse/inventory-service";
+import { resolvePartQuery } from "@/lib/warehouse/catalog-search";
 import { chooseRetrievalSourceBinCode } from "@/lib/warehouse/retrieval-service";
 import { compareBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import { createWarehouseModel, getBedrockModelId } from "./model";
@@ -78,12 +80,17 @@ import {
 import { sanitizeError } from "@/lib/observability/sanitize";
 import type { TraceStatus } from "@/lib/observability/types";
 import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
+import type { MaterialRequirementView } from "@/lib/warehouse/dashboard-types";
 import { collectScanResultIssues } from "@/lib/warehouse/scan-result";
 import type { ScanResult } from "@/lib/warehouse/scan-types";
 import {
   createInventoryAuditorAgent,
   INVENTORY_AUDITOR_TOOL_NAME,
 } from "./inventory-auditor-agent";
+import {
+  createMaterialsPlannerAgent,
+  MATERIALS_PLANNER_TOOL_NAME,
+} from "./materials-planner-agent";
 
 export const WAREHOUSE_AGENT_NAME = "warehouse-agent";
 export type WarehouseApprovalMode = "CLIENT" | "TRUSTED_INTERNAL";
@@ -93,16 +100,20 @@ export const MAX_AGENT_MESSAGE_LENGTH = 4000;
 
 const FORCED_PHYSICAL_TOOL_STATE_KEY = "warehouseForcedPhysicalTool";
 const PHYSICAL_TOOL_RESULT_STATE_KEY = "warehousePhysicalToolResult";
+/** materials_planner isn't a physical tool, so its result rides a separate key. */
+const MATERIALS_PLAN_RESULT_STATE_KEY = "warehouseMaterialsPlanResult";
 
 type ExplicitPhysicalToolName =
   | typeof EXECUTE_PUTAWAY_TOOL_NAME
   | typeof EXECUTE_RETRIEVAL_TOOL_NAME
-  | typeof EXECUTE_INVENTORY_AUDIT_TOOL_NAME;
+  | typeof EXECUTE_INVENTORY_AUDIT_TOOL_NAME
+  | typeof VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME;
 
 const PHYSICAL_TOOL_NAMES = new Set<string>([
   EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
 ]);
 
 interface CapturedPhysicalToolResult {
@@ -163,6 +174,16 @@ function capturedPhysicalToolResult(
   return value as CapturedPhysicalToolResult;
 }
 
+/** materials_planner's structured requirements list, for the MaterialsPlanCard. */
+function capturedMaterialsPlanResult(
+  invocationState: Record<string, unknown>,
+): { requirements: MaterialRequirementView[] } | null {
+  const value = invocationState[MATERIALS_PLAN_RESULT_STATE_KEY];
+  if (!value || typeof value !== "object") return null;
+  const requirements = (value as { requirements?: unknown }).requirements;
+  return Array.isArray(requirements) ? { requirements: requirements as MaterialRequirementView[] } : null;
+}
+
 /** Operator-facing outcome derived only from the physical tool's result. */
 function groundedPhysicalReply(result: CapturedPhysicalToolResult | null): string | null {
   if (!result) return null;
@@ -188,6 +209,12 @@ function groundedPhysicalReply(result: CapturedPhysicalToolResult | null): strin
     const quantity =
       typeof payload.checkedOutQuantity === "number" ? payload.checkedOutQuantity : null;
     return `Bin ${bin} was retrieved to ${String(payload.destination ?? "OUTPUT")}${quantity === null ? "." : ` with ${quantity} last-verified item(s).`}`;
+  }
+  if (result.toolName === VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME) {
+    // The sweep hasn't run yet at reply time — it's scheduled via after() to
+    // start once this response has already reached the operator. Progress
+    // and the final report arrive on their own card, not in this reply.
+    return "Checking current stock for those materials now.";
   }
 
   const completed = Number(payload.binsCompleted ?? 0);
@@ -222,6 +249,13 @@ export function createWarehouseAgent(
       "Ask the specialist Inventory Auditor to explain the latest audit or, in trusted internal mode only, run a sequential physical bin audit. Client physical audit requests must use execute_inventory_audit so human approval cannot be bypassed.",
     preserveContext: false,
   });
+  const materialsPlanner = createMaterialsPlannerAgent({ model });
+  const materialsPlannerTool = materialsPlanner.asTool({
+    name: MATERIALS_PLANNER_TOOL_NAME,
+    description:
+      "Ask the specialist Materials Planner to turn a described build into a grounded requirements list (SKU, purpose, category, quantity) — every SKU is a real, currently-stocked catalog item, never invented. Read-only: it never moves anything. Call verify_materials_availability with its exact requirements immediately afterward.",
+    preserveContext: false,
+  });
   const orchestratorTools =
     approvalMode === "TRUSTED_INTERNAL"
       ? WAREHOUSE_AGENT_TOOLS.filter(
@@ -233,7 +267,7 @@ export function createWarehouseAgent(
     name: WAREHOUSE_AGENT_NAME,
     model,
     systemPrompt: WAREHOUSE_AGENT_PROMPT,
-    tools: [...orchestratorTools, inventoryAuditorTool],
+    tools: [...orchestratorTools, inventoryAuditorTool, materialsPlannerTool],
     /**
      * Human-in-the-loop (Milestone 9). Read-only tools are listed and run
      * freely; execute_putaway, execute_retrieval and
@@ -279,12 +313,48 @@ export function createWarehouseAgent(
    * This hook observes only; it never changes, retries or cancels a tool.
    */
   agent.addHook(AfterToolCallEvent, (event) => {
-    if (!PHYSICAL_TOOL_NAMES.has(event.toolUse.name)) return;
-    event.invocationState[PHYSICAL_TOOL_RESULT_STATE_KEY] = {
-      toolName: event.toolUse.name as ExplicitPhysicalToolName,
-      status: event.result.status,
-      payload: resultPayload(event.result.content),
-    } satisfies CapturedPhysicalToolResult;
+    if (PHYSICAL_TOOL_NAMES.has(event.toolUse.name)) {
+      event.invocationState[PHYSICAL_TOOL_RESULT_STATE_KEY] = {
+        toolName: event.toolUse.name as ExplicitPhysicalToolName,
+        status: event.result.status,
+        payload: resultPayload(event.result.content),
+      } satisfies CapturedPhysicalToolResult;
+    }
+
+    // Deterministic chaining, same reasoning as the first-cycle force above:
+    // a proactive second tool call is exactly what prose instructions have
+    // already been shown (this session) to skip under real model load.
+    // materials_planner itself isn't "physical" (hence the separate check,
+    // not folded into the branch above) — its own result never overwrites
+    // the physical-result capture. Both tools here are approval-free, so
+    // this re-arms the SAME forcing middleware for the very next cycle
+    // within this one agent.invoke() call.
+    if (
+      event.toolUse.name === MATERIALS_PLANNER_TOOL_NAME &&
+      event.result.status === "success"
+    ) {
+      const planPayload = resultPayload(event.result.content);
+      // Carried separately from the physical-result key so the
+      // MaterialsPlanCard can render even though this tool never touches
+      // physical state — see capturedMaterialsPlanResult.
+      event.invocationState[MATERIALS_PLAN_RESULT_STATE_KEY] = planPayload;
+
+      // A zero-item plan means the catalog has nothing relevant to this
+      // build at all — not an error, and not something to chase with a
+      // stock check. verify_materials_availability's own schema requires at
+      // least one requirement, so forcing it here unconditionally used to
+      // call it with an empty array, fail schema validation, and surface as
+      // an opaque "the physical warehouse operation failed" — while the
+      // pipeline card sat frozen on "Starting an automatic stock check...",
+      // a promise that could never be kept because nothing was ever going
+      // to run. Only force the second step when there is something for it
+      // to actually check; otherwise let the model's own reply explain
+      // plainly that this warehouse doesn't stock materials for the build.
+      const requirements = (planPayload as { requirements?: unknown } | null)?.requirements;
+      if (Array.isArray(requirements) && requirements.length > 0) {
+        event.invocationState[FORCED_PHYSICAL_TOOL_STATE_KEY] = VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME;
+      }
+    }
   });
   return agent;
 }
@@ -420,6 +490,8 @@ export interface WarehouseAgentReply {
    * every read-only question.
    */
   workflows?: WarehouseGraphResult[];
+  /** materials_planner's own requirements list, for the MaterialsPlanCard. */
+  materialsPlan?: { requirements: MaterialRequirementView[] };
 }
 
 /** Validates one operator message. Throws agent_invalid_request with every issue found. */
@@ -811,6 +883,7 @@ export async function invokeWarehouseAgent(
     const visible = extractVisibleText(result.lastMessage);
     const physicalResult = capturedPhysicalToolResult(invocationState);
     const grounded = groundedPhysicalReply(physicalResult);
+    const materialsPlan = capturedMaterialsPlanResult(invocationState);
     persistConversation(sessionId, agent, result.stopReason, grounded);
 
     const status = terminalStatusFor(
@@ -836,6 +909,7 @@ export async function invokeWarehouseAgent(
       toolCalls,
       traceId,
       ...(workflows.length > 0 ? { workflows } : {}),
+      ...(materialsPlan ? { materialsPlan } : {}),
     };
   } catch (err) {
     // Full detail stays on the server; the client gets a classified code only.
@@ -861,6 +935,33 @@ export async function invokeWarehouseAgent(
 
 /* ------------------------------------------------- human-in-the-loop */
 
+/**
+ * A short, warm-but-fixed lead-in for a multi-item fulfillment request — never
+ * raw model text (the whole point of approvalPrompt is that this sentence is
+ * predictable and safe), but built from the real parsed item list so it reads
+ * as a genuine acknowledgment rather than a cold, instant form.
+ *
+ * `fulfillmentTotal - fulfillmentQueue.length` is this item's 1-indexed
+ * position in the original list — position 1 gets the fuller "here's the
+ * whole plan" framing the operator asked for; a later position gets a
+ * shorter "next up" note instead, since the operator already saw the plan
+ * once and repeating it in full on every item would violate this app's own
+ * brevity doctrine (see the HOW TO REPLY section of the prompt).
+ */
+function fulfillmentLeadIn(summary: ApprovalSummary): string {
+  const queue = summary.fulfillmentQueue;
+  if (summary.action !== "RETRIEVAL" || !queue || queue.length === 0) return "";
+  const total = summary.fulfillmentTotal ?? queue.length + 1;
+  const position = total - queue.length;
+  if (position <= 1) {
+    return (
+      `You asked for ${total} items — I'll bring them one at a time, this one first, ` +
+      `then ${queue.join(", then ")}. `
+    );
+  }
+  return `Next up (${queue.length} more after this one). `;
+}
+
 /** Operator-facing sentence for an approval card. Never model text. */
 function approvalPrompt(summary: ApprovalSummary): string {
   if (summary.autoSuggested) {
@@ -878,6 +979,7 @@ function approvalPrompt(summary: ApprovalSummary): string {
     ? ` Capacity ${summary.capacity.before} → ${summary.capacity.after}/${summary.capacity.limit}.`
     : "";
   return (
+    fulfillmentLeadIn(summary) +
     `Approval required: ${summary.action} of ${what}, ` +
     `${summary.source ?? "?"} \u2192 ${summary.destination ?? "?"}, ` +
     `${summary.scope === "ENTIRE_BIN" ? "entire physical bin" : `camera-counted quantity ${summary.quantity ?? "pending"}`}. ` +
@@ -1141,6 +1243,15 @@ async function parkForApproval(input: {
   sessionId: string | null;
   /** See ApprovalSummary.autoSuggested. */
   autoSuggested?: boolean;
+  /**
+   * See ApprovalSummary.fulfillmentQueue. Explicit callers (carrying a queue
+   * forward hop to hop) always win; when omitted, an execute_retrieval
+   * interrupt's OWN remainingItems argument seeds a fresh queue instead —
+   * that covers the operator's original, non-forced multi-item call.
+   */
+  fulfillmentQueue?: string[];
+  /** See ApprovalSummary.fulfillmentTotal. Carried the same way as fulfillmentQueue. */
+  fulfillmentTotal?: number;
 }): Promise<PendingApprovalView> {
   const call = parseInterruptReason(input.interruptReason);
   const toolName = call?.name ?? "unknown_tool";
@@ -1151,6 +1262,24 @@ async function parkForApproval(input: {
     input.catalogResolutionId,
   );
   if (input.autoSuggested) summary.autoSuggested = true;
+
+  const carriedQueue = input.fulfillmentQueue;
+  const ownRemainingItems =
+    toolName === EXECUTE_RETRIEVAL_TOOL_NAME &&
+    call?.input &&
+    typeof call.input === "object" &&
+    Array.isArray((call.input as { remainingItems?: unknown }).remainingItems)
+      ? ((call.input as { remainingItems?: unknown }).remainingItems as unknown[]).filter(
+          (item): item is string => typeof item === "string" && item.trim() !== "",
+        )
+      : undefined;
+  const fulfillmentQueue = carriedQueue ?? ownRemainingItems;
+  if (fulfillmentQueue && fulfillmentQueue.length > 0) {
+    summary.fulfillmentQueue = fulfillmentQueue;
+    // Explicit input wins (carried unchanged hop to hop); otherwise this IS
+    // the first item, so the total is itself plus whatever it just queued.
+    summary.fulfillmentTotal = input.fulfillmentTotal ?? fulfillmentQueue.length + 1;
+  }
 
   // JSON round-trip: the snapshot is stored as plain data, never as a live
   // object graph holding model or credential references.
@@ -1269,7 +1398,7 @@ export async function resumeWarehouseAgent(
   const invocationState: Record<string, unknown> = { [TRACE_ID_STATE_KEY]: traceId };
 
   try {
-    const { result, workflows } = await runWithRequestContext(
+    const { result, workflows, forcedFulfillmentQueue, forcedFulfillmentTotal } = await runWithRequestContext(
       {
         scanResult: parked.scanResult,
         scanImageDataUrl: parked.scanImageDataUrl,
@@ -1279,6 +1408,10 @@ export async function resumeWarehouseAgent(
         // The SAME trace as the interrupted request. Clicking APPROVE
         // continues one timeline; it does not begin a second one.
         traceId,
+        // True only when resuming the model's own auto-suggested "put it
+        // back?" card — never a putaway the operator typed or named. Read by
+        // putaway-verification.ts to auto-fire the camera capture.
+        autoSuggestedReturn: parked.summary.autoSuggested === true,
       },
       async () => {
         const invocation = await agent.invoke(
@@ -1292,43 +1425,138 @@ export async function resumeWarehouseAgent(
           { invocationState },
         );
 
-        // The ONE narrow exception in warehouse-prompt.ts asks the model to
-        // propose execute_putaway itself, unprompted, right after this same
-        // execute_retrieval resolves — a proactive multi-step chain across a
-        // HITL pause, which prose cannot be trusted to hit every time (this
-        // is exactly the unreliability explicitPhysicalToolForMessage exists
-        // to route around for the FIRST tool call). If the model finished
-        // this turn on its own without proposing anything further, and the
-        // just-approved tool was a genuinely successful execute_retrieval,
-        // force one more cycle straight to execute_putaway rather than
-        // leaving the offer to chance.
+        // The auto-suggested "put it back?" offer is ALWAYS forced here,
+        // deterministically, from THIS call's own verified retrieval result —
+        // never from the model's own initiative, even if it already tried.
+        //
+        // WHY: warehouse-prompt.ts used to ALSO instruct the model to propose
+        // execute_putaway itself, unprompted, right after a retrieval
+        // resolves. A live multi-item test showed exactly why that can't be
+        // trusted: after retrieving a SECOND bin in the same conversation,
+        // the model's own unforced proposal echoed the FIRST item's bin code
+        // from earlier in the transcript instead of the one that had just
+        // actually moved — the card said "B1-01 was just retrieved" when the
+        // bin genuinely just retrieved was B4-02. That is not a display bug:
+        // the approval card's technical text is built from whatever the
+        // model actually wrote in its own tool call, so approving it would
+        // have attempted to put away the WRONG bin, most likely failing
+        // safely (B1-01 was no longer checked out) but leaving the RIGHT
+        // bin (B4-02) stuck checked out with no further offer to return it —
+        // exactly the "prose can't be trusted to transcribe a value
+        // correctly" lesson that already applied to SKU resolution.
+        //
+        // The fix removes the model's agency here entirely: capturedPhysicalToolResult
+        // reflects THIS resume's own retrieval outcome (set by the AfterToolCallEvent
+        // hook the instant the retrieval tool call itself completed, before any
+        // further interrupt), so it is immune to whatever the model may separately
+        // have proposed. Whenever a retrieval genuinely just succeeded, this
+        // unconditionally issues — and thereby supersedes — the follow-up with the
+        // one bin code that is actually correct, regardless of invocation.stopReason.
         const retrievalResult = capturedPhysicalToolResult(invocationState);
-        const shouldForceReturnOffer =
+        const retrievalJustSucceeded =
           decision === "APPROVE" &&
           parked.toolName === EXECUTE_RETRIEVAL_TOOL_NAME &&
-          invocation.stopReason !== "interrupt" &&
           retrievalResult?.toolName === EXECUTE_RETRIEVAL_TOOL_NAME &&
           retrievalResult.status === "success" &&
           retrievalResult.payload?.ok === true;
         const binCode =
-          shouldForceReturnOffer && typeof retrievalResult?.payload?.sourceBinCode === "string"
+          retrievalJustSucceeded && typeof retrievalResult?.payload?.sourceBinCode === "string"
             ? retrievalResult.payload.sourceBinCode
             : null;
 
-        if (!binCode) {
-          return { result: invocation, workflows: getContextWorkflows() };
+        if (binCode) {
+          const followUpState: Record<string, unknown> = {
+            [TRACE_ID_STATE_KEY]: traceId,
+            [FORCED_PHYSICAL_TOOL_STATE_KEY]: EXECUTE_PUTAWAY_TOOL_NAME,
+          };
+          const followUp = await agent.invoke(
+            `[system: execute_retrieval just completed successfully for bin ${binCode}. ` +
+              `Call execute_putaway now with binCode "${binCode}" to offer putting it back — this is ` +
+              `the ONLY bin this instruction concerns, regardless of any other bin code mentioned ` +
+              `earlier in this conversation.]`,
+            { invocationState: followUpState },
+          );
+          // Nothing consumed yet — the queue rides unchanged onto the
+          // putaway's own approval, and is checked again once THAT resolves.
+          return {
+            result: followUp,
+            workflows: getContextWorkflows(),
+            forcedFulfillmentQueue: parked.summary.fulfillmentQueue,
+            forcedFulfillmentTotal: parked.summary.fulfillmentTotal,
+          };
         }
 
-        const followUpState: Record<string, unknown> = {
-          [TRACE_ID_STATE_KEY]: traceId,
-          [FORCED_PHYSICAL_TOOL_STATE_KEY]: EXECUTE_PUTAWAY_TOOL_NAME,
-        };
-        const followUp = await agent.invoke(
-          `[system: execute_retrieval just completed successfully for bin ${binCode}. ` +
-            `Call execute_putaway now with binCode "${binCode}" to offer putting it back.]`,
-          { invocationState: followUpState },
-        );
-        return { result: followUp, workflows: getContextWorkflows() };
+        // Multi-item fulfillment ("I need screws and allen keys"): once this
+        // hop is done — the retrieval failed/was denied, or its auto-suggested
+        // putaway just resolved either way — move on to whatever is still
+        // owed from the ORIGINAL request, rather than letting the turn end
+        // and silently dropping the rest of the list. Runs regardless of
+        // THIS hop's own outcome; one item's fate must never swallow the
+        // others nobody has decided anything about yet.
+        const fulfillmentQueue = parked.summary.fulfillmentQueue ?? [];
+        if (invocation.stopReason !== "interrupt" && fulfillmentQueue.length > 0) {
+          const nextItem = fulfillmentQueue[0];
+          const stillOwed = fulfillmentQueue.slice(1);
+
+          // IDENTITY IS RESOLVED HERE, IN CODE — NEVER BY FORCING THE MODEL TO
+          // GUESS. Forcing toolChoice below makes execute_retrieval the ONLY
+          // thing the model can emit on this cycle; it has no room left to
+          // call search_catalog/search_inventory first, so if we forced the
+          // tool without a resolved identity, the model's only way to fill
+          // the required sku/partId/sourceBinCode argument would be to
+          // transcribe the operator's raw words ("Allen key") straight in —
+          // exactly the "no catalog part matches SKU 'Allen key'" failure
+          // this replaces. Resolving with the exact same deterministic
+          // matcher search_inventory itself uses means the forced call
+          // either carries an identity already known to be correct, or never
+          // happens at all.
+          const resolution = await resolvePartQuery(nextItem);
+
+          if (resolution.status !== "resolved") {
+            // Never guess a substitute and never force a doomed tool call.
+            // Left UNFORCED: the model has nothing left to decide (the
+            // outcome is already final), only to relay it plainly. The rest
+            // of the queue is deliberately not auto-advanced past a failure
+            // like this — the operator sees exactly what happened and can
+            // ask again with a clearer description.
+            const reason =
+              resolution.status === "not_found"
+                ? `No catalog match was found for "${nextItem}".`
+                : `"${nextItem}" matched more than one catalog part (` +
+                  `${resolution.candidates.map((hit) => hit.part.sku).join(", ")}) and needs the ` +
+                  "operator to say which one they mean.";
+            const clarify = await agent.invoke(
+              `[system: continue the operator's original multi-item request. The next item, ` +
+                `"${nextItem}", could not be resolved to one exact catalog part: ${reason} Tell the ` +
+                "operator this in one short sentence and ask them to clarify or rename it. Do not " +
+                "call execute_retrieval for this item under any circumstance, and do not guess a " +
+                "substitute part.]",
+              { invocationState: { [TRACE_ID_STATE_KEY]: traceId } },
+            );
+            return { result: clarify, workflows: getContextWorkflows() };
+          }
+
+          const part = resolution.part;
+          const followUpState: Record<string, unknown> = {
+            [TRACE_ID_STATE_KEY]: traceId,
+            [FORCED_PHYSICAL_TOOL_STATE_KEY]: EXECUTE_RETRIEVAL_TOOL_NAME,
+          };
+          const followUp = await agent.invoke(
+            `[system: continue the operator's original multi-item request. Next item: "${nextItem}", ` +
+              `already resolved to catalog part ${part.sku} (${part.canonicalName}). Call ` +
+              `execute_retrieval now with sku: "${part.sku}" — identity is already resolved, do not ` +
+              "search again and do not pass remainingItems.]",
+            { invocationState: followUpState },
+          );
+          return {
+            result: followUp,
+            workflows: getContextWorkflows(),
+            forcedFulfillmentQueue: stillOwed,
+            forcedFulfillmentTotal: parked.summary.fulfillmentTotal,
+          };
+        }
+
+        return { result: invocation, workflows: getContextWorkflows() };
       },
     );
 
@@ -1390,6 +1618,13 @@ export async function resumeWarehouseAgent(
         traceId,
         sessionId: parked.sessionId,
         autoSuggested: autoSuggestedReturn,
+        // Explicit only when THIS hop forced the next call (putaway offer or
+        // the next queued item) — carries or advances the queue. Omitted
+        // otherwise so parkForApproval falls back to reading a fresh
+        // remainingItems argument off an execute_retrieval the model
+        // proposed on its own.
+        fulfillmentQueue: forcedFulfillmentQueue,
+        fulfillmentTotal: forcedFulfillmentTotal,
       });
       await recordEvent(traceId, {
         type: "APPROVAL_REQUIRED",

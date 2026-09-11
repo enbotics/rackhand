@@ -63,6 +63,9 @@ describe("warehouse agent reply animation", () => {
       gantry: null,
       latestMovement: null,
       workflow: null,
+      materialsPlan: null,
+      materialsPlanCheck: null,
+      onDismissMaterialsPlan: vi.fn(),
       latestAudit: null,
       onAuditChanged: vi.fn(),
     };

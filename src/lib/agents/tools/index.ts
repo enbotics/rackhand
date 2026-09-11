@@ -1,10 +1,12 @@
 /**
  * The Warehouse Agent's approved tool list — its entire capability boundary.
  *
- * Nine READ-ONLY tools plus three high-level physical tools: execute_putaway,
- * execute_retrieval and execute_inventory_audit. The Inventory Auditor agent
- * is mounted dynamically by warehouse-agent.ts as an additional read-only
- * orchestration tool for client calls. Every tool delegates to a warehouse service, repository
+ * Nine READ-ONLY tools plus four high-level physical tools: execute_putaway,
+ * execute_retrieval, execute_inventory_audit and verify_materials_availability
+ * (the one approval-free physical tool — see its entry in
+ * APPROVAL_FREE_TOOL_NAMES for why). The Inventory Auditor and Materials
+ * Planner agents are mounted dynamically by warehouse-agent.ts as additional
+ * read-only orchestration tools for client calls. Every tool delegates to a warehouse service, repository
  * function or the GantryController; none holds a Prisma client, and there is
  * no generic escape hatch — no shell, bash, filesystem, file editor, arbitrary
  * HTTP, code execution, browser automation or database-query tool. Strands
@@ -38,6 +40,11 @@ import {
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
 } from "./execute-inventory-audit";
 import { INVENTORY_AUDITOR_TOOL_NAME } from "../inventory-auditor-agent";
+import { MATERIALS_PLANNER_TOOL_NAME } from "../materials-planner-agent";
+import {
+  verifyMaterialsAvailabilityTool,
+  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
+} from "./verify-materials-availability";
 import {
   requestGuidedPutawayTool,
   REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
@@ -64,6 +71,7 @@ export const WAREHOUSE_AGENT_TOOLS = [
   executePutawayTool,
   executeRetrievalTool,
   executeInventoryAuditTool,
+  verifyMaterialsAvailabilityTool,
 ];
 
 /**
@@ -86,6 +94,20 @@ export const APPROVAL_FREE_TOOL_NAMES = [
   LIST_BINS_TOOL_NAME,
   MATCH_CATALOG_TOOL_NAME,
   INVENTORY_AUDITOR_TOOL_NAME,
+  MATERIALS_PLANNER_TOOL_NAME,
+  /**
+   * The one deliberate exception to "every physical write tool requires
+   * approval" in this app. verify_materials_availability moves bins, but
+   * only ever the ones a materials_planner call itself just identified as
+   * real, currently-stocked requirements — it never retrieves or puts away
+   * anything, only photographs bins that are already on the shelf and puts
+   * them right back. The user explicitly chose zero confirmation gate for
+   * this flow (the operator already approved the *idea* by asking what a
+   * build needs); requiring a click per bin would turn "check my stock"
+   * into a click-through chore with no safety benefit, since nothing here
+   * can leave the warehouse.
+   */
+  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
 ] as const;
 
 /** The state-changing tools, which always require approval. */
@@ -110,6 +132,8 @@ export const WAREHOUSE_AGENT_TOOL_NAMES = [
   EXECUTE_RETRIEVAL_TOOL_NAME,
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
   INVENTORY_AUDITOR_TOOL_NAME,
+  MATERIALS_PLANNER_TOOL_NAME,
+  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
 ] as const;
 
 export {
@@ -141,4 +165,6 @@ export {
   EXECUTE_RETRIEVAL_TOOL_NAME,
   executeInventoryAuditTool,
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+  verifyMaterialsAvailabilityTool,
+  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
 };

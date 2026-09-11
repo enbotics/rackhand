@@ -62,6 +62,18 @@ interface RequestContext {
    * Bounded by the number of write tools the model can call in one turn.
    */
   workflows: WarehouseGraphResult[];
+  /**
+   * True only when this request is resuming the model's own auto-suggested
+   * "put it back?" offer (ApprovalSummary.autoSuggested) — never a putaway
+   * the operator typed or named themselves. putaway-verification.ts reads
+   * this to auto-fire the camera capture instead of waiting for a manual
+   * click: the operator already approved the physical action by clicking
+   * the card, so a second click on a capture button adds no safety, only
+   * friction. It never skips the resulting decision on a low/ambiguous
+   * read — the operator is still present for that, unlike the fully
+   * unattended materials-plan sweep.
+   */
+  autoSuggestedReturn: boolean;
 }
 
 const requestContextStorage = new AsyncLocalStorage<RequestContext>();
@@ -81,6 +93,7 @@ export function runWithRequestContext<T>(
     catalogResolutionId?: string | null;
     traceId?: string | null;
     workflowSessionId?: string | null;
+    autoSuggestedReturn?: boolean;
   },
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -92,6 +105,7 @@ export function runWithRequestContext<T>(
       catalogResolutionId: context.catalogResolutionId ?? null,
       traceId: context.traceId ?? null,
       workflowSessionId: context.workflowSessionId ?? null,
+      autoSuggestedReturn: context.autoSuggestedReturn ?? false,
       workflows: [],
     },
     fn,
@@ -116,6 +130,11 @@ export function getContextRequestId(): string | null {
 /** The browser/operator workflow that owns physical UI created this turn. */
 export function getContextWorkflowSessionId(): string | null {
   return requestContextStorage.getStore()?.workflowSessionId ?? null;
+}
+
+/** True only while resuming the model's own auto-suggested "put it back?" offer. */
+export function getContextAutoSuggestedReturn(): boolean {
+  return requestContextStorage.getStore()?.autoSuggestedReturn ?? false;
 }
 
 /** The operator's confirmed identity decision attached to this request, if any. */

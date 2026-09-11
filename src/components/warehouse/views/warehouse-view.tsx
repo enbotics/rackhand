@@ -131,6 +131,9 @@ export function WarehouseView() {
             gantry={session.gantry}
             latestMovement={outcomeMovement}
             workflow={session.workflow}
+            materialsPlan={session.materialsPlan}
+            materialsPlanCheck={session.materialsPlanCheck}
+            onDismissMaterialsPlan={session.dismissMaterialsPlan}
             latestAudit={session.latestAudit}
             onAuditChanged={session.refresh}
           />
