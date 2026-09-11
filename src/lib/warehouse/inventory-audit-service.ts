@@ -12,9 +12,9 @@ import {
 
 /**
  * PLAN_VERIFICATION is the materials-plan stock check (materials-plan-service.ts):
- * same automatic-capture/no-approval execution as TRUSTED_INTERNAL, but targets
- * an explicit bin list rather than one bin, and — since it has nothing to do
- * with "is this bin due for a routine check" — deliberately does NOT go through
+ * it starts and captures automatically, but every bin waits for its owning
+ * operator to acknowledge/confirm/retry the analysis before the next bin may
+ * move. It targets an explicit bin list and deliberately does NOT go through
  * the TRUSTED_INTERNAL eligibility/cooldown gate below.
  */
 export type InventoryAuditTrigger = "CLIENT" | "TRUSTED_INTERNAL" | "PLAN_VERIFICATION";
@@ -28,9 +28,14 @@ export async function runInventoryAudit(input: {
   /** An explicit set of bins to audit — PLAN_VERIFICATION's own selection, never "all". */
   binCodes?: string[];
   trigger: InventoryAuditTrigger;
+  /** Owner of interactive capture decisions for client-visible workflows. */
+  ownerSessionId?: string | null;
 }): Promise<InventoryAuditRunResult> {
   const requestedBinCode = input.binCode?.trim().toUpperCase();
   const requestedBinCodes = input.binCodes?.map((code) => code.trim().toUpperCase());
+  if (input.trigger === "PLAN_VERIFICATION" && !input.ownerSessionId) {
+    throw new Error("plan_verification_owner_required");
+  }
   // A process restart can interrupt the in-memory wait while leaving the
   // durable ACTIVE lock behind. Recover only rows whose own deadline plus a
   // safety grace has elapsed; a genuinely live audit remains untouched.
@@ -105,12 +110,17 @@ export async function runInventoryAudit(input: {
           status: "PENDING",
         },
       });
-      const result = await runInventoryAuditGraph({ binAuditId: binAudit.id });
+      const result = await runInventoryAuditGraph({
+        binAuditId: binAudit.id,
+        ownerSessionId: input.ownerSessionId,
+      });
       results.push(result);
 
       const verifiedBins = results.filter((item) => item.status === "VERIFIED").length;
       const reconciledBins = results.filter((item) => item.status === "AUTO_RECONCILED").length;
-      const reviewRequiredBins = results.filter((item) => item.status === "REVIEW_REQUIRED").length;
+      const reviewRequiredBins = results.filter(
+        (item) => item.status === "REVIEW_REQUIRED" || item.status === "DISMISSED",
+      ).length;
       const failedBins = results.filter((item) => item.status === "FAILED").length;
       await prisma.inventoryAuditRun.update({
         where: { id: run.id },
@@ -127,7 +137,9 @@ export async function runInventoryAudit(input: {
     }
 
     const failedBins = results.filter((item) => item.status === "FAILED").length;
-    const reviewRequiredBins = results.filter((item) => item.status === "REVIEW_REQUIRED").length;
+    const reviewRequiredBins = results.filter(
+      (item) => item.status === "REVIEW_REQUIRED" || item.status === "DISMISSED",
+    ).length;
     const reconciledBins = results.filter((item) => item.status === "AUTO_RECONCILED").length;
     const verifiedBins = results.filter((item) => item.status === "VERIFIED").length;
     const returnFailed = results.some((item) => item.reason === "audit_return_failed");

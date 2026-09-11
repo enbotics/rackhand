@@ -65,38 +65,6 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 /**
- * Phrasings that make an operator message look like a build-plan request.
- *
- * DELIBERATELY A GUESS, AND LABELLED AS ONE. The server decides what actually
- * runs; the browser gets one blocking reply and sees no intermediate tool
- * calls, so this can only ever say what is LIKELY happening while that reply
- * is in flight. It mirrors the "BUILD PLAN" section of warehouse-prompt.ts so
- * the guess is at least made on the same wording the agent is steered by.
- */
-const BUILD_PLAN_HINTS = [
-  "what do i need",
-  "what would i need",
-  "what else would i need",
-  "what i need",
-  "i am building",
-  "i'm building",
-  "i will be building",
-  "i will be making",
-  "i'm making",
-  "i am making",
-  "going to build",
-  "going to make",
-  "not sure what i",
-  "everything i need",
-  "assemble",
-];
-
-function looksLikeBuildPlan(message: string): boolean {
-  const text = message.toLowerCase();
-  return BUILD_PLAN_HINTS.some((hint) => text.includes(hint));
-}
-
-/**
  * How long a settled trailing card stays before retiring itself, and how long
  * its fade takes. Only the trailing "current state" card is ever dismissed —
  * operator and agent messages are conversation history and are never removed.
@@ -349,23 +317,29 @@ function ConversationTurn({
   );
 }
 
-function AgentWorking({ buildPlanLikely = false }: { buildPlanLikely?: boolean }) {
+/**
+ * `liveToolName` is a FACT, not a guess: it is polled from a server-side
+ * store written the instant the SDK's own BeforeToolCallEvent fires for the
+ * tool the model is actually about to run (see live-status-store.ts and
+ * use-agent-status.ts). This replaced an earlier client-side heuristic that
+ * pattern-matched the operator's own message text against a hardcoded phrase
+ * list before the server had done anything — a guess that reliably missed
+ * any wording not on its list. There is nothing to guess anymore: while
+ * `liveToolName` is null, nothing has run yet, so the label says exactly
+ * that instead of speculating about which tool is coming.
+ */
+function AgentWorking({ liveToolName }: { liveToolName: string | null }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const startedAt = Date.now();
     const timer = window.setInterval(() => setElapsed(Date.now() - startedAt), 500);
     return () => window.clearInterval(timer);
   }, []);
-  // "Probably" is load-bearing, not hedging politeness: a single blocking
-  // /api/agent round-trip tells the browser nothing about which tools ran
-  // until it returns, so the only honest thing a busy label can offer is a
-  // guess from the operator's own wording — and it has to read as one.
-  const label =
-    elapsed < 1_500
+  const label = liveToolName
+    ? `Running: ${TOOL_LABELS[liveToolName] ?? liveToolName.replaceAll("_", " ")}`
+    : elapsed < 1_500
       ? "Contacting warehouse agent"
-      : buildPlanLikely
-        ? "Probably consulting the materials planner…"
-        : "Waiting for verified response";
+      : "Waiting for verified response";
 
   return (
     <div
@@ -401,6 +375,7 @@ export function AgentPanel({
   busy,
   unavailable,
   error,
+  liveToolName,
   scanAttached,
   identityAttached,
   onSend,
@@ -433,6 +408,8 @@ export function AgentPanel({
   busy: boolean;
   unavailable: boolean;
   error: string | null;
+  /** The real tool the agent is running right now, polled — never a guess. Null before any tool has fired. */
+  liveToolName: string | null;
   scanAttached: boolean;
   identityAttached: boolean;
   onSend: (message: string) => void;
@@ -467,6 +444,7 @@ export function AgentPanel({
   active?: boolean;
 }) {
   const [draft, setDraft] = useState("");
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [turnsPresentAtMount] = useState(() => new Set(turns.map((turn) => turn.id)));
   const transcriptRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -475,6 +453,45 @@ export function AgentPanel({
   const followLatest = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
+
+  // The overview intentionally includes the latest durable audit for machine
+  // telemetry and recovery. That does not make a settled historical run part
+  // of this freshly mounted chat session. Remember an audit only if
+  // this page actually observed it while it was live or awaiting a decision;
+  // once remembered, its terminal result may remain long enough for the
+  // existing SettlingCard animation. An unresolved decision still reappears
+  // after refresh because it genuinely needs operator attention.
+  const auditNeedsAttention = Boolean(
+    latestAudit &&
+      (latestAudit.status === "RUNNING" ||
+        latestAudit.status === "PENDING" ||
+        latestAudit.bins.some((bin) => bin.awaitingConfirmation)),
+  );
+  const [auditDisplayState, setAuditDisplayState] = useState<{
+    auditRunId: string | null;
+    observedLive: boolean;
+  }>(() => ({
+    auditRunId: latestAudit?.auditRunId ?? null,
+    observedLive: auditNeedsAttention,
+  }));
+  let currentAuditDisplayState = auditDisplayState;
+  if (latestAudit && latestAudit.auditRunId !== auditDisplayState.auditRunId) {
+    currentAuditDisplayState = {
+      auditRunId: latestAudit.auditRunId,
+      observedLive: auditNeedsAttention,
+    };
+    setAuditDisplayState(currentAuditDisplayState);
+  } else if (auditNeedsAttention && !auditDisplayState.observedLive) {
+    currentAuditDisplayState = { ...auditDisplayState, observedLive: true };
+    setAuditDisplayState(currentAuditDisplayState);
+  }
+  const displayedAudit =
+    latestAudit &&
+    (auditNeedsAttention ||
+      (currentAuditDisplayState.auditRunId === latestAudit.auditRunId &&
+        currentAuditDisplayState.observedLive))
+      ? latestAudit
+      : null;
 
   // Passive auto-follow while pinned to the bottom: an instant scrollTop
   // assignment, not an animation. Content grows dozens of times a second
@@ -526,10 +543,6 @@ export function AgentPanel({
     scrollToLatest();
   }, [onDismissMaterialsPlan, scrollToLatest]);
 
-  // Only ever a guess about the reply still in flight — see looksLikeBuildPlan.
-  const pendingOperatorMessage =
-    busy && turns[turns.length - 1]?.role === "operator" ? turns[turns.length - 1].text : null;
-
   // A new trailing card (or an existing one changing state, e.g. approval ->
   // executing -> settled) should bring itself into view exactly like a new
   // turn does — this key changes whenever any of them meaningfully change.
@@ -545,11 +558,23 @@ export function AgentPanel({
     materialsPlanCheck?.id,
     materialsPlanCheck?.status,
     materialsPlanCheck?.binsCompleted,
-    latestAudit?.auditRunId,
-    latestAudit?.status,
+    displayedAudit?.auditRunId,
+    displayedAudit?.status,
   ].join("|");
 
   useEffect(() => scrollToLatest(), [busy, scrollToLatest, turns.length, trailingKey]);
+
+  // Keep one-line messages compact, grow smoothly with wrapped/newline text,
+  // then collapse again as the operator deletes or sends it. The cap keeps
+  // the transcript visible; beyond it only the composer itself scrolls.
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    composer.style.height = "0px";
+    const nextHeight = Math.min(composer.scrollHeight, 112);
+    composer.style.height = `${nextHeight}px`;
+    composer.style.overflowY = composer.scrollHeight > 112 ? "auto" : "hidden";
+  }, [draft]);
 
   const send = (text: string) => {
     const trimmed = text.trim();
@@ -622,13 +647,7 @@ export function AgentPanel({
             ))
           )}
 
-          {busy && (
-            <AgentWorking
-              buildPlanLikely={
-                pendingOperatorMessage !== null && looksLikeBuildPlan(pendingOperatorMessage)
-              }
-            />
-          )}
+          {busy && <AgentWorking liveToolName={liveToolName} />}
 
           {/* Trailing "current state" cards — the live tail of the conversation.
               Each one is the SAME component that used to sit beside the chat as
@@ -734,9 +753,9 @@ export function AgentPanel({
             </SettlingCard>
           )}
 
-          {latestAudit && (
+          {displayedAudit && (
             <SettlingCard
-              cardKey={`audit:${latestAudit.auditRunId}:${latestAudit.status}`}
+              cardKey={`audit:${displayedAudit.auditRunId}:${displayedAudit.status}`}
               // A bin still awaiting a human's apply/dismiss decision must
               // never auto-hide, even once the run itself finished — the run
               // reaching a terminal status only means the machine is done;
@@ -744,13 +763,13 @@ export function AgentPanel({
               // FAILED run must not auto-hide either, same reasoning as the
               // approval card above — it gets a manual Dismiss instead.
               settled={
-                (latestAudit.status === "COMPLETED" || latestAudit.status === "COMPLETED_WITH_ISSUES") &&
-                !latestAudit.bins.some((bin) => bin.awaitingConfirmation)
+                (displayedAudit.status === "COMPLETED" || displayedAudit.status === "COMPLETED_WITH_ISSUES") &&
+                !displayedAudit.bins.some((bin) => bin.awaitingConfirmation)
               }
-              dismissible={latestAudit.status === "FAILED"}
+              dismissible={displayedAudit.status === "FAILED"}
               onDismissed={scrollToLatest}
             >
-              <InventoryAuditPanel audit={latestAudit} onChanged={onAuditChanged} />
+              <InventoryAuditPanel audit={displayedAudit} onChanged={onAuditChanged} />
             </SettlingCard>
           )}
           </div>
@@ -785,15 +804,27 @@ export function AgentPanel({
             event.preventDefault();
             send(draft);
           }}
-          className="flex shrink-0 items-center gap-2 rounded-xl border border-line bg-bg-elevated p-1.5 transition-colors focus-within:border-accent-soft"
+          className="flex shrink-0 items-end gap-2 rounded-xl border border-line bg-bg-elevated p-1.5 transition-colors focus-within:border-accent-soft"
         >
-          <input
+          <textarea
+            ref={composerRef}
+            rows={1}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
             placeholder="Ask the warehouse…"
             aria-label="Message the warehouse agent"
             disabled={busy}
-            className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-xs text-ink outline-none placeholder:text-ink-faint disabled:opacity-50"
+            className="min-h-8 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-xs leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-50"
           />
           <button
             type="submit"

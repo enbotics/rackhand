@@ -374,8 +374,8 @@ async function waitForTerminalCapture(captureId: string, isTrusted: boolean): Pr
     const capture = await prisma.auditCaptureRequest.findUnique({ where: { id: captureId } });
     if (!capture) return { ok: false, reason: "capture_request_missing" };
     if (capture.status === "FAILED") return { ok: false, reason: capture.errorCode ?? "capture_failed" };
-    if (capture.status === "ACCEPTED" && capture.evidenceUrl) {
-      return { ok: true, finalized: true, evidenceUrl: capture.evidenceUrl, vision: visionFromCaptureRow(capture) };
+    if (capture.status === "ACCEPTED") {
+      return { ok: true, finalized: true, evidenceUrl: capture.evidenceUrl ?? "", vision: visionFromCaptureRow(capture) };
     }
     // A trusted/idle run has no one to click anything — not the dismissal
     // that would turn PENDING_ACK into ACCEPTED, and not an answer to a
@@ -416,7 +416,10 @@ async function waitForTerminalCapture(captureId: string, isTrusted: boolean): Pr
 }
 
 /** Audits exactly one bin. The caller guarantees sequential execution. */
-export async function executeBinAudit(binAuditId: string): Promise<BinAuditResult> {
+export async function executeBinAudit(
+  binAuditId: string,
+  ownerSessionId?: string | null,
+): Promise<BinAuditResult> {
   const audit = await prisma.binAudit.findUnique({
     where: { id: binAuditId },
     include: { bin: true, expectedPart: true, auditRun: true },
@@ -424,10 +427,10 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   if (!audit) throw new Error("bin_audit_not_found");
   const { bin } = audit;
   const originalStatus = bin.status;
-  // TRUSTED_INTERNAL (daily-activity audit) and PLAN_VERIFICATION (materials
-  // plan stock check) both run unattended — no operator to press the capture
-  // button or decide an ambiguous read. Only CLIENT has one.
-  const isTrusted = audit.auditRun.trigger !== "CLIENT";
+  // Only a genuine idle-agent audit is unattended. PLAN_VERIFICATION starts
+  // without initial HITL, but belongs to the requesting browser and must stop
+  // at every capture acknowledgement/review before advancing to another bin.
+  const isTrusted = audit.auditRun.trigger === "TRUSTED_INTERNAL";
   // Refuse before touching bin/gantry state: Simulation mode must never
   // silently fall through to a real capture on a bin it doesn't cover.
   if (isOutOfSimulationScope(bin.code)) {
@@ -476,7 +479,7 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
     const capture = await prisma.auditCaptureRequest.create({
       data: {
         binAuditId: audit.id,
-        ownerSessionId: getContextWorkflowSessionId(),
+        ownerSessionId: ownerSessionId ?? getContextWorkflowSessionId(),
         status: "WAITING_FOR_CAMERA",
         expectedQuantity: audit.expectedQuantity,
         previousImageUrl,
@@ -485,12 +488,17 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
     });
     workflowCaptureId = capture.id;
     if (simulated) markSimulatedWorkflowCapture(capture.id);
-    // Trusted idle-assistance has no operator present to press the capture
-    // button. It still uses the same capture and vision gates; only creation
-    // of the capture request is automatic.
-    if (isTrusted) {
-      await requestAuditCameraCapture(capture.id);
-    }
+    // ALWAYS auto-fire the capture — no operator click needed to START it,
+    // for any trigger. This is a separate concern from `isTrusted` below:
+    // "who presses the capture button" and "who decides on an ambiguous
+    // read" used to be the same boolean, which is why unattended-only
+    // auto-capture briefly existed. A client audit still has an operator
+    // present to make that DECISION (waitForTerminalCapture(..., isTrusted)
+    // below is unchanged and still waits for one), so REVIEW_DECREASE /
+    // RETRY_REQUIRED / a low-confidence read still shows the interactive
+    // retry-or-confirm popup exactly as before — only the "please press
+    // capture" step is gone, universally.
+    await requestAuditCameraCapture(capture.id);
     captured = await waitForTerminalCapture(capture.id, isTrusted);
   } catch (error) {
     console.error(`[inventory-audit] capture handshake failed bin=${bin.code}`, error);
@@ -908,11 +916,13 @@ export async function processAuditCameraCapture(id: string, input: {
 }
 
 /**
- * A human's decision on a pending audit capture: ACCEPT either dismisses an
+ * A human's decision on a pending audit capture: ACCEPT either acknowledges an
  * already-applied automatic result (PENDING_ACK) so the bin can be returned,
  * or explicitly confirms a REVIEW_DECREASE (which writes Inventory only
  * now). RETRY resets the same row for the next capture — reused, never
- * duplicated. Human capture/review states deliberately carry no short expiry.
+ * duplicated. DISMISS records the observation as skipped without changing
+ * inventory, then permits this bin to return before the next audit starts.
+ * Human capture/review states deliberately carry no short expiry.
  */
 export async function decideAuditCapture(
   captureId: string,
@@ -935,7 +945,9 @@ export async function decideAuditCapture(
   if (!capture) throw new Error("audit_capture_not_found");
 
   if (decision === "RETRY") {
-    if (!RETRYABLE_CAPTURE_STATUSES.includes(capture.status)) throw new Error("audit_capture_not_retryable");
+    if (!["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES].includes(capture.status)) {
+      throw new Error("audit_capture_not_retryable");
+    }
     await prisma.$transaction(async (tx) => {
       const reset = await tx.auditCaptureRequest.updateMany({
         where: { id: captureId, status: capture.status },
@@ -969,6 +981,78 @@ export async function decideAuditCapture(
           completedAt: new Date(),
           errorCode: "camera_job_superseded",
           errorMessage: "A newer audit capture attempt replaced this capture.",
+          updatedAt: new Date(),
+        },
+      });
+    });
+    return;
+  }
+
+  if (decision === "DISMISS") {
+    // A safe PENDING_ACK result was already finalized. Here dismissal is only
+    // acknowledgement that the operator has read it, identical to Done.
+    if (capture.status === "PENDING_ACK") {
+      const accepted = await prisma.auditCaptureRequest.updateMany({
+        where: { id: captureId, status: "PENDING_ACK" },
+        data: { status: "ACCEPTED" },
+      });
+      if (accepted.count !== 1) throw new Error("audit_capture_not_pending");
+      return;
+    }
+
+    if (!["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES].includes(capture.status)) {
+      throw new Error("audit_capture_not_pending");
+    }
+
+    const originalStatus = capture.expectedQuantity > 0 ? "OCCUPIED" : "AVAILABLE";
+    await prisma.$transaction(async (tx) => {
+      const claimed = await tx.auditCaptureRequest.updateMany({
+        where: { id: captureId, status: capture.status },
+        data: { status: "ACCEPTED" },
+      });
+      if (claimed.count !== 1) throw new Error("audit_capture_not_pending");
+
+      const released = await tx.bin.updateMany({
+        where: { id: capture.binAudit.binId, status: "AUDITING" },
+        data: { status: originalStatus },
+      });
+      if (released.count !== 1) throw new Error("audit_lock_lost");
+
+      await tx.binAudit.update({
+        where: { id: capture.binAudit.id },
+        data: {
+          status: "DISMISSED",
+          observedQuantity: capture.observedQuantity,
+          countConfidence: capture.countConfidence,
+          countable: capture.countable,
+          expectedPartPresent: capture.expectedPartPresent,
+          foreignObjectSuspected: capture.foreignObjectSuspected,
+          occlusion: capture.occlusion,
+          notes: capture.notes,
+          evidenceUrl: capture.evidenceUrl,
+          priorEvidenceUrl: capture.previousImageUrl,
+          capturedAt: capture.capturedAt,
+          inventoryUpdated: false,
+          previousQuantity: capture.expectedQuantity,
+          newQuantity: null,
+          errorCode: "audit_dismissed_by_operator",
+          errorMessage:
+            capture.status === "WAITING_FOR_CAMERA"
+              ? "The operator aborted this audit before a photo was verified."
+              : "The operator skipped this observation without changing inventory.",
+          completedAt: new Date(),
+        },
+      });
+      await tx.cameraCaptureJob.updateMany({
+        where: {
+          workflowCaptureId: captureId,
+          status: { in: ["PENDING", "CLAIMED", "UPLOADED", "PROCESSING"] },
+        },
+        data: {
+          status: "CANCELLED",
+          completedAt: new Date(),
+          errorCode: "camera_job_aborted",
+          errorMessage: "The operator aborted this audit capture.",
           updatedAt: new Date(),
         },
       });

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { getLatestWorkflowCaptureJobStatus } from "@/lib/camera/capture-job-service";
 import { CAMERA_SSE_HEADERS, sseEvent, sseHeartbeat } from "@/lib/camera/sse";
 import { createRealtimeAdminClient } from "@/lib/supabase/realtime-admin";
 import { pendingAuditCapture } from "@/lib/warehouse/audit-bin-service";
@@ -14,8 +15,18 @@ async function pendingCapture(ownerSessionId: string) {
     pendingPutawayCapture(ownerSessionId),
     pendingAuditCapture(ownerSessionId),
   ]);
-  if (putaway.captureId) return { ...putaway, purpose: "PUTAWAY" as const };
-  if (audit.captureId) return audit;
+  const capture = putaway.captureId
+    ? { ...putaway, purpose: "PUTAWAY" as const }
+    : audit.captureId
+      ? audit
+      : null;
+  if (capture?.captureId) {
+    const job = await getLatestWorkflowCaptureJobStatus(capture.captureId, ownerSessionId);
+    return {
+      ...capture,
+      cameraJob: job ? { ...job, captureJobId: job.id, id: undefined } : null,
+    };
+  }
   return { captureId: null };
 }
 
@@ -72,6 +83,15 @@ export function GET(request: Request) {
           "postgres_changes",
           { event: "*", schema: "public", table: "AuditCaptureRequest" },
           () => void pushCurrent(),
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "CameraCaptureJob" },
+          (payload) => {
+            if ((payload.new as { ownerSessionId?: string }).ownerSessionId === sessionId) {
+              void pushCurrent();
+            }
+          },
         )
         .subscribe((status) => {
           if (status === "SUBSCRIBED") void pushCurrent();

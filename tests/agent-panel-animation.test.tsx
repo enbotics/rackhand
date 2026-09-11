@@ -42,6 +42,7 @@ describe("warehouse agent reply animation", () => {
       busy: false,
       unavailable: false,
       error: null,
+      liveToolName: null,
       scanAttached: true,
       identityAttached: true,
       onSend: vi.fn(),

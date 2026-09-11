@@ -17,8 +17,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: { message: "Body is not valid JSON." } }, { status: 400 });
   }
   const decision = (body as { decision?: unknown } | null)?.decision;
-  if (decision !== "ACCEPT" && decision !== "RETRY") {
-    return NextResponse.json({ error: { message: "Decision must be ACCEPT or RETRY." } }, { status: 422 });
+  if (decision !== "ACCEPT" && decision !== "RETRY" && decision !== "DISMISS") {
+    return NextResponse.json({ error: { message: "Decision must be ACCEPT, RETRY, or DISMISS." } }, { status: 422 });
   }
   try {
     await decideAuditCapture(id, decision as AuditCaptureDecision, sessionId);

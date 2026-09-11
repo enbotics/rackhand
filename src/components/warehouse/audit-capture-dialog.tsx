@@ -25,10 +25,10 @@ import type {
   AuditCaptureDecision,
   AuditCaptureView,
 } from "@/lib/warehouse/audit-capture-types";
-import { CapturePopup } from "./capture-popup";
 import { Modal } from "./modal";
 import { BUTTON_VARIANTS, Metric } from "./ui";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
+import { useCameraHealth } from "./camera-health-provider";
 
 interface PendingCapture {
   captureId: string;
@@ -54,7 +54,6 @@ interface CaptureState {
   reanalyzing: boolean;
   error: string | null;
   cameraJob: CameraCaptureJobView | null;
-  capture: () => Promise<void>;
   reanalyze: () => Promise<void>;
   decide: (decision: CaptureDecision) => Promise<void>;
   close: () => void;
@@ -92,9 +91,11 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
           purpose?: "PUTAWAY" | "AUDIT";
           captureMode?: "PROD" | "SIMULATION";
           analysis?: CaptureAnalysis | null;
+          cameraJob?: CameraCaptureJobView | null;
         };
         if (data.captureId && data.purpose) {
-          // An analyzed result is authoritative even while capture() is still
+          if (data.cameraJob) setCameraJob(data.cameraJob);
+          // An analyzed result is authoritative even while a retry is still
           // awaiting the separate per-job stream. Ignoring this event while
           // inFlight creates a race where one missed job update hides a result
           // that has already been committed to the database.
@@ -117,7 +118,9 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
             setAnalysis(data.analysis);
             setResult("success");
           } else {
-            // Multi-bin runs must not wait for dismissal of the previous result.
+            // The server only emits the next bin after the preceding result
+            // was acknowledged/confirmed. Clear the preceding presentation
+            // when that new, authoritative capture id arrives.
             setAnalysis(null);
             setResult(null);
           }
@@ -204,14 +207,6 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
       inFlight.current = false;
       setSubmitting(false);
     }
-  }
-
-  /** The button-triggered entry point: only the FIRST attempt on a fresh
-   * pending capture goes through here, gated on no result yet existing —
-   * a retry re-runs via runCapture() directly from decide() below. */
-  async function capture() {
-    if (result !== null) return;
-    await runCapture();
   }
 
   async function reanalyze() {
@@ -331,7 +326,6 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         reanalyzing,
         error,
         cameraJob,
-        capture,
         reanalyze,
         decide,
         close,
@@ -407,6 +401,7 @@ const AUDIT_COPY: Record<
 /** Preview -> dismiss -> warehouse scanning animation -> result popup. */
 export function AuditCaptureDialog() {
   const audit = useAuditCapture();
+  const { health } = useCameraHealth();
   const [closing, setClosing] = useState(false);
   const pendingDecision = useRef<CaptureDecision | null>(null);
   const reduced = usePrefersReducedMotion();
@@ -637,6 +632,16 @@ export function AuditCaptureDialog() {
           )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
+            {(result.outcome === "REVIEW_DECREASE" || copy.primary.decision === "RETRY") && (
+              <button
+                type="button"
+                disabled={audit.deciding || closing}
+                onClick={() => beginDecision("DISMISS")}
+                className={BUTTON_VARIANTS.secondary}
+              >
+                Skip · keep recorded qty
+              </button>
+            )}
             {copy.secondary && (
               <button
                 type="button"
@@ -734,29 +739,146 @@ export function AuditCaptureDialog() {
               ? "No new camera capture is being taken. The existing durable frame is being inspected again."
               : "Your request is private to this tab. The Raspberry Pi processes one capture at a time."}
           </p>
+          <CameraHealthLine health={health} />
         </div>
       </Modal>
     );
   }
-  const popupTitle =
-    audit.pending.purpose === "PUTAWAY" ? "Putaway snapshot" : "Audit capture";
-  const popupCaptureLabel =
+  // Reached while the initial automatic capture is waiting and has no
+  // analysis yet. The server owns starting that first job, but the operator
+  // must never be trapped here if the Pi or its network goes away: Retry
+  // atomically supersedes the active job and starts a new attempt, while
+  // Abort terminates this workflow through its normal server-side unwind.
+  const waitingTitle =
+    audit.pending.purpose === "PUTAWAY" ? "Putaway photo" : "Audit photo";
+  const abortDecision: CaptureDecision =
+    audit.pending.purpose === "PUTAWAY" ? "CANCEL" : "DISMISS";
+  const cameraStatus = audit.cameraJob?.status;
+  const queuePosition = audit.cameraJob?.queuePosition;
+  const waitingHeadline =
     audit.pending.captureMode === "SIMULATION"
-      ? "Run simulated capture"
-      : audit.pending.purpose === "PUTAWAY"
-        ? "Verify with Pi camera"
-        : "Capture bin with Pi camera";
+      ? "Running the simulated capture"
+      : cameraStatus === "PROCESSING"
+      ? "Gemini is analyzing the captured frame"
+      : cameraStatus === "UPLOADED"
+        ? "Frame uploaded securely"
+        : cameraStatus === "CLAIMED"
+          ? "Pi camera is capturing now"
+          : cameraStatus === "FAILED" || cameraStatus === "CANCELLED" || cameraStatus === "EXPIRED"
+            ? "Pi capture needs attention"
+            : health?.connection === "OFFLINE"
+              ? "Raspberry Pi is offline"
+              : typeof queuePosition === "number" && queuePosition > 1
+                ? `Waiting for Pi camera · position ${queuePosition}`
+                : cameraStatus === "PENDING"
+                  ? "Next in the Pi camera queue"
+                  : "Joining the Pi camera queue";
   return (
-    <CapturePopup
-      key={audit.pending.captureId}
-      title={`${popupTitle} · ${audit.pending.binCode}`}
-      onClose={audit.close}
+    <Modal
+      title={`${waitingTitle} · ${audit.pending.binCode}`}
+      onClose={() => {}}
       dismissible={false}
-      onCapture={() => void audit.capture()}
-      captureMode={audit.pending.captureMode}
-      captureLabel={popupCaptureLabel}
-      error={audit.error}
-    />
+      maxWidthClassName="max-w-md"
+    >
+      <div className="rounded-2xl border border-line bg-bg-elevated p-6 text-center">
+        <div className="mx-auto h-3 w-3 animate-pulse rounded-full bg-success" />
+        <p className="mt-4 text-sm font-semibold text-ink">
+          {waitingHeadline}
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+          The photo is captured and analyzed automatically. If the Pi cannot
+          complete this attempt, retry it or abort the workflow safely.
+        </p>
+        {audit.error && <p className="mt-2 text-xs text-danger">{audit.error}</p>}
+        {audit.cameraJob?.error && (
+          <p className="mt-2 text-xs text-danger">{audit.cameraJob.error.message}</p>
+        )}
+        <CameraProgress status={cameraStatus} />
+        {audit.pending.captureMode === "PROD" && <CameraHealthLine health={health} />}
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <button
+            type="button"
+            disabled={audit.deciding || closing}
+            onClick={() => beginDecision(abortDecision)}
+            className={BUTTON_VARIANTS.danger}
+          >
+            {audit.pending.purpose === "PUTAWAY"
+              ? "Abort putaway"
+              : "Abort audit"}
+          </button>
+          <button
+            type="button"
+            disabled={audit.deciding || closing}
+            onClick={() => beginDecision("RETRY")}
+            className={BUTTON_VARIANTS.secondary}
+          >
+            Retry Pi capture
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CameraProgress({ status }: { status?: CameraCaptureJobView["status"] }) {
+  const stages = ["Queued", "Pi capture", "Uploaded", "Gemini"];
+  const current = status === "CLAIMED"
+    ? 1
+    : status === "UPLOADED"
+      ? 2
+      : status === "PROCESSING" || status === "COMPLETED"
+        ? 3
+        : 0;
+  const failed = status === "FAILED" || status === "CANCELLED" || status === "EXPIRED";
+  return (
+    <div
+      className="mt-5 grid grid-cols-4 gap-1"
+      aria-label={`Camera progress: ${status ?? "connecting"}`}
+    >
+      {stages.map((stage, index) => (
+        <div key={stage} className="min-w-0">
+          <div
+            className={`h-1 rounded-full transition-colors duration-500 ${
+              failed && index === current
+                ? "bg-danger"
+                : index <= current
+                  ? "bg-accent"
+                  : "bg-line"
+            }`}
+          />
+          <p className={`mt-1 truncate font-mono text-[8px] uppercase tracking-wide ${
+            index <= current ? "text-ink-muted" : "text-ink-faint"
+          }`}>
+            {stage}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CameraHealthLine({
+  health,
+}: {
+  health: ReturnType<typeof useCameraHealth>["health"];
+}) {
+  const connection = health?.connection ?? "OFFLINE";
+  const tone = connection === "ONLINE"
+    ? "bg-success"
+    : connection === "DEGRADED"
+      ? "bg-warn"
+      : "bg-danger";
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 font-mono text-[9px] uppercase tracking-[0.12em] text-ink-muted">
+      <span className="flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full ${tone}`} />
+        Pi {connection.toLowerCase()}
+      </span>
+      {health?.cpuTemperatureC != null && <span>{health.cpuTemperatureC.toFixed(1)}°C</span>}
+      {health?.workerState && health.workerState !== "UNKNOWN" && (
+        <span>{health.workerState.replaceAll("_", " ")}</span>
+      )}
+    </div>
   );
 }
 
@@ -770,8 +892,8 @@ function ComparisonImage({
   return (
     <figure className="overflow-hidden rounded-xl border border-line bg-bg-elevated">
       <div className="flex aspect-[4/3] items-center justify-center bg-black/20">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         {src ? (
+          // eslint-disable-next-line @next/next/no-img-element
           <img src={src} alt={label} className="h-full w-full object-contain" />
         ) : (
           <span className="text-xs text-ink-faint">No previous snapshot</span>

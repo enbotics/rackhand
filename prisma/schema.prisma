@@ -497,3 +497,25 @@ model CameraCaptureJob {
   @@index([ownerSessionId, status, requestedAt])
   @@index([status])
 }
+
+/// Last authenticated health report from one physical Raspberry Pi camera.
+/// ONLINE/OFFLINE is derived from lastSeenAt so a crashed worker cannot leave
+/// a permanently-green status behind.
+model CameraDeviceHealth {
+  deviceId          String    @id
+  workerState       String    @default("STARTING")
+  cameraReady       Boolean   @default(false)
+  previewReady      Boolean   @default(false)
+  activeJobId       String?
+  cpuTemperatureC   Float?
+  cpuLoadPercent    Float?
+  memoryUsedPercent Float?
+  workerVersion     String?
+  workerStartedAt   DateTime?
+  lastError         String?
+  lastSeenAt        DateTime
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([lastSeenAt])
+}

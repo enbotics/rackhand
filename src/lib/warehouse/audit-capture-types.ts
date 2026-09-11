@@ -28,4 +28,4 @@ export interface AuditCaptureView {
   notes: string | null;
 }
 
-export type AuditCaptureDecision = "ACCEPT" | "RETRY";
+export type AuditCaptureDecision = "ACCEPT" | "RETRY" | "DISMISS";

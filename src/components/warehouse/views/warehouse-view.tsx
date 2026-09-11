@@ -110,6 +110,7 @@ export function WarehouseView() {
             busy={session.agentBusy}
             unavailable={session.agentUnavailable}
             error={session.agentError}
+            liveToolName={session.liveToolName}
             scanAttached={session.scanState.scan?.scanResult != null}
             identityAttached={session.confirmed !== null}
             onSend={session.send}

@@ -27,6 +27,7 @@
 import {
   AfterToolCallEvent,
   Agent,
+  BeforeToolCallEvent,
   InterruptResponseContent,
   InvokeModelStage,
 } from "@strands-agents/sdk";
@@ -50,6 +51,7 @@ import {
   type ApprovalSummary,
   type PendingApprovalView,
 } from "./approval-store";
+import { setLiveToolStatus, clearLiveToolStatus } from "./live-status-store";
 import {
   loadConversation,
   saveConversation,
@@ -65,7 +67,12 @@ import { chooseRetrievalSourceBinCode } from "@/lib/warehouse/retrieval-service"
 import { compareBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import { createWarehouseModel, getBedrockModelId } from "./model";
 import { AgentError, classifyAgentFailure } from "./errors";
-import { createRequestId, getContextWorkflows, runWithRequestContext } from "./request-context";
+import {
+  createRequestId,
+  getContextWorkflows,
+  getContextWorkflowSessionId,
+  runWithRequestContext,
+} from "./request-context";
 import {
   completeTrace,
   recordEvent,
@@ -293,6 +300,21 @@ export function createWarehouseAgent(
    * from console output or patched internals.
    */
   attachTraceHooks(agent);
+
+  /**
+   * Live "what's running right now" status (see live-status-store.ts). PASSIVE
+   * — reads toolUse, never sets cancel/selectedTool. getContextWorkflowSessionId()
+   * works here because this hook fires synchronously inside agent.invoke(),
+   * which itself always runs nested inside runWithRequestContext's callback
+   * (see invokeWarehouseAgent/resumeWarehouseAgent below) — the same
+   * AsyncLocalStorage access pattern match-catalog.ts's tool callback already
+   * relies on. Silently does nothing without a session id (the trusted
+   * daily-activity path has none, and has no browser polling it anyway).
+   */
+  agent.addHook(BeforeToolCallEvent, (event) => {
+    const sessionId = getContextWorkflowSessionId();
+    if (sessionId) setLiveToolStatus(sessionId, event.toolUse.name);
+  });
 
   /**
    * Force only the FIRST model cycle of a conservatively recognized physical
@@ -930,6 +952,10 @@ export async function invokeWarehouseAgent(
       error: { code: classified.code, message: sanitizeError(classified).message },
     });
     throw classified;
+  } finally {
+    // Whatever happened, this turn is over — a stale "Running: X" must never
+    // outlive it and greet the operator's next, unrelated message.
+    if (sessionId) clearLiveToolStatus(sessionId);
   }
 }
 
@@ -1408,10 +1434,6 @@ export async function resumeWarehouseAgent(
         // The SAME trace as the interrupted request. Clicking APPROVE
         // continues one timeline; it does not begin a second one.
         traceId,
-        // True only when resuming the model's own auto-suggested "put it
-        // back?" card — never a putaway the operator typed or named. Read by
-        // putaway-verification.ts to auto-fire the camera capture.
-        autoSuggestedReturn: parked.summary.autoSuggested === true,
       },
       async () => {
         const invocation = await agent.invoke(
@@ -1714,5 +1736,10 @@ export async function resumeWarehouseAgent(
       error: { code: classified.code, message: sanitizeError(classified).message },
     });
     throw classified;
+  } finally {
+    // Same reasoning as invokeWarehouseAgent's own finally: a resumed turn
+    // (retrieval -> forced putaway offer -> forced next queued item, etc.)
+    // is over once this returns, and no stale label may outlive it.
+    if (parked.sessionId) clearLiveToolStatus(parked.sessionId);
   }
 }
