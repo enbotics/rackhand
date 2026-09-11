@@ -30,12 +30,9 @@
  * catalog identity is authoritative and the bin is just where to take it
  * from, revalidated to actually hold that part.
  *
- * The gantry moves the entire physical bin to OUTPUT, where a fresh camera
- * photo (see retrieval-verification.ts) confirms its contents against the
- * last-verified count before the checkout is finalized — a low/uncertain
- * read sends the bin back to its shelf instead of completing. The verified
- * count becomes checkedOutQuantity; inventory quantity itself is untouched
- * until that same bin later returns through putaway.
+ * The gantry moves the entire physical bin to OUTPUT. Inventory quantity is
+ * therefore observed and reconciled when that same bin later returns through
+ * putaway; retrieval never guesses how many units the client removed.
  */
 export interface RetrievalRequest {
   sku?: string;
@@ -75,9 +72,6 @@ export const RETRIEVAL_FAILURE_REASONS = [
   "retrieval_in_progress",
   /** Simulation mode is on and this bin isn't one of the two it covers. */
   "simulation_scope_violation",
-  /** Mirrors putaway's own vocabulary for these exact situations. */
-  "photo_required",
-  "photo_upload_failed",
 ] as const;
 export type RetrievalFailureReason = (typeof RETRIEVAL_FAILURE_REASONS)[number];
 

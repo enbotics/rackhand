@@ -642,7 +642,20 @@ export async function returnCheckedOutBin(
   if (requestedCode) {
     bin = checkedOutBins.find((candidate) => candidate.code === requestedCode);
     if (!bin) {
-      return fail("", "bin_not_found", `Bin "${requestedCode}" is not currently checked out.`);
+      const actualBin = await prisma.bin.findUnique({
+        where: { code: requestedCode },
+        select: { status: true },
+      });
+      if (!actualBin) {
+        return fail("", "bin_not_found", `No bin has code ${requestedCode}.`);
+      }
+      return fail(
+        "",
+        "bin_unavailable",
+        actualBin.status === "OCCUPIED"
+          ? `Bin ${requestedCode} is OCCUPIED and already stored on its shelf; there is nothing to put away.`
+          : `Bin ${requestedCode} is ${actualBin.status}, not CHECKED_OUT, so it cannot be put away yet.`,
+      );
     }
   } else if (checkedOutBins.length === 0) {
     return fail("", "no_checked_out_bin", "No bin is currently checked out; there is nothing to return.");

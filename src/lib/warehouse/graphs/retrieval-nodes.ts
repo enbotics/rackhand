@@ -463,12 +463,10 @@ export class RetrievalExecuteNode extends WorkflowNode<
 /**
  * Read-only coherence check. Reports, never repairs, and never retries.
  *
- * A checkout now carries the CAMERA-VERIFIED count, not necessarily the
- * pre-checkout baseline (data.sourceQuantityBefore) — a passing verification
- * legitimately updates Inventory.quantity when the fresh photo disagrees
- * with the last-recorded number, same as putaway's own accepted verification
- * already does. Coherence here means the database agrees with what the
- * service REPORTED (result.checkedOutQuantity), not that nothing changed.
+ * A completed checkout always carries the pre-checkout baseline
+ * (data.sourceQuantityBefore) — retrieval never guesses or re-measures how
+ * many units left the bin, so this should always agree with what the
+ * service REPORTED (result.checkedOutQuantity).
  */
 export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, RetrievalGraphData> {
   constructor() {

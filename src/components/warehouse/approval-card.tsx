@@ -44,6 +44,41 @@ export function ApprovalCard({
 }) {
   if (approval) {
     const { summary } = approval;
+
+    // The model's own follow-up offer to put a just-retrieved bin back reads
+    // as a plain yes/no question, not the full technical card — Approve/Deny
+    // underneath are identical to the card below; only the presentation
+    // differs, since nothing here needed a scope/capacity/route preview the
+    // operator hasn't already just seen play out for the retrieval itself.
+    if (summary.autoSuggested) {
+      return (
+        <Panel title="Put it back?" tone="attention">
+          <p className="text-sm text-ink">
+            Bin <span className="font-mono text-accent">{summary.destination ?? "?"}</span> was
+            just retrieved. Put it back now?
+          </p>
+          <div className="mt-4 flex gap-2">
+            <button
+              type="button"
+              onClick={() => onDecide("DENY")}
+              disabled={busy}
+              className={BUTTON_VARIANTS.secondary}
+            >
+              Not now
+            </button>
+            <button
+              type="button"
+              onClick={() => onDecide("APPROVE")}
+              disabled={busy}
+              className={BUTTON_VARIANTS.approve}
+            >
+              Put it back
+            </button>
+          </div>
+        </Panel>
+      );
+    }
+
     return (
       <Panel title="Approval required" tone="attention">
         <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">

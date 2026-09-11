@@ -17,11 +17,9 @@
  * (or the bin standing in for it) must already be pinned down. The service
  * revalidates it regardless.
  *
- * The machine checks out the entire source bin. Once the gantry carries it to
- * OUTPUT, a fresh camera photo confirms its contents against the last
- * recorded count before the checkout is finalized — the same confidence/
- * foreign-object/capacity gates putaway's own verification uses. A low or
- * uncertain read sends the bin back to its shelf instead of completing.
+ * The machine checks out the entire source bin. Its last verified quantity is
+ * preserved until the bin returns through photographed putaway, when the
+ * deterministic service reconciles the observed remainder.
  *
  * IDEMPOTENCY IS SERVER-OWNED. The HTTP request id is used, so one operator
  * message can cause at most one physical retrieval. It is deliberately absent
@@ -62,7 +60,7 @@ export const executeRetrievalInputSchema = z
 export const executeRetrievalTool = tool({
   name: EXECUTE_RETRIEVAL_TOOL_NAME,
   description:
-    "Check out one entire physical bin and move it to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Identify what to retrieve either by an exact SKU/part id (optionally narrowed to one bin), or by sourceBinCode ALONE when the operator only named a bin — a bin holds at most one SKU, so the bin code is itself authoritative identity, resolved server-side from that bin's contents, never guessed. A fresh camera photo at OUTPUT must confirm the bin's contents at strictly above 80% confidence before the checkout is finalized — foreign objects, occlusion, low confidence, or capacity overflow send the bin back to its shelf instead of completing, and a lower-than-recorded count requires explicit human confirmation, mirroring execute_putaway's own verification gate. On success the bin is marked CHECKED_OUT with the camera-verified quantity, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. The service independently revalidates identity, stock and source-bin occupancy.",
+    "Check out one entire physical bin and move it to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Identify what to retrieve either by an exact SKU/part id (optionally narrowed to one bin), or by sourceBinCode ALONE when the operator only named a bin — a bin holds at most one SKU, so the bin code is itself authoritative identity, resolved server-side from that bin's contents, never guessed. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. The service independently revalidates identity, stock and source-bin occupancy.",
   inputSchema: executeRetrievalInputSchema,
   callback: async ({ sku, partId, sourceBinCode }) => {
     try {
@@ -83,7 +81,7 @@ export const executeRetrievalTool = tool({
         EXECUTE_RETRIEVAL_TOOL_NAME,
         `part="${sku ?? partId ?? "(from bin)"}" bin="${sourceBinCode ?? "auto"}"`,
         result.ok
-          ? `CHECKED_OUT ${result.sourceBinCode} with ${result.checkedOutQuantity} camera-verified unit(s)`
+          ? `CHECKED_OUT ${result.sourceBinCode} with ${result.checkedOutQuantity} last-verified unit(s)`
           : result.reason,
       );
       return result;

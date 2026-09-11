@@ -15,17 +15,12 @@ import { prisma } from "@/lib/warehouse/db";
  *
  * PUTAWAY_VERIFICATION:
  *   A returned/presented bin must be photographed before putaway continues.
- *
- * RETRIEVAL_VERIFICATION:
- *   A bin just carried to OUTPUT by a retrieval must be photographed before
- *   the checkout is finalized.
  */
 export const CAMERA_CAPTURE_PURPOSES = [
   "MANUAL_SCAN",
   "INVENTORY_AUDIT",
   "RECOUNT",
   "PUTAWAY_VERIFICATION",
-  "RETRIEVAL_VERIFICATION",
 ] as const;
 
 export type CameraCapturePurpose = (typeof CAMERA_CAPTURE_PURPOSES)[number];

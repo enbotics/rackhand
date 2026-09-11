@@ -3,10 +3,6 @@ import { prisma } from "@/lib/warehouse/db";
 import { createPart } from "@/lib/warehouse/repository";
 import { addInventory, removeInventory } from "@/lib/warehouse/inventory-service";
 import { executeRetrieval } from "@/lib/warehouse/retrieval-service";
-import {
-  finalizeAcceptedRetrieval,
-  RETRIEVAL_CAPTURE_MARKER,
-} from "@/lib/warehouse/retrieval-verification";
 import { getGantryController, resetGantryController } from "@/lib/gantry/factory";
 import type { SimulatedGantryController } from "@/lib/gantry/simulator";
 import { resetWarehouse } from "./helpers";
@@ -70,46 +66,6 @@ afterEach(() => {
 /* ------------------------------------------------------------- happy path */
 
 describe("successful retrieval", () => {
-  it("finalizes an accepted durable capture after the original request is lost", async () => {
-    await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
-    const part = await prisma.part.findUniqueOrThrow({ where: { sku: "BRG-6204" } });
-    const bin = await prisma.bin.findUniqueOrThrow({ where: { code: "B2-01" } });
-    await prisma.bin.update({ where: { id: bin.id }, data: { status: "RESERVED" } });
-    const movement = await prisma.movement.create({
-      data: {
-        type: "RETRIEVAL",
-        partId: part.id,
-        quantity: 2,
-        status: "RUNNING",
-        sourceBinId: bin.id,
-        destinationLocation: RETRIEVAL_CAPTURE_MARKER,
-        gantryOperationId: "gantry-durable",
-      },
-    });
-    const capturedAt = new Date();
-    const capture = await prisma.retrievalCaptureRequest.create({
-      data: {
-        movementId: movement.id,
-        status: "ACCEPTED",
-        expectedQuantity: 2,
-        observedQuantity: 2,
-        evidenceUrl: "https://example.invalid/retrieval.jpg",
-        capturedAt,
-      },
-    });
-
-    await finalizeAcceptedRetrieval(capture.id);
-    await finalizeAcceptedRetrieval(capture.id);
-
-    const completed = await prisma.movement.findUniqueOrThrow({ where: { id: movement.id } });
-    expect(completed.status).toBe("COMPLETED");
-    expect(completed.destinationLocation).toBe("OUTPUT");
-    expect(completed.gantryOperationId).toBe("gantry-durable");
-    expect(completed.verificationImageUrl).toBe("https://example.invalid/retrieval.jpg");
-    expect(await binStatus("B2-01")).toBe("CHECKED_OUT");
-    expect(await stockOf("BRG-6204", "B2-01")).toBe(2);
-  });
-
   it("decrements by one and leaves a still-stocked bin OCCUPIED", async () => {
     await addInventory({ sku: "BRG-6204", binCode: "B2-01", quantity: 2 });
 

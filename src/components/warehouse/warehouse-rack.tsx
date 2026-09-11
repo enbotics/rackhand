@@ -79,7 +79,7 @@ function BinItemLabel({ name, quantity }: { name: string; quantity?: number }) {
     <text textAnchor="middle" fill="#d4e5ed" fontSize="10.5" fontWeight="500">
       {itemNameLines(name).map((line, index) => <tspan key={index} x="0" y={27 + index * 13}>{line}</tspan>)}
     </text>
-    {quantity !== undefined && <g>
+    {quantity !== undefined && quantity > 0 && <g>
       <rect x="7" y="-98" width="55" height="23" rx="7" fill="#c8f3fa" stroke="#89d9ea" />
       <text x="34.5" y="-82" textAnchor="middle" fill="#10313e" fontSize={quantity > 9999 ? 10 : 13} fontWeight="700">
         {quantity.toLocaleString("en-US")}<tspan fontSize="8" fontWeight="500"> pcs</tspan>
@@ -302,10 +302,11 @@ function CameraRig({ scanning, dockBin, scanImage }: { scanning: boolean; dockBi
 
 /** A code-native, perspective machine scene. Only telemetry drives movement;
  * the database still owns stock, capacity and availability. */
-export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry, activeMovement, latestAudit, onManageBins, onSelectBin }: {
+export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry, activeMovement, latestAudit, onManageBins, onForceReset, onSelectBin }: {
   bins: BinView[]; loading: boolean; error: string | null; onRetry: () => void;
   gantry: GantryStatus | null; activeMovement: MovementRowView | null;
-  latestAudit: InventoryAuditView | null; onManageBins?: () => void; onSelectBin?: (bin: BinView) => void;
+  latestAudit: InventoryAuditView | null; onManageBins?: () => void; onForceReset?: () => void;
+  onSelectBin?: (bin: BinView) => void;
 }) {
   const id = useId().replace(/:/g, "");
   const geometry = useMemo(() => geometryFor(bins), [bins]);
@@ -335,6 +336,7 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
       <div className="flex flex-wrap items-center gap-3">
         <CaptureStation />
         {onManageBins && <button type="button" onClick={onManageBins} className={BUTTON_VARIANTS.secondary}>Manage bins</button>}
+        {onForceReset && <button type="button" onClick={onForceReset} className={BUTTON_VARIANTS.secondary}>Force reset</button>}
         <AuditCaptureModeToggle />
       </div>
     </div>
