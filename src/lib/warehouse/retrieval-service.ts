@@ -37,7 +37,10 @@ import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Movement } from "@/generated/prisma/client";
 import { compareBinsInShelfOrder } from "./bin-layout";
 import { isOutOfSimulationScope, SIMULATION_ELIGIBLE_BINS } from "./audit-capture-mode";
-import { requireRetrievalVerification } from "./retrieval-verification";
+import {
+  requireRetrievalVerification,
+  RetrievalFinalizationError,
+} from "./retrieval-verification";
 
 /**
  * Retrieval and putaway share one `Movement.idempotencyKey` column, so the
@@ -319,6 +322,14 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     });
   }
 
+  // Persist machine provenance before waiting on a human/camera boundary.
+  // The request may be restarted while verification is pending; a durable
+  // operation id is the evidence that the bin really reached OUTPUT.
+  await prisma.movement.updateMany({
+    where: { id: movement.id, status: "RUNNING" },
+    data: { gantryOperationId: operation.operationId },
+  });
+
   /* 9.5 — verify what's actually in the bin before the checkout is final.
      The gantry already carried it to OUTPUT (the shelf itself is never
      camera-visible); a failed verification sends it back rather than
@@ -327,6 +338,24 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   try {
     verification = await requireRetrievalVerification(movement.id);
   } catch (err) {
+    if (err instanceof RetrievalFinalizationError) {
+      console.error(
+        `[retrieval] INCONSISTENT movement=${movement.id} gantry=${operation.operationId} ` +
+          `bin=${source} sku=${part.sku} — accepted capture could not be committed.`,
+        err,
+      );
+      return fail(
+        requestId,
+        "retrieval_commit_failed",
+        "The gantry moved the bin to OUTPUT, but the warehouse could not save its CHECKED_OUT state. Reconciliation is required.",
+        {
+          movementId: movement.id,
+          gantryOperationId: operation.operationId,
+          partId: part.id,
+          sourceBinCode: source,
+        },
+      );
+    }
     console.error(
       `[retrieval] verification failed request=${requestId} movement=${movement.id}`,
       err,
@@ -362,41 +391,14 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     );
   }
 
-  /* 10 — COMMIT TRANSACTION. The freshly verified count becomes both the
-     checked-out quantity and the new Inventory baseline — camera-confirmed
-     at the moment of removal rather than merely carried over from whatever
-     the database last recorded. Still hidden from availability purely by
-     Bin.status !== OCCUPIED, same as before. */
+  /* 10 — requireRetrievalVerification commits the accepted durable capture
+     idempotently. It may have been finalized by the browser decision route
+     first, which is the server-restart recovery path. */
   try {
-    await prisma.$transaction(async (tx) => {
-      const stock = await tx.inventory.findUnique({
-        where: { partId_binId: { partId: part.id, binId: sourceBin.id } },
-      });
-      if (!stock || stock.quantity !== sourceQuantityBefore) {
-        throw new Error("checked-out inventory baseline changed during movement");
-      }
-      const checkedOut = await tx.bin.updateMany({
-        where: { id: sourceBin.id, status: "RESERVED" },
-        data: { status: "CHECKED_OUT" },
-      });
-      if (checkedOut.count !== 1) throw new Error("retrieval reservation was lost during movement");
-      await tx.inventory.update({
-        where: { id: stock.id },
-        data: { quantity: verification.quantity },
-      });
-      await tx.movement.update({
-        where: { id: movement.id },
-        data: {
-          status: "COMPLETED",
-          completedAt: new Date(),
-          gantryOperationId: operation.operationId,
-          quantity: verification.quantity,
-          imageUrl: verification.imageUrl,
-          verificationImageUrl: verification.imageUrl,
-          verificationCapturedAt: verification.capturedAt,
-        },
-      });
-    });
+    const committed = await prisma.movement.findUnique({ where: { id: movement.id } });
+    if (committed?.status !== "COMPLETED") {
+      throw new Error("accepted retrieval was not committed");
+    }
   } catch (err) {
     // The part HAS physically left the bin. Claiming failure outright would be
     // a lie and re-running the gantry would move a second item, so we do

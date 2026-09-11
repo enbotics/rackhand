@@ -59,6 +59,94 @@ const RECOVERABLE_CAPTURE_STATUSES = [
   ...RETRYABLE_CAPTURE_STATUSES,
 ];
 
+export class RetrievalFinalizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetrievalFinalizationError";
+  }
+}
+
+/**
+ * Commit an accepted retrieval from durable rows.
+ *
+ * The browser decision and the original retrieval request may race here, and
+ * the original request may have disappeared after a server restart. Keeping
+ * this operation idempotent lets either caller finish the checkout without
+ * moving the gantry a second time.
+ */
+export async function finalizeAcceptedRetrieval(captureId: string) {
+  try {
+    return await prisma.$transaction(async (tx) => {
+    const capture = await tx.retrievalCaptureRequest.findUnique({
+      where: { id: captureId },
+      include: { movement: { include: { sourceBin: true } } },
+    });
+    if (!capture || capture.status !== "ACCEPTED" || !capture.evidenceUrl
+      || !capture.capturedAt || capture.observedQuantity === null) {
+      throw new Error("The retrieval verification is not accepted.");
+    }
+
+    const movement = capture.movement;
+    const sourceBin = movement.sourceBin;
+    if (!sourceBin) throw new Error("The retrieval source bin is missing.");
+
+    if (movement.status === "COMPLETED" && sourceBin.status === "CHECKED_OUT") {
+      return {
+        imageUrl: capture.evidenceUrl,
+        capturedAt: capture.capturedAt,
+        quantity: capture.observedQuantity,
+        gantryOperationId: movement.gantryOperationId,
+      };
+    }
+    if (movement.status !== "RUNNING" || sourceBin.status !== "RESERVED") {
+      throw new Error("The retrieval can no longer be finalized safely.");
+    }
+
+    const stock = await tx.inventory.findUnique({
+      where: { partId_binId: { partId: movement.partId, binId: sourceBin.id } },
+    });
+    if (!stock || stock.quantity !== movement.quantity) {
+      throw new Error("The checked-out inventory baseline changed during movement.");
+    }
+
+    const checkedOut = await tx.bin.updateMany({
+      where: { id: sourceBin.id, status: "RESERVED" },
+      data: { status: "CHECKED_OUT" },
+    });
+    if (checkedOut.count !== 1) throw new Error("The retrieval reservation was lost.");
+
+    await tx.inventory.update({
+      where: { id: stock.id },
+      data: { quantity: capture.observedQuantity },
+    });
+    const completed = await tx.movement.updateMany({
+      where: { id: movement.id, status: "RUNNING" },
+      data: {
+        status: "COMPLETED",
+        completedAt: new Date(),
+        destinationLocation: RETRIEVAL_DESTINATION,
+        quantity: capture.observedQuantity,
+        imageUrl: capture.evidenceUrl,
+        verificationImageUrl: capture.evidenceUrl,
+        verificationCapturedAt: capture.capturedAt,
+      },
+    });
+    if (completed.count !== 1) throw new Error("The retrieval changed while it was finalized.");
+
+    return {
+      imageUrl: capture.evidenceUrl,
+      capturedAt: capture.capturedAt,
+      quantity: capture.observedQuantity,
+      gantryOperationId: movement.gantryOperationId,
+    };
+    });
+  } catch (error) {
+    throw new RetrievalFinalizationError(
+      error instanceof Error ? error.message : "The accepted retrieval could not be finalized.",
+    );
+  }
+}
+
 function isRetrievalSimulationMode(binCode: string): boolean {
   return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode);
 }
@@ -313,16 +401,7 @@ export async function requireRetrievalVerification(movementId: string) {
     }
     if (current.status === "ACCEPTED" && current.evidenceUrl && current.capturedAt && current.observedQuantity !== null) {
       clearSimulatedWorkflowCapture(request.id);
-      await prisma.movement.updateMany({
-        where: { id: movementId, status: "RUNNING" },
-        data: { destinationLocation: RETRIEVAL_DESTINATION },
-      });
-      return {
-        imageUrl: current.evidenceUrl,
-        capturedAt: current.capturedAt,
-        quantity: current.observedQuantity,
-        simulated,
-      };
+      return { ...await finalizeAcceptedRetrieval(request.id), simulated };
     }
 
     // Only CAPTURING owns a lease. Human capture/review states intentionally
@@ -658,5 +737,6 @@ export async function decideRetrievalCapture(
     data: { status: "ACCEPTED" },
   });
   if (accepted.count !== 1) throw new Error("This verification was already decided.");
+  await finalizeAcceptedRetrieval(id);
   return { ok: true, status: "ACCEPTED" as const };
 }
