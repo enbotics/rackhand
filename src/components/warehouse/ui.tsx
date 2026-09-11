@@ -64,6 +64,7 @@ export function Panel({
   className = "",
   tone,
   bodyClassName = "",
+  showHeader = true,
 }: {
   title: string;
   meta?: ReactNode;
@@ -71,6 +72,8 @@ export function Panel({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
+  /** Visually omit a title already supplied by a surrounding tab or region. */
+  showHeader?: boolean;
   /** Highlights a panel that needs the operator's attention. */
   tone?: "attention";
 }) {
@@ -80,15 +83,19 @@ export function Panel({
         tone === "attention" ? "border-accent-soft/70 shadow-[0_0_0_1px_rgba(91,157,217,0.15)]" : "border-line"
       } ${className}`}
     >
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line-soft px-4 py-2.5">
-        <h2 className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-ink-muted">
-          {title}
-        </h2>
-        <div className="flex shrink-0 items-center gap-2">
-          {meta}
-          {actions}
-        </div>
-      </header>
+      {showHeader ? (
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line-soft px-4 py-2.5">
+          <h2 className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-ink-muted">
+            {title}
+          </h2>
+          <div className="flex shrink-0 items-center gap-2">
+            {meta}
+            {actions}
+          </div>
+        </header>
+      ) : (
+        <h2 className="sr-only">{title}</h2>
+      )}
       <div className={`min-h-0 min-w-0 flex-1 p-4 ${bodyClassName}`}>{children}</div>
     </section>
   );

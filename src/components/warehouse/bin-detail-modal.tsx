@@ -45,6 +45,7 @@ function ContentRow({
   const [quantity, setQuantity] = useState(item.quantity);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const photoUrl = item.imageUrl ?? item.catalogImageUrl;
 
   /**
    * "Delete" is not a separate concept from "set quantity to 0" — that path
@@ -72,10 +73,10 @@ function ContentRow({
   return (
     <div className="rounded-xl border border-line bg-bg-elevated p-3">
       <div className="flex gap-3">
-        {item.imageUrl ? (
+        {photoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.imageUrl}
+            src={photoUrl}
             alt={item.canonicalName}
             className="h-20 w-20 shrink-0 rounded-lg border border-line object-cover"
           />

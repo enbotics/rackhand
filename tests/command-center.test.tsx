@@ -282,7 +282,7 @@ describe("command centre — initial state", () => {
   it("renders every dashboard area without needing a current scan", async () => {
     await renderDashboard();
 
-    expect(screen.getByText("Spare Parts Warehouse")).toBeTruthy();
+    expect(screen.getByText("RackHand")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Operate" })).toBeTruthy();
     for (const title of [
       "Live camera",

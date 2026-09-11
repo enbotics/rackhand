@@ -17,6 +17,7 @@ export function PageShell({
   children,
   footer,
   viewport = false,
+  showHeader = true,
 }: {
   title: string;
   intent: string;
@@ -24,6 +25,8 @@ export function PageShell({
   footer?: React.ReactNode;
   /** Desktop command workspace; other routes keep their document layout. */
   viewport?: boolean;
+  /** Keeps the page name available to assistive technology when the visual workspace needs the height. */
+  showHeader?: boolean;
 }) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -41,10 +44,14 @@ export function PageShell({
   }, [viewport]);
   return (
     <div ref={root} className={`mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-6 lg:px-6 ${viewport ? "warehouse-workspace" : ""}`}>
-      <div className="shrink-0">
-        <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
-        <p className="mt-1 text-xs text-ink-muted">{intent}</p>
-      </div>
+      {showHeader ? (
+        <div className="shrink-0">
+          <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
+          <p className="mt-1 text-xs text-ink-muted">{intent}</p>
+        </div>
+      ) : (
+        <h1 className="sr-only">{title}</h1>
+      )}
       {children}
       {footer ? (
         <footer className="shrink-0 border-t border-line-soft pt-4 text-[11px] leading-relaxed text-ink-faint">

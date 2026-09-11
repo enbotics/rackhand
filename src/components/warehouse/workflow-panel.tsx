@@ -55,7 +55,7 @@ export function WorkflowPanel({ workflow }: { workflow: WarehouseGraphResult | n
               <div className="min-w-0 flex-1">
                 <p className="flex items-baseline justify-between gap-3">
                   <span
-                    className={`text-xs ${
+                    className={`text-[13px] ${
                       step.status === "SKIPPED" || step.status === "PENDING"
                         ? "text-ink-faint"
                         : "text-ink"
@@ -64,13 +64,13 @@ export function WorkflowPanel({ workflow }: { workflow: WarehouseGraphResult | n
                     {step.label}
                   </span>
                   <span
-                    className={`shrink-0 font-mono text-[10px] tracking-[0.1em] ${panelToneText(presentation.tone)}`}
+                    className={`shrink-0 font-mono text-[11px] tracking-[0.1em] ${panelToneText(presentation.tone)}`}
                   >
                     {presentation.label}
                   </span>
                 </p>
                 {step.summary && (
-                  <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-ink-faint">
+                  <p className="mt-1 font-mono text-[11px] leading-relaxed text-ink-muted">
                     {step.summary}
                   </p>
                 )}
@@ -82,13 +82,13 @@ export function WorkflowPanel({ workflow }: { workflow: WarehouseGraphResult | n
 
       {workflow.status !== "COMPLETED" && (
         <p
-          className={`mt-3 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+          className={`mt-3 rounded-lg border px-4 py-3 text-sm leading-6 ${
             workflow.status === "BLOCKED"
               ? "border-warn/40 bg-warn-soft text-warn"
               : "border-danger/40 bg-danger-soft text-danger"
           }`}
         >
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em]">
+          <span className="font-mono text-[11px] uppercase tracking-[0.12em]">
             {workflow.reason}
           </span>
           <br />
@@ -96,7 +96,7 @@ export function WorkflowPanel({ workflow }: { workflow: WarehouseGraphResult | n
         </p>
       )}
 
-      <p className="mt-3 font-mono text-[10px] text-ink-faint">
+      <p className="mt-3 font-mono text-[11px] text-ink-muted">
         Strands Graph · deterministic nodes · warehouse services stay authoritative
       </p>
     </Panel>

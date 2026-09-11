@@ -41,13 +41,6 @@ import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel } from "./ui";
  * was the whole refactor; none of their internal logic changed, so approval
  * decisions still only ever send `{approvalId, decision}` to the server.
  */
-const SUGGESTIONS = [
-  "Which bins are available?",
-  "Is the gantry ready?",
-  "Store this part.",
-  "Bring me BRG-6204.",
-];
-
 const TOOL_LABELS: Record<string, string> = {
   get_gantry_status: "Gantry status",
   search_catalog: "Catalog search",
@@ -210,7 +203,7 @@ function AgentReplyText({
 
   return (
     <>
-      <p aria-label={text} className="whitespace-pre-wrap text-xs leading-relaxed text-ink">
+      <p aria-label={text} className="whitespace-pre-wrap text-sm leading-6 text-ink">
         <span aria-hidden={animateThisMessage && !reducedMotion ? "true" : undefined}>
           {text.slice(0, renderedLength)}
         </span>
@@ -239,7 +232,7 @@ function ToolChips({ tools }: { tools: string[] }) {
       {tools.map((toolName, index) => (
         <span
           key={`${toolName}-${index}`}
-          className="inline-flex items-center gap-1.5 rounded-full border border-accent-soft/40 bg-accent-tint px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-accent"
+          className="inline-flex items-center gap-1.5 rounded-full border border-accent-soft/50 bg-accent-tint px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent"
         >
           <span className="h-1 w-1 rounded-full bg-accent" aria-hidden="true" />
           {TOOL_LABELS[toolName] ?? toolName.replaceAll("_", " ")}
@@ -263,9 +256,9 @@ function ConversationTurn({
 
   if (system) {
     return (
-      <div className="animate-fade-up rounded-lg border border-warn/30 bg-warn-soft px-3 py-2">
-        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-warn">System</p>
-        <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-ink-muted">
+      <div className="animate-fade-up rounded-xl border border-warn/40 bg-warn-soft px-4 py-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">System</p>
+        <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink">
           {turn.text}
         </p>
       </div>
@@ -273,32 +266,32 @@ function ConversationTurn({
   }
 
   return (
-    <div className={`flex animate-fade-up gap-2.5 ${operator ? "justify-end" : "justify-start"}`}>
+    <div className={`flex animate-fade-up gap-3 ${operator ? "justify-end" : "justify-start"}`}>
       {!operator && (
         <div
-          className="agent-orb mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-accent-soft/50 bg-accent-tint font-mono text-[10px] font-semibold text-accent"
+          className="agent-orb mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-accent-soft/60 bg-accent-tint font-mono text-xs font-semibold text-accent"
           aria-hidden="true"
         >
           W
         </div>
       )}
-      <div className={`max-w-[88%] ${operator ? "text-right" : "text-left"}`}>
+      <div className={`max-w-[92%] ${operator ? "text-right" : "text-left"}`}>
         <p
-          className={`font-mono text-[9px] uppercase tracking-[0.14em] ${
+          className={`font-mono text-[10px] uppercase tracking-[0.14em] ${
             operator ? "text-ink-faint" : "text-accent"
           }`}
         >
           {operator ? "You" : "Warehouse agent"}
         </p>
         <div
-          className={`mt-1 rounded-2xl border px-3 py-2.5 ${
+          className={`mt-1.5 rounded-2xl border px-4 py-3 ${
             operator
               ? "rounded-tr-sm border-line bg-bg-elevated"
               : "rounded-tl-sm border-accent-soft/30 bg-[linear-gradient(135deg,rgba(91,157,217,0.09),rgba(20,24,30,0.9))] shadow-[0_10px_30px_-24px_rgba(91,157,217,0.8)]"
           }`}
         >
           {operator ? (
-            <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink">{turn.text}</p>
+            <p className="whitespace-pre-wrap text-sm leading-6 text-ink">{turn.text}</p>
           ) : (
             <AgentReplyText text={turn.text} animate={animate} onProgress={onProgress} />
           )}
@@ -307,7 +300,7 @@ function ConversationTurn({
       </div>
       {operator && (
         <div
-          className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-line bg-surface-hover font-mono text-[10px] text-ink-muted"
+          className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-surface-hover font-mono text-xs text-ink-muted"
           aria-hidden="true"
         >
           Y
@@ -348,17 +341,17 @@ function AgentWorking({ liveToolName }: { liveToolName: string | null }) {
       aria-live="polite"
     >
       <div
-        className="agent-orb animate-breathe flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-accent-soft/60 bg-accent-tint font-mono text-[10px] font-semibold text-accent"
+        className="agent-orb animate-breathe flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-accent-soft/60 bg-accent-tint font-mono text-xs font-semibold text-accent"
         aria-hidden="true"
       >
         W
       </div>
-      <div className="rounded-2xl rounded-tl-sm border border-accent-soft/30 bg-accent-tint px-3 py-2.5">
-        <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-accent">
+      <div className="rounded-2xl rounded-tl-sm border border-accent-soft/40 bg-accent-tint px-4 py-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
           Warehouse agent
         </p>
         <div className="mt-1.5 flex items-center gap-2">
-          <span className="text-xs text-ink-muted">{label}</span>
+            <span className="text-sm text-ink-muted">{label}</span>
           <span className="flex gap-1" aria-hidden="true">
             <span className="agent-thinking-dot h-1 w-1 rounded-full bg-accent" />
             <span className="agent-thinking-dot h-1 w-1 rounded-full bg-accent [animation-delay:160ms]" />
@@ -376,8 +369,6 @@ export function AgentPanel({
   unavailable,
   error,
   liveToolName,
-  scanAttached,
-  identityAttached,
   onSend,
   onRetry,
   identification,
@@ -588,16 +579,9 @@ export function AgentPanel({
   return (
     <Panel
       title="Warehouse agent"
-      className="h-full min-h-0 overflow-hidden"
-      bodyClassName="flex min-h-0 flex-col"
-      meta={
-        scanAttached ? (
-          <span className="inline-flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.08em] text-accent">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_8px_rgba(91,157,217,0.8)]" />
-            {identityAttached ? "scan + identity" : "scan attached"}
-          </span>
-        ) : undefined
-      }
+      className="agent-panel h-full min-h-0 overflow-hidden"
+      bodyClassName="agent-panel-body flex min-h-0 flex-col"
+      showHeader={false}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         {unavailable ? (
@@ -627,9 +611,9 @@ export function AgentPanel({
             followLatest.current = nearBottom;
             setShowLatest(!nearBottom);
           }}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
+          className="agent-transcript min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-line-soft bg-bg/35 p-3"
         >
-          <div ref={contentRef} className="space-y-4">
+          <div ref={contentRef} className="space-y-5">
           {turns.length === 0 && !busy ? (
             <EmptyState>
               Ask about inventory, bins, or the gantry—or request a guided putaway.
@@ -785,26 +769,12 @@ export function AgentPanel({
           </button>
         )}
 
-        <div className="flex shrink-0 flex-wrap gap-1.5">
-          {SUGGESTIONS.map((suggestion) => (
-            <button
-              key={suggestion}
-              type="button"
-              onClick={() => send(suggestion)}
-              disabled={busy}
-              className="rounded-full border border-line bg-bg-elevated px-2.5 py-1 font-mono text-[9px] text-ink-faint transition-all hover:-translate-y-0.5 hover:border-accent-soft hover:bg-accent-tint hover:text-accent disabled:pointer-events-none disabled:opacity-40"
-            >
-              {suggestion}
-            </button>
-          ))}
-        </div>
-
         <form
           onSubmit={(event) => {
             event.preventDefault();
             send(draft);
           }}
-          className="flex shrink-0 items-end gap-2 rounded-xl border border-line bg-bg-elevated p-1.5 transition-colors focus-within:border-accent-soft"
+          className="flex shrink-0 items-end gap-2 rounded-xl border border-line bg-bg-elevated p-2 shadow-[0_8px_28px_-20px_rgba(91,157,217,0.8)] transition-colors focus-within:border-accent-soft"
         >
           <textarea
             ref={composerRef}
@@ -824,7 +794,7 @@ export function AgentPanel({
             placeholder="Ask the warehouse…"
             aria-label="Message the warehouse agent"
             disabled={busy}
-            className="min-h-8 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-xs leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-50"
+            className="min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted disabled:opacity-50"
           />
           <button
             type="submit"

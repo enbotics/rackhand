@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ForceResetModal } from "./admin/force-reset-modal";
 import { useWarehouseSession } from "./session";
 
 /**
@@ -92,12 +94,15 @@ const TABS: Tab[] = [
 
 export function WarehouseNav() {
   const pathname = usePathname();
-  const { totals, gantry, approval, identification } = useWarehouseSession();
+  const { totals, gantry, approval, identification, bins, refresh } = useWarehouseSession();
+  const [forceResetOpen, setForceResetOpen] = useState(false);
+  const warehouseRoute = pathname === "/" || pathname === "/warehouse";
 
   // One number, so a decision waiting on a person is visible from any page.
   const waiting = (approval ? 1 : 0) + (identification ? 1 : 0);
 
   return (
+    <>
     <header className="sticky top-0 z-30 border-b border-line bg-bg/80 backdrop-blur-md">
       <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3 lg:px-6">
         <Link href="/" className="group flex items-center gap-2.5">
@@ -106,16 +111,16 @@ export function WarehouseNav() {
             className="grid size-8 place-items-center rounded-lg border border-accent/40 bg-accent-tint text-accent"
           >
             <svg viewBox="0 0 20 20" className="size-4">
-              <path d="M3 7l7-3.5L17 7l-7 3.5z" {...stroke} />
-              <path d="M3 7v6l7 3.5 7-3.5V7" {...stroke} />
+              <path d="M3 3v14M17 3v14M3 5h14M3 15h14" {...stroke} />
+              <path d="M10 5v4.5M7 8.5v2a3 3 0 0 0 6 0v-2M7 10H5.5M13 10h1.5" {...stroke} />
             </svg>
           </span>
           <span className="leading-tight">
             <span className="block text-sm font-semibold tracking-tight text-ink">
-              Spare Parts Warehouse
+              RackHand
             </span>
             <span className="block font-mono text-[10px] tracking-[0.14em] text-ink-faint">
-              AGENTIC CONTROL
+              WAREHOUSE CONTROL
             </span>
           </span>
         </Link>
@@ -175,6 +180,15 @@ export function WarehouseNav() {
               {totals ? `${totals.binsAvailable} available` : "—"}
             </span>
           </span>
+          {warehouseRoute && (
+            <button
+              type="button"
+              onClick={() => setForceResetOpen(true)}
+              className="inline-flex items-center rounded-md border border-danger/40 bg-danger-soft px-2.5 py-1 font-medium tracking-[0.08em] text-danger transition-colors hover:border-danger hover:bg-danger/10"
+            >
+              FORCE RESET
+            </button>
+          )}
           <span className="inline-flex items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-2.5 py-1 font-medium tracking-[0.1em] text-warn">
             <span aria-hidden="true">●</span>
             GANTRY MODE: {gantry?.mode ?? "SIMULATION"}
@@ -182,5 +196,13 @@ export function WarehouseNav() {
         </div>
       </div>
     </header>
+    {forceResetOpen && (
+      <ForceResetModal
+        bins={bins}
+        onClose={() => setForceResetOpen(false)}
+        onChanged={refresh}
+      />
+    )}
+    </>
   );
 }

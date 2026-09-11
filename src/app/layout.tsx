@@ -19,9 +19,12 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agentic Spare Parts Warehouse",
+  title: {
+    default: "RackHand",
+    template: "%s — RackHand",
+  },
   description:
-    "Warehouse command centre: scan a part, identify it against the catalog, and run approved putaway and retrieval through the warehouse agent.",
+    "RackHand warehouse control: scan a part, identify it against the catalog, and run approved putaway and retrieval through the warehouse agent.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

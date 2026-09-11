@@ -28,12 +28,19 @@
 @keyframes capture-popup-exit { to { opacity: 0; backdrop-filter: blur(0); } }
 @keyframes capture-popup-panel-exit { to { opacity: 0; transform: translateY(14px) scale(.97); } }
 .machine-scene { background: radial-gradient(ellipse at 62% 32%, #18374855, transparent 65%); }
-.machine-bin .machine-tote { transition: filter 180ms ease; }
-.machine-bin:hover .machine-tote { filter: brightness(1.25); }
+.machine-bin .machine-tote {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  transition: filter 180ms ease, transform 180ms ease;
+}
+.machine-bin:hover .machine-tote { filter: brightness(1.25); transform: translateY(-3px) scale(1.015); }
+.machine-bin:active .machine-tote { transform: translateY(-1px) scale(.99); }
 .machine-bin:focus-visible .machine-bin-focus { stroke: #a5f3fc; fill: #67e8f90a; stroke-width: 2; }
 .machine-grip { animation: machine-grip 750ms ease-in-out both; transform-box: fill-box; transform-origin: center; }
 .machine-scan-ring { animation: machine-scan-ring 1.8s ease-in-out infinite; }
 .machine-scan-cone { animation: machine-cone 2s ease-in-out infinite; }
+.agent-panel-body { padding: 16px; }
+.agent-transcript { box-shadow: inset 0 1px 18px rgba(0, 0, 0, .16); }
 .station-scan { background: #071724; }
 .station-scan-grid { background-image: linear-gradient(#67e8f912 1px, transparent 1px), linear-gradient(90deg, #67e8f912 1px, transparent 1px); background-size: 32px 32px; box-shadow: inset 0 0 65px #031723aa; }
 .station-scan-beam { top: 10%; height: 2px; background: #a5f3fc; box-shadow: 0 0 15px #67e8f9, 0 -15px 35px 8px #22d3ee33; animation: station-sweep 2.4s cubic-bezier(.45,0,.55,1) infinite alternate; }

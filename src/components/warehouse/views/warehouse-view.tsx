@@ -5,7 +5,6 @@ import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { InventoryPanel } from "../inventory-panel";
 import { WarehouseRack } from "../warehouse-rack";
 import { ManageBinsModal } from "../admin/manage-bins-modal";
-import { ForceResetModal } from "../admin/force-reset-modal";
 import { BinDetailModal } from "../bin-detail-modal";
 import { AgentPanel } from "../agent-panel";
 import { useWarehouseSession } from "../session";
@@ -30,7 +29,6 @@ export function WarehouseView() {
   const inventoryTab = useRef<HTMLButtonElement>(null);
   const waiting = (session.approval ? 1 : 0) + (session.identification ? 1 : 0);
   const [managingBins, setManagingBins] = useState(false);
-  const [forceResetOpen, setForceResetOpen] = useState(false);
   const [selectedBinId, setSelectedBinId] = useState<string | null>(null);
   // Looked up fresh on every render, not captured at click-time, so an edit
   // made inside the modal (which calls onWarehouseChanged -> session.refresh)
@@ -40,7 +38,6 @@ export function WarehouseView() {
   // Stable identities: the rack's shelf is memoised, and a fresh closure on
   // every gantry poll would defeat that.
   const openBinManager = useCallback(() => setManagingBins(true), []);
-  const openForceReset = useCallback(() => setForceResetOpen(true), []);
   const selectBin = useCallback((bin: BinView) => setSelectedBinId(bin.binId), []);
 
   // The settled outcome's movement status chip needs the real row, not the
@@ -54,12 +51,12 @@ export function WarehouseView() {
   return (
     <PageShell
       viewport
+      showHeader={false}
       title="Warehouse"
       intent="Watch the gantry, capture a part, and work with your Warehouse Agent."
-      footer="Movement is simulated until hardware telemetry is connected. Inventory and bin status come from the warehouse database."
     >
       <div className="warehouse-workspace-grid grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
-        <div className="flex min-h-0 min-w-0 flex-col lg:col-span-7 xl:col-span-8">
+        <div className="flex min-h-0 min-w-0 flex-col lg:col-span-7">
           {/*
             The single live picture of the machine. It is given the controller
             status AND the semantic trip (the active movement, or the running
@@ -75,12 +72,11 @@ export function WarehouseView() {
             activeMovement={session.activeMovement}
             latestAudit={session.latestAudit}
             onManageBins={openBinManager}
-            onForceReset={openForceReset}
             onSelectBin={selectBin}
           />
         </div>
 
-        <div className="warehouse-sidebar flex min-h-0 min-w-0 flex-col gap-3 lg:col-span-5 xl:col-span-4">
+        <div className="warehouse-sidebar flex min-h-0 min-w-0 flex-col gap-3 lg:col-span-5">
           <div role="tablist" aria-label="Warehouse workspace" className="relative grid shrink-0 grid-cols-2 rounded-xl border border-line bg-bg-elevated p-1"
             onKeyDown={(event) => {
               if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -92,14 +88,14 @@ export function WarehouseView() {
             <span aria-hidden="true" className="workspace-tab-indicator" style={{ transform: `translateX(${tab === "agent" ? "0" : "100%"})` }} />
             <button ref={agentTab} type="button" role="tab" id={`${tabId}-agent-tab`} aria-controls={`${tabId}-agent-panel`}
               aria-selected={tab === "agent"} tabIndex={tab === "agent" ? 0 : -1} onClick={() => setTab("agent")}
-              className="relative z-10 flex items-center justify-center gap-2 rounded-lg px-2 py-2.5 text-xs font-medium text-ink focus-visible:outline-2 focus-visible:outline-accent">
+              className="relative z-10 flex items-center justify-center gap-2 rounded-lg px-3 py-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-accent">
               Warehouse agent
               {waiting > 0 && <span className="rounded-full bg-warn px-1.5 text-[10px] text-bg" aria-label={`${waiting} decisions waiting`}>{waiting}</span>}
               {session.agentBusy && <span className="h-1.5 w-1.5 rounded-full bg-accent animate-glow-pulse" aria-label="Agent working" />}
             </button>
             <button ref={inventoryTab} type="button" role="tab" id={`${tabId}-inventory-tab`} aria-controls={`${tabId}-inventory-panel`}
               aria-selected={tab === "inventory"} tabIndex={tab === "inventory" ? 0 : -1} onClick={() => setTab("inventory")}
-              className="relative z-10 rounded-lg px-2 py-2.5 text-xs font-medium text-ink focus-visible:outline-2 focus-visible:outline-accent">
+              className="relative z-10 rounded-lg px-3 py-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-accent">
               Inventory <span className="ml-1 text-ink-faint">{session.inventory.length}</span>
             </button>
           </div>
@@ -150,14 +146,6 @@ export function WarehouseView() {
         <ManageBinsModal
           bins={session.bins}
           onClose={() => setManagingBins(false)}
-          onChanged={session.refresh}
-        />
-      )}
-
-      {forceResetOpen && (
-        <ForceResetModal
-          bins={session.bins}
-          onClose={() => setForceResetOpen(false)}
           onChanged={session.refresh}
         />
       )}

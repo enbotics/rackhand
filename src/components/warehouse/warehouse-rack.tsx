@@ -12,11 +12,16 @@ import { useAuditCapture } from "./audit-capture-dialog";
 import { useWarehouseSession } from "./session";
 import { CaptureStation, ScanResultDialog } from "./capture-station";
 import { AuditCaptureModeToggle } from "./audit-capture-mode-toggle";
-import { BUTTON_VARIANTS, ErrorNote } from "./ui";
+import { ErrorNote } from "./ui";
 import { useCameraHealth } from "./camera-health-provider";
 
 type Point = { x: number; y: number };
-const DOCK: Point = { x: 155, y: 255 };
+const CHECKOUT_SCALE = 1.28;
+const CHECKOUT_ORIGIN: Point = { x: 138, y: 120 };
+const DOCK: Point = {
+  x: CHECKOUT_ORIGIN.x + (155 - CHECKOUT_ORIGIN.x) * CHECKOUT_SCALE,
+  y: CHECKOUT_ORIGIN.y + (255 - CHECKOUT_ORIGIN.y) * CHECKOUT_SCALE,
+};
 const HOME: Point = { x: 278, y: 104 };
 const AISLE_X = 278;
 const TOP = 120;
@@ -131,13 +136,14 @@ function useGantryPlayback(input: GantryStatus | null, geometry: Geometry) {
   const [view, setView] = useState({ gantry: input, point: initial });
   const shown = useRef(initial);
   const geometryRef = useRef(geometry);
-  geometryRef.current = geometry;
   const reducedRef = useRef(reduced);
-  reducedRef.current = reduced;
   const keyRef = useRef("");
   const queue = useRef<GantryStatus[]>([]);
   const frame = useRef<number | null>(null);
   const work = useRef<{ gantry: GantryStatus; from: Point; to: Point; started: number; duration: number } | null>(null);
+
+  useEffect(() => { geometryRef.current = geometry; }, [geometry]);
+  useEffect(() => { reducedRef.current = reduced; }, [reduced]);
 
   useEffect(() => {
     if (!input) return;
@@ -271,7 +277,9 @@ function CameraRig({ scanning, dockBin, scanImage, connection, temperature }: {
       ? "#f4c078"
       : "#fb7185";
   return <g aria-hidden="true">
-    <text x="55" y="64" fill="#8aa7b9" fontSize="10" letterSpacing="2">VISION / CHECKOUT</text>
+    <rect x="31" y="39" width="214" height="350" rx="13" fill="#071824" fillOpacity=".44" stroke="#34566a" strokeWidth="1.5" />
+    <text x="48" y="66" fill="#9adff1" fontSize="13" fontWeight="700" letterSpacing="2">CHECKOUT STATION</text>
+    <text x="48" y="82" fill="#7697aa" fontSize="8" letterSpacing="1.7">VISION / VERIFICATION</text>
     <path d="M62 284 V92 H148 V116" fill="none" stroke="#152835" strokeWidth="14" strokeLinejoin="round" />
     <path d="M59 280 V90 H146" fill="none" stroke="#587183" strokeWidth="3" />
     {/* Raspberry Pi enclosure, side ports and a downward-facing lens. */}
@@ -312,12 +320,72 @@ function CameraRig({ scanning, dockBin, scanImage, connection, temperature }: {
   </g>;
 }
 
+function WarehouseActionsMenu({ onManageBins }: { onManageBins?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={menuRef} className="relative">
+      <button
+        type="button"
+        aria-label="Warehouse actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="grid size-10 place-items-center rounded-lg border border-line bg-bg-elevated text-ink-muted transition-colors hover:border-accent-soft hover:bg-accent-tint hover:text-accent"
+      >
+        <svg viewBox="0 0 20 20" className="size-5" aria-hidden="true">
+          <path d="M4 5.5h12M4 10h12M4 14.5h12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Warehouse actions"
+          className="absolute right-0 top-12 z-20 w-52 rounded-xl border border-line bg-surface p-1.5 shadow-2xl shadow-black/50"
+        >
+          <CaptureStation menuItem onDialogClosed={() => setOpen(false)} />
+          {onManageBins && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onManageBins();
+              }}
+              className="flex w-full items-center rounded-lg px-3 py-2.5 text-left text-sm font-medium text-ink transition-colors hover:bg-accent-tint hover:text-accent"
+            >
+              Manage bins
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** A code-native, perspective machine scene. Only telemetry drives movement;
  * the database still owns stock, capacity and availability. */
-export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry, activeMovement, latestAudit, onManageBins, onForceReset, onSelectBin }: {
+export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry, activeMovement, latestAudit, onManageBins, onSelectBin }: {
   bins: BinView[]; loading: boolean; error: string | null; onRetry: () => void;
   gantry: GantryStatus | null; activeMovement: MovementRowView | null;
-  latestAudit: InventoryAuditView | null; onManageBins?: () => void; onForceReset?: () => void;
+  latestAudit: InventoryAuditView | null; onManageBins?: () => void;
   onSelectBin?: (bin: BinView) => void;
 }) {
   const id = useId().replace(/:/g, "");
@@ -347,12 +415,9 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
     <div className="machine-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 px-5 py-4">
       <div>
         <p className="font-mono text-[10px] tracking-[.22em] text-accent">WAREHOUSE / LIVE SCENE</p>
-        <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink">Your warehouse, in motion.</h2>
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <CaptureStation />
-        {onManageBins && <button type="button" onClick={onManageBins} className={BUTTON_VARIANTS.secondary}>Manage bins</button>}
-        {onForceReset && <button type="button" onClick={onForceReset} className={BUTTON_VARIANTS.secondary}>Force reset</button>}
+        <WarehouseActionsMenu onManageBins={onManageBins} />
         <AuditCaptureModeToggle />
       </div>
     </div>
@@ -397,10 +462,12 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
                 active={bin.code === arm.focusBin && !!gantry?.activeOperationId} />}
             </g>;
           }))}
-          <CameraRig scanning={scanning} dockBin={dockBin ?? undefined}
-            scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined}
-            connection={cameraHealth?.connection ?? "OFFLINE"}
-            temperature={cameraHealth?.cpuTemperatureC ?? null} />
+          <g className="machine-checkout" transform={`translate(${CHECKOUT_ORIGIN.x} ${CHECKOUT_ORIGIN.y}) scale(${CHECKOUT_SCALE}) translate(${-CHECKOUT_ORIGIN.x} ${-CHECKOUT_ORIGIN.y})`}>
+            <CameraRig scanning={scanning} dockBin={dockBin ?? undefined}
+              scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined}
+              connection={cameraHealth?.connection ?? "OFFLINE"}
+              temperature={cameraHealth?.cpuTemperatureC ?? null} />
+          </g>
           <Carriage arm={arm} point={point} bin={activeBin} />
         </svg>
       </div>}
