@@ -51,6 +51,12 @@ export const executeRetrievalInputSchema = z
       .describe(
         "A bin to take it from, e.g. \"B2-01\". With sku/partId, just narrows where to take it from. WITHOUT sku or partId, this alone IS the identity — the operator named a bin and nothing else, e.g. \"retrieve B2-01\": pass only sourceBinCode and the part is resolved from that bin's own contents (a bin holds at most one SKU). Omit entirely, with sku/partId given, to let the warehouse pick a bin deterministically.",
       ),
+    remainingItems: z
+      .array(z.string().trim().min(1))
+      .optional()
+      .describe(
+        "Only when the CURRENT operator message named more than one item to fetch (e.g. \"I need screws and allen keys\"): the OTHER item descriptions, in the operator's own words, NOT including the one you are retrieving in this call. Omit entirely for a single-item request. The system fetches each remaining item automatically, one at a time, after this one and its putaway offer are resolved — you never need to call execute_retrieval again yourself for them.",
+      ),
   })
   .refine(
     (value) => !(value.sku && value.partId) && Boolean(value.sku || value.partId || value.sourceBinCode),
@@ -60,7 +66,7 @@ export const executeRetrievalInputSchema = z
 export const executeRetrievalTool = tool({
   name: EXECUTE_RETRIEVAL_TOOL_NAME,
   description:
-    "Check out one entire physical bin and move it to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Identify what to retrieve either by an exact SKU/part id (optionally narrowed to one bin), or by sourceBinCode ALONE when the operator only named a bin — a bin holds at most one SKU, so the bin code is itself authoritative identity, resolved server-side from that bin's contents, never guessed. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. The service independently revalidates identity, stock and source-bin occupancy.",
+    "Check out one entire physical bin and move it to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Identify what to retrieve either by an exact SKU/part id (optionally narrowed to one bin), or by sourceBinCode ALONE when the operator only named a bin — a bin holds at most one SKU, so the bin code is itself authoritative identity, resolved server-side from that bin's contents, never guessed. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. If the operator named several items in one message, call this for the first one and pass the rest as remainingItems — never call execute_retrieval a second time yourself for them. The service independently revalidates identity, stock and source-bin occupancy.",
   inputSchema: executeRetrievalInputSchema,
   callback: async ({ sku, partId, sourceBinCode }) => {
     try {

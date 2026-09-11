@@ -38,7 +38,10 @@ import {
   type PutawayCaptureOutcome,
   type PutawayCaptureView,
 } from "./putaway-capture-types";
-import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
+import {
+  getContextAutoSuggestedReturn,
+  getContextWorkflowSessionId,
+} from "@/lib/agents/request-context";
 
 export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN"];
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
@@ -296,6 +299,17 @@ export async function requirePutawayVerification(
     where: { id: movementId },
     data: { destinationLocation: isReturn ? "VERIFY_RETURN" : "VERIFY_PUTAWAY" },
   });
+
+  // The operator already approved this exact physical action by clicking the
+  // auto-suggested "put it back?" card — a second click just to START the
+  // camera adds no safety, only friction. requestPutawayCameraCapture is
+  // idempotent (PROD reuses any existing CameraCaptureJob, SIMULATION just
+  // runs its analysis once), so this is safe even if the popup also fires it.
+  // The decision on whatever the photo shows still belongs to the operator,
+  // same as any other putaway — only the capture TRIGGER is automatic.
+  if (getContextAutoSuggestedReturn()) {
+    await requestPutawayCameraCapture(request.id, request.ownerSessionId ?? undefined);
+  }
 
   while (true) {
     const current = await prisma.putawayCaptureRequest.findUniqueOrThrow({ where: { id: request.id } });

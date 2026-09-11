@@ -44,8 +44,11 @@ import type {
   BinView,
   InventoryAuditView,
   InventoryRowView,
+  MaterialRequirementView,
+  MaterialsPlanCheckView,
   MovementRowView,
 } from "@/lib/warehouse/dashboard-types";
+import { usePendingMaterialsPlan } from "@/lib/use-materials-plan";
 
 import type { MeasurementResult, ScanResult } from "@/lib/warehouse/scan-types";
 
@@ -175,6 +178,11 @@ export interface WarehouseSession {
 
   /* ---- workflow and observability ---- */
   workflow: WarehouseGraphResult | null;
+  materialsPlan: { requirements: MaterialRequirementView[] } | null;
+  /** This session's latest build-plan stock check, unless it has been retired from the transcript. */
+  materialsPlanCheck: MaterialsPlanCheckView | null;
+  /** Retires the build-plan pipeline card (plan + check) from the transcript. */
+  dismissMaterialsPlan: () => void;
   trace: ReturnType<typeof useAgentTrace>["trace"];
   traceError: string | null;
   recentTraces: ReturnType<typeof useRecentTraces>["traces"];
@@ -236,6 +244,7 @@ export function WarehouseSessionProvider({
    * arriving on the agent reply — the browser never runs or imports a graph.
    */
   const [workflow, setWorkflow] = useState<WarehouseGraphResult | null>(null);
+  const [materialsPlan, setMaterialsPlan] = useState<{ requirements: MaterialRequirementView[] } | null>(null);
   /**
    * The trace being followed (Milestone 12). Always a SERVER-generated id that
    * arrived on an agent reply, or one the operator picked from history — the
@@ -243,6 +252,29 @@ export function WarehouseSessionProvider({
    */
   const [traceId, setTraceId] = useState<string | null>(null);
   const lastOperatorMessage = useRef<string | null>(null);
+  /**
+   * Set the moment verify_materials_availability appears in a reply's
+   * toolCalls — before the row even exists, since the sweep is scheduled via
+   * after() and hasn't run yet. Drives the poll to its fast cadence right
+   * away rather than waiting up to 20s to notice a check exists. Cleared
+   * once the poll reports a terminal status.
+   */
+  const [watchingMaterialsPlan, setWatchingMaterialsPlan] = useState(false);
+  /**
+   * The build-plan check that has been retired from the transcript.
+   *
+   * WHY THIS IS NEEDED AT ALL. `workflow` and `materialsPlan` are per-turn —
+   * `send` clears them, so they cannot outlive the question that produced
+   * them. The stock check cannot work that way: it is a background sweep
+   * discovered by polling "this browser session's LATEST check", so the row
+   * keeps coming back long after the build-plan turn is history. The card is
+   * now manually dismissible rather than auto-fading (see agent-panel.tsx), so
+   * without this the poll would simply re-render a completed check from an
+   * old question underneath every unrelated turn that followed it. Holding the
+   * dismissed id — rather than clearing the value — is what makes that stick
+   * against the next poll one second later.
+   */
+  const [dismissedMaterialsCheckId, setDismissedMaterialsCheckId] = useState<string | null>(null);
 
   // Authoritative warehouse state.
   const [actionInFlight, setActionInFlight] = useState(false);
@@ -250,6 +282,63 @@ export function WarehouseSessionProvider({
     useWarehouseOverview(actionInFlight || agentBusy);
   const { trace, error: traceError } = useAgentTrace(traceId);
   const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
+  const { materialsPlanCheck } = usePendingMaterialsPlan(watchingMaterialsPlan);
+  // Read by `send` and by the dismiss action, neither of which should be
+  // rebuilt every second just because a poll returned. A ref keeps them
+  // stable while still seeing the latest check.
+  const latestMaterialsCheck = useRef<MaterialsPlanCheckView | null>(null);
+  useEffect(() => {
+    latestMaterialsCheck.current = materialsPlanCheck;
+  }, [materialsPlanCheck]);
+
+  /**
+   * A check that was ALREADY finished the first time this page saw it belongs
+   * to a question asked before the browser reloaded — there is no conversation
+   * above it to explain it, so it starts retired rather than greeting the
+   * operator with a build plan they cannot place. One still sweeping is kept:
+   * that is a machine physically moving right now, which is always worth
+   * seeing. Adjusted during render (React's own pattern for reacting to a
+   * changed external value, as SettlingCard does) rather than in an effect,
+   * which would flash the stale card for a frame before retiring it.
+   *
+   * CRITICALLY, a check this page is itself expecting is never treated as
+   * stale, however finished it looks. The "nothing is stocked anywhere" path
+   * (recordUnstartedCheck) writes a COMPLETED, all-SHORTAGE row instantly, so
+   * the very first row a just-asked build plan sees can already be terminal —
+   * and that is precisely the report the operator most needs to read.
+   */
+  const [firstCheckSeen, setFirstCheckSeen] = useState(false);
+  if (materialsPlanCheck && !firstCheckSeen) {
+    setFirstCheckSeen(true);
+    const expectingOurOwn = watchingMaterialsPlan || materialsPlan !== null;
+    if (
+      !expectingOurOwn &&
+      materialsPlanCheck.status !== "RUNNING" &&
+      materialsPlanCheck.status !== "PENDING"
+    ) {
+      setDismissedMaterialsCheckId(materialsPlanCheck.id);
+    }
+  }
+
+  /** The operator closing the build-plan pipeline card, for good. */
+  const dismissMaterialsPlan = useCallback(() => {
+    setMaterialsPlan(null);
+    const current = latestMaterialsCheck.current;
+    if (current) setDismissedMaterialsCheckId(current.id);
+  }, []);
+  // Stop polling fast once the sweep is truly done — the hook's own poll
+  // keeps itself fast independently while status is RUNNING, so this only
+  // needs to release the kick-start flag once there is nothing left running.
+  useEffect(() => {
+    if (
+      watchingMaterialsPlan &&
+      materialsPlanCheck &&
+      materialsPlanCheck.status !== "RUNNING" &&
+      materialsPlanCheck.status !== "PENDING"
+    ) {
+      setWatchingMaterialsPlan(false);
+    }
+  }, [watchingMaterialsPlan, materialsPlanCheck]);
   const { status: gantry, error: gantryError } = useGantryStatus(
     actionInFlight || agentBusy || overview?.latestAudit?.status === "RUNNING",
   );
@@ -705,6 +794,16 @@ export function WarehouseSessionProvider({
     const toolCalls = (data.toolCalls as string[] | undefined) ?? [];
     if (workflows.length > 0) setWorkflow(workflows[workflows.length - 1]);
     if (typeof data.traceId === "string") setTraceId(data.traceId);
+    const materialsPlanResult = data.materialsPlan as
+      | { requirements: MaterialRequirementView[] }
+      | undefined;
+    if (materialsPlanResult) setMaterialsPlan(materialsPlanResult);
+    // verify_materials_availability schedules its sweep via after() — the
+    // row doesn't exist yet at reply time, so poll fast starting now rather
+    // than waiting for the idle-rate poll to eventually notice it.
+    if (toolCalls.includes("verify_materials_availability")) {
+      setWatchingMaterialsPlan(true);
+    }
     setTurns((previous) => [
       ...previous,
       {
@@ -726,6 +825,21 @@ export function WarehouseSessionProvider({
     async (message: string) => {
       lastOperatorMessage.current = message;
       setWorkflow(null);
+      setMaterialsPlan(null);
+      // A FINISHED check belonged to the previous question; asking something
+      // new retires it exactly like the workflow and plan above, so an old
+      // availability report does not sit under an unrelated answer. A check
+      // still sweeping the shelf is deliberately left alone: it is physically
+      // happening right now, and the operator asking something else in the
+      // meantime is no reason to hide a machine that is still moving.
+      const previousCheck = latestMaterialsCheck.current;
+      if (
+        previousCheck &&
+        previousCheck.status !== "RUNNING" &&
+        previousCheck.status !== "PENDING"
+      ) {
+        setDismissedMaterialsCheckId(previousCheck.id);
+      }
       setTurns((previous) => [
         ...previous,
         { id: nextTurnId(), role: "operator", text: message },
@@ -1082,6 +1196,12 @@ export function WarehouseSessionProvider({
       },
 
       workflow,
+      materialsPlan,
+      materialsPlanCheck:
+        materialsPlanCheck && materialsPlanCheck.id !== dismissedMaterialsCheckId
+          ? materialsPlanCheck
+          : null,
+      dismissMaterialsPlan,
       trace,
       traceError,
       recentTraces,
@@ -1122,6 +1242,10 @@ export function WarehouseSessionProvider({
     agentUnavailable,
     send,
     workflow,
+    materialsPlan,
+    materialsPlanCheck,
+    dismissedMaterialsCheckId,
+    dismissMaterialsPlan,
     trace,
     traceError,
     recentTraces,

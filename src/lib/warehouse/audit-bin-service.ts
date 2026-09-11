@@ -424,7 +424,10 @@ export async function executeBinAudit(binAuditId: string): Promise<BinAuditResul
   if (!audit) throw new Error("bin_audit_not_found");
   const { bin } = audit;
   const originalStatus = bin.status;
-  const isTrusted = audit.auditRun.trigger === "TRUSTED_INTERNAL";
+  // TRUSTED_INTERNAL (daily-activity audit) and PLAN_VERIFICATION (materials
+  // plan stock check) both run unattended — no operator to press the capture
+  // button or decide an ambiguous read. Only CLIENT has one.
+  const isTrusted = audit.auditRun.trigger !== "CLIENT";
   // Refuse before touching bin/gantry state: Simulation mode must never
   // silently fall through to a real capture on a bin it doesn't cover.
   if (isOutOfSimulationScope(bin.code)) {

@@ -52,6 +52,26 @@ export interface ApprovalSummary {
    * Approve/Deny still mean exactly the same thing underneath.
    */
   autoSuggested?: boolean;
+  /**
+   * Plain-text item descriptions still owed from the operator's original
+   * multi-item fulfillment request ("I need screws and allen keys"), not yet
+   * attempted — never including the item THIS approval itself concerns.
+   * Carried forward, hop by hop, from one approval's summary to the next
+   * (retrieval → its auto-suggested putaway → the next item's retrieval …)
+   * so the server can force the whole list through deterministically instead
+   * of trusting the model to remember and re-propose each one unprompted.
+   * Absent or empty once nothing is left owed.
+   */
+  fulfillmentQueue?: string[];
+  /**
+   * How many items the operator's original multi-item request named in total
+   * (this one plus everything ever queued). Set once, when the queue is first
+   * seeded from remainingItems, and carried forward unchanged on every later
+   * hop — so `fulfillmentTotal - fulfillmentQueue.length` always tells the
+   * approval prompt which position in the list this item is, without needing
+   * a separate "is this the first one" flag threaded through every call site.
+   */
+  fulfillmentTotal?: number;
 }
 
 export interface PendingApprovalView {

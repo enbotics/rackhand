@@ -26,6 +26,72 @@ import { isSimulationEvidenceUrl } from "./simulation-evidence";
 import { confidencePercent } from "./audit-types";
 import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
+import type { Prisma } from "@/generated/prisma/client";
+
+const AUDIT_RUN_WITH_BINS = {
+  binAudits: {
+    orderBy: { createdAt: "asc" },
+    include: { bin: true, expectedPart: true },
+  },
+} satisfies Prisma.InventoryAuditRunInclude;
+
+type AuditRunWithBins = Prisma.InventoryAuditRunGetPayload<{
+  include: typeof AUDIT_RUN_WITH_BINS;
+}>;
+
+/**
+ * Shared with the materials-plan endpoint (materials-plan-service.ts's
+ * PLAN_VERIFICATION sweeps are just InventoryAuditRun rows under the hood) —
+ * one mapping from the durable rows to the operator-facing view, not two.
+ */
+export function toInventoryAuditView(run: AuditRunWithBins): InventoryAuditView {
+  return {
+    auditRunId: run.id,
+    trigger: run.trigger,
+    status: run.status,
+    requestedBinCode: run.requestedBinCode,
+    binsPlanned: run.binsPlanned,
+    binsCompleted: run.binsCompleted,
+    verifiedBins: run.verifiedBins,
+    reconciledBins: run.reconciledBins,
+    reviewRequiredBins: run.reviewRequiredBins,
+    failedBins: run.failedBins,
+    startedAt: run.startedAt.getTime(),
+    completedAt: run.completedAt?.getTime() ?? null,
+    bins: run.binAudits.map((audit) => ({
+      captureMode: isSimulationEvidenceUrl(audit.evidenceUrl) ? "SIMULATION" as const : "PROD" as const,
+      binAuditId: audit.id,
+      binCode: audit.bin.code,
+      sku: audit.expectedPart?.sku ?? null,
+      status: audit.status,
+      expectedQuantity: audit.expectedQuantity,
+      observedQuantity: audit.observedQuantity,
+      confidencePercent:
+        audit.countConfidence === null ? null : confidencePercent(audit.countConfidence),
+      inventoryUpdated: audit.inventoryUpdated,
+      previousQuantity: audit.previousQuantity,
+      newQuantity: audit.newQuantity,
+      evidenceUrl: audit.evidenceUrl,
+      priorEvidenceUrl: audit.priorEvidenceUrl,
+      awaitingConfirmation:
+        audit.status === "REVIEW_REQUIRED" &&
+        audit.expectedPartId !== null &&
+        audit.observedQuantity !== null,
+      canApply:
+        audit.errorCode === "audit_pending_confirmation" &&
+        !isSimulationEvidenceUrl(audit.evidenceUrl),
+      reason: audit.errorCode,
+    })),
+  };
+}
+
+export async function getInventoryAuditRunView(auditRunId: string): Promise<InventoryAuditView | null> {
+  const run = await prisma.inventoryAuditRun.findUnique({
+    where: { id: auditRunId },
+    include: AUDIT_RUN_WITH_BINS,
+  });
+  return run ? toInventoryAuditView(run) : null;
+}
 
 /**
  * While AUDIT_CAPTURE_MODE=SIMULATION is active for a bin set up for it, the
@@ -158,12 +224,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
     loadLatestBinSnapshots(),
     prisma.inventoryAuditRun.findFirst({
       orderBy: { createdAt: "desc" },
-      include: {
-        binAudits: {
-          orderBy: { createdAt: "asc" },
-          include: { bin: true, expectedPart: true },
-        },
-      },
+      include: AUDIT_RUN_WITH_BINS,
     }),
   ]);
 
@@ -254,52 +315,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
   }));
 
   const auditView: InventoryAuditView | null = latestAudit
-    ? {
-        auditRunId: latestAudit.id,
-        trigger: latestAudit.trigger,
-        status: latestAudit.status,
-        requestedBinCode: latestAudit.requestedBinCode,
-        binsPlanned: latestAudit.binsPlanned,
-        binsCompleted: latestAudit.binsCompleted,
-        verifiedBins: latestAudit.verifiedBins,
-        reconciledBins: latestAudit.reconciledBins,
-        reviewRequiredBins: latestAudit.reviewRequiredBins,
-        failedBins: latestAudit.failedBins,
-        startedAt: latestAudit.startedAt.getTime(),
-        completedAt: latestAudit.completedAt?.getTime() ?? null,
-        bins: latestAudit.binAudits.map((audit) => ({
-          captureMode: isSimulationEvidenceUrl(audit.evidenceUrl) ? "SIMULATION" as const : "PROD" as const,
-          binAuditId: audit.id,
-          binCode: audit.bin.code,
-          sku: audit.expectedPart?.sku ?? null,
-          status: audit.status,
-          expectedQuantity: audit.expectedQuantity,
-          observedQuantity: audit.observedQuantity,
-          confidencePercent:
-            audit.countConfidence === null ? null : confidencePercent(audit.countConfidence),
-          inventoryUpdated: audit.inventoryUpdated,
-          previousQuantity: audit.previousQuantity,
-          newQuantity: audit.newQuantity,
-          evidenceUrl: audit.evidenceUrl,
-          priorEvidenceUrl: audit.priorEvidenceUrl,
-          // Reviewable (shows the comparison + a Dismiss option) with a
-          // known part and a countable observation — a "physical stock, no
-          // catalog record" flag has neither and stays a read-only entry.
-          awaitingConfirmation:
-            audit.status === "REVIEW_REQUIRED" &&
-            audit.expectedPartId !== null &&
-            audit.observedQuantity !== null,
-          // Applicable only when the observation itself is trustworthy —
-          // audit_pending_confirmation is the sole reason that means
-          // "confident and safe, just lower than what's on file." Every
-          // other REVIEW_REQUIRED reason means the count can't be trusted at
-          // all, so applying it would defeat the point of flagging it.
-          canApply:
-            audit.errorCode === "audit_pending_confirmation" &&
-            !isSimulationEvidenceUrl(audit.evidenceUrl),
-          reason: audit.errorCode,
-        })),
-      }
+    ? toInventoryAuditView(latestAudit)
     : null;
 
   return {
