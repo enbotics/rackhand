@@ -13,6 +13,7 @@ import { useWarehouseSession } from "./session";
 import { CaptureStation, ScanResultDialog } from "./capture-station";
 import { AuditCaptureModeToggle } from "./audit-capture-mode-toggle";
 import { BUTTON_VARIANTS, ErrorNote } from "./ui";
+import { useCameraHealth } from "./camera-health-provider";
 
 type Point = { x: number; y: number };
 const DOCK: Point = { x: 155, y: 255 };
@@ -257,7 +258,18 @@ const Structure = memo(function Structure({ geometry, id }: { geometry: Geometry
   </g>;
 });
 
-function CameraRig({ scanning, dockBin, scanImage }: { scanning: boolean; dockBin?: BinView; scanImage?: string }) {
+function CameraRig({ scanning, dockBin, scanImage, connection, temperature }: {
+  scanning: boolean;
+  dockBin?: BinView;
+  scanImage?: string;
+  connection: "ONLINE" | "DEGRADED" | "OFFLINE";
+  temperature: number | null;
+}) {
+  const cameraColor = connection === "ONLINE"
+    ? "#6ee7b7"
+    : connection === "DEGRADED"
+      ? "#f4c078"
+      : "#fb7185";
   return <g aria-hidden="true">
     <text x="55" y="64" fill="#8aa7b9" fontSize="10" letterSpacing="2">VISION / CHECKOUT</text>
     <path d="M62 284 V92 H148 V116" fill="none" stroke="#152835" strokeWidth="14" strokeLinejoin="round" />
@@ -269,7 +281,7 @@ function CameraRig({ scanning, dockBin, scanImage }: { scanning: boolean; dockBi
     <rect x="122" y="111" width="20" height="14" rx="2" fill="#214634" stroke="#588369" />
     <rect x="127" y="113" width="8" height="8" rx="1" fill="#142b24" />
     <path d="M149 111 V126 M154 111 V126 M159 111 V126" stroke="#152a38" strokeWidth="2" />
-    <circle cx="165" cy="109" r="2" fill={scanning ? "#6ee7b7" : "#b3cbaa"} />
+    <circle cx="165" cy="109" r="2" fill={cameraColor} />
     <path d="M137 136 L143 143 H162 L168 136" fill="#122d3d" stroke="#68889b" />
     <ellipse cx="152" cy="143" rx="10" ry="4" fill="#092536" stroke="#79d9ed" />
     <ellipse cx="152" cy="143" rx="5" ry="2" fill={scanning ? "#a5f3fc" : "#3b859c"} />
@@ -283,8 +295,8 @@ function CameraRig({ scanning, dockBin, scanImage }: { scanning: boolean; dockBi
       : <path d="M121 226 H182 M152 219 V232" stroke="#87a9ba" strokeOpacity=".5" />}
     <rect x="83" y="308" width="145" height="56" rx="8" fill="#0b1d2a" stroke={scanning ? "#5299ae" : "#294353"} />
     <circle cx="98" cy="326" r="3" fill={scanning ? "#67e8f9" : dockBin ? "#f4c078" : "#6a879a"} />
-    <text x="109" y="330" fill="#c2d8e4" fontSize="10">{scanning ? "ANALYZING FRAME" : dockBin ? "BIN AT STATION" : "STATION READY"}</text>
-    <text x="98" y="348" fill="#7e9aaf" fontSize="9">{dockBin?.code ?? "Capture when positioned"}</text>
+    <text x="109" y="330" fill="#c2d8e4" fontSize="10">{scanning ? "ANALYZING FRAME" : `PI ${connection}`}</text>
+    <text x="98" y="348" fill="#7e9aaf" fontSize="9">{dockBin?.code ?? (temperature == null ? "Temperature —" : `${temperature.toFixed(1)}°C · camera ready`)}</text>
     </g>
     {scanning && <g>
       {scanImage && <g>
@@ -314,7 +326,11 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
   const arm = deriveRackArmState({ gantry, activeMovement, latestAudit });
   const audit = useAuditCapture();
   const session = useWarehouseSession();
-  const scanning = session.scanning || audit.submitting;
+  const { health: cameraHealth } = useCameraHealth();
+  const workflowCameraActive = ["CLAIMED", "UPLOADED", "PROCESSING"].includes(
+    audit.cameraJob?.status ?? "",
+  );
+  const scanning = session.scanning || audit.submitting || workflowCameraActive;
   const operation = gantry?.operation;
   const currentAtStation = !!gantry?.currentLocation && isGantryStation(gantry.currentLocation);
   const checkedOut = bins.filter((bin) => bin.status === "CHECKED_OUT");
@@ -382,7 +398,9 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
             </g>;
           }))}
           <CameraRig scanning={scanning} dockBin={dockBin ?? undefined}
-            scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined} />
+            scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined}
+            connection={cameraHealth?.connection ?? "OFFLINE"}
+            temperature={cameraHealth?.cpuTemperatureC ?? null} />
           <Carriage arm={arm} point={point} bin={activeBin} />
         </svg>
       </div>}
@@ -392,7 +410,9 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
         {scanning ? "Analyzing captured frame · camera station" : arm.label}
       </p>
       <div className="flex gap-3 font-mono text-[9px] text-ink-faint">
-        <span>{bins.length} SLOTS</span><span>{checkedOut.length} CHECKED OUT</span><span>SELECT A BIN TO INSPECT</span>
+        <span>{bins.length} SLOTS</span><span>{checkedOut.length} CHECKED OUT</span>
+        <span>PI {cameraHealth?.connection ?? "OFFLINE"}</span>
+        {cameraHealth?.cpuTemperatureC != null && <span>{cameraHealth.cpuTemperatureC.toFixed(1)}°C</span>}
       </div>
     </div>
     {checkedOut.length > 0 && <p className="machine-checkout-note shrink-0 border-t border-line px-5 py-3 text-xs text-ink-muted">

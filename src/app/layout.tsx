@@ -4,6 +4,7 @@ import "./globals.css";
 import { WarehouseNav } from "@/components/warehouse/nav";
 import { WarehouseSessionProvider } from "@/components/warehouse/session";
 import { AuditCaptureProvider } from "@/components/warehouse/audit-capture-dialog";
+import { CameraHealthProvider } from "@/components/warehouse/camera-health-provider";
 
 const sora = Sora({
   variable: "--font-sora",
@@ -37,14 +38,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           card by clicking a menu item would leave the operator unable to
           answer a question the server is still holding open.
         */}
-        <WarehouseSessionProvider>
-          <AuditCaptureProvider>
-            <div className="relative z-10 flex flex-1 flex-col">
-              <WarehouseNav />
-              <main className="flex flex-1 flex-col">{children}</main>
-            </div>
-          </AuditCaptureProvider>
-        </WarehouseSessionProvider>
+        <CameraHealthProvider>
+          <WarehouseSessionProvider>
+            <AuditCaptureProvider>
+              <div className="relative z-10 flex flex-1 flex-col">
+                <WarehouseNav />
+                <main className="flex flex-1 flex-col">{children}</main>
+              </div>
+            </AuditCaptureProvider>
+          </WarehouseSessionProvider>
+        </CameraHealthProvider>
       </body>
     </html>
   );

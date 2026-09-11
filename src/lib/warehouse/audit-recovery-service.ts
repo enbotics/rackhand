@@ -282,7 +282,7 @@ export async function recoverStaleInventoryAudit(
       (audit) => audit.status === "AUTO_RECONCILED",
     ).length;
     const reviewRequiredBins = allAudits.filter(
-      (audit) => audit.status === "REVIEW_REQUIRED",
+      (audit) => audit.status === "REVIEW_REQUIRED" || audit.status === "DISMISSED",
     ).length;
 
     await tx.inventoryAuditRun.update({

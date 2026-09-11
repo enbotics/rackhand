@@ -8,7 +8,9 @@
  * the bins to audit are already known from the requirements list. This is
  * also the one approval-free physical tool in the app (see its entry in
  * APPROVAL_FREE_TOOL_NAMES in index.ts for why that's a deliberate, narrow
- * exception rather than an oversight).
+ * exception rather than an oversight). Approval-free means the sweep may
+ * start immediately; each bin's analyzed capture still waits for the owning
+ * operator to acknowledge, confirm or retry it before the next bin moves.
  *
  * IT DOES NOT WAIT FOR THE SWEEP. The callback schedules the check via
  * next/server's after() — the exact primitive the camera upload route
@@ -44,7 +46,7 @@ export const verifyMaterialsAvailabilityInputSchema = z.object({
 export const verifyMaterialsAvailabilityTool = tool({
   name: VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
   description:
-    "Start an unattended stock check for the exact requirements materials_planner just returned. THIS TOOL MOVES BINS but never pauses for approval and never waits for a human to press a capture button — call it immediately with materials_planner's own requirements as your very next action. It returns right away; the check itself runs in the background and its progress and final required/available report appear on their own card, not in this tool's result.",
+    "Start a sequential stock check for the exact requirements materials_planner just returned. THIS TOOL MOVES BINS and starts without initial approval or a manual capture click, but every analyzed bin waits for the owning operator to acknowledge, confirm or retry its result before the next bin moves. Call it immediately with materials_planner's own requirements as your very next action. It returns right away; the check itself runs in the background and its progress and final required/available report appear on their own card, not in this tool's result.",
   inputSchema: verifyMaterialsAvailabilityInputSchema,
   callback: async ({ requirements }) => {
     try {

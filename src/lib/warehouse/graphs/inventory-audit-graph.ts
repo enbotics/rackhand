@@ -17,6 +17,8 @@ const READY_KEY = "inventoryAuditReady";
 
 export interface InventoryAuditGraphRequest {
   binAuditId: string;
+  /** Browser session that owns interactive PLAN_VERIFICATION capture decisions. */
+  ownerSessionId?: string | null;
 }
 
 class AuditValidateNode extends Node {
@@ -53,7 +55,7 @@ class AuditExecuteNode extends Node {
     options?: NodeInputOptions,
   ): AsyncGenerator<MultiAgentStreamEvent, NodeResultUpdate, undefined> {
     const request = options?.invocationState?.[REQUEST_KEY] as InventoryAuditGraphRequest;
-    const result = await executeBinAudit(request.binAuditId);
+    const result = await executeBinAudit(request.binAuditId, request.ownerSessionId);
     if (options?.invocationState) options.invocationState[RESULT_KEY] = result;
     return {
       status: result.status === "FAILED" ? Status.FAILED : Status.COMPLETED,

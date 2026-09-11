@@ -49,6 +49,7 @@ import type {
   MovementRowView,
 } from "@/lib/warehouse/dashboard-types";
 import { usePendingMaterialsPlan } from "@/lib/use-materials-plan";
+import { useLiveToolStatus } from "@/lib/use-agent-status";
 
 import type { MeasurementResult, ScanResult } from "@/lib/warehouse/scan-types";
 
@@ -173,6 +174,8 @@ export interface WarehouseSession {
   agentBusy: boolean;
   agentError: string | null;
   agentUnavailable: boolean;
+  /** The real tool the agent is running right now, polled — never a guess. See use-agent-status.ts. */
+  liveToolName: string | null;
   send: (message: string) => void;
   retryLast: () => void;
 
@@ -283,6 +286,7 @@ export function WarehouseSessionProvider({
   const { trace, error: traceError } = useAgentTrace(traceId);
   const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
   const { materialsPlanCheck } = usePendingMaterialsPlan(watchingMaterialsPlan);
+  const { liveToolName } = useLiveToolStatus(agentBusy);
   // Read by `send` and by the dismiss action, neither of which should be
   // rebuilt every second just because a poll returned. A ref keeps them
   // stable while still seeing the latest check.
@@ -1190,6 +1194,7 @@ export function WarehouseSessionProvider({
       agentBusy,
       agentError,
       agentUnavailable,
+      liveToolName,
       send: (message) => void send(message),
       retryLast: () => {
         if (lastOperatorMessage.current) void send(lastOperatorMessage.current);
@@ -1240,6 +1245,7 @@ export function WarehouseSessionProvider({
     agentBusy,
     agentError,
     agentUnavailable,
+    liveToolName,
     send,
     workflow,
     materialsPlan,

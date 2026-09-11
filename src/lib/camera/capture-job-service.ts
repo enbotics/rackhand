@@ -918,6 +918,19 @@ export async function getCaptureJobStatus(
   };
 }
 
+/** Latest attempt for an owner-scoped workflow popup, including FIFO place. */
+export async function getLatestWorkflowCaptureJobStatus(
+  workflowCaptureId: string,
+  ownerSessionId: string,
+) {
+  const latest = await prisma.cameraCaptureJob.findFirst({
+    where: { workflowCaptureId, ownerSessionId },
+    orderBy: [{ workflowAttempt: "desc" }, { requestedAt: "desc" }],
+    select: { id: true },
+  });
+  return latest ? getCaptureJobStatus(latest.id, ownerSessionId) : null;
+}
+
 /**
  * Convenience helper for routes/UI.
  */

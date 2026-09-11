@@ -6,7 +6,7 @@
  *
  * Reuses the existing inventory-audit machinery end to end (runInventoryAudit,
  * the InventoryAuditRun/BinAudit progress rows, the PLAN_VERIFICATION trigger's
- * automatic-capture/no-approval behavior) rather than building a parallel
+ * automatic capture with per-bin operator acknowledgement) rather than building a parallel
  * audit path — the only new thing here is the SKU-level requirements
  * bookkeeping and the final required-vs-available comparison.
  */
@@ -120,6 +120,7 @@ export async function runMaterialsAvailabilityCheck(input: {
     runResult = await runInventoryAudit({
       trigger: PLAN_VERIFICATION_TRIGGER,
       binCodes: allBinCodes,
+      ownerSessionId: input.ownerSessionId,
     });
   } catch (error) {
     // Most commonly InventoryAuditAlreadyRunningError — a real audit already
@@ -137,6 +138,11 @@ export async function runMaterialsAvailabilityCheck(input: {
   for (const binResult of runResult.results) {
     const sku = skuByBinCode.get(binResult.binCode);
     if (!sku) continue;
+    // A skipped/rejected observation is not verified stock. Do not let a
+    // visible but explicitly dismissed count satisfy a materials request.
+    if (!["VERIFIED", "AUTO_RECONCILED", "CONFIRMED"].includes(binResult.status)) {
+      continue;
+    }
     const current = availableBySku.get(sku) ?? 0;
     availableBySku.set(sku, current + (binResult.observedQuantity ?? 0));
   }

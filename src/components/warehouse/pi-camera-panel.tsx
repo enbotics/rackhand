@@ -3,6 +3,7 @@
 import Image from "next/image";
 
 import type { CameraCaptureJobView } from "@/lib/camera/capture-client";
+import { useCameraHealth } from "./camera-health-provider";
 
 interface PiCameraPanelProps {
   capture: CameraCaptureJobView | null;
@@ -77,10 +78,16 @@ function getStatusText(capture: CameraCaptureJobView | null) {
   }
 }
 
-function statusTone(capture: CameraCaptureJobView | null, scanning: boolean) {
+function statusTone(
+  capture: CameraCaptureJobView | null,
+  scanning: boolean,
+  connection: "ONLINE" | "DEGRADED" | "OFFLINE",
+) {
   if (capture?.status === "FAILED" || capture?.status === "CANCELLED" || capture?.status === "EXPIRED") {
     return "bg-danger";
   }
+  if (connection === "OFFLINE") return "bg-danger";
+  if (connection === "DEGRADED") return "bg-warn";
 
   if (scanning) {
     return "bg-accent animate-glow-pulse";
@@ -94,7 +101,15 @@ export function PiCameraPanel({
   scanning,
   onScan,
 }: PiCameraPanelProps) {
-  const status = getStatusText(capture);
+  const { health } = useCameraHealth();
+  const connection = health?.connection ?? "OFFLINE";
+  const status = !capture && connection !== "ONLINE"
+    ? {
+        title: connection === "OFFLINE" ? "Camera offline" : "Camera health degraded",
+        detail: health?.lastError
+          ?? "The Pi heartbeat is missing or the camera worker is not ready.",
+      }
+    : getStatusText(capture);
 
   return (
     <div className="overflow-hidden rounded-lg border border-line bg-bg-elevated">
@@ -109,10 +124,10 @@ export function PiCameraPanel({
 
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-ink-muted">
           <span
-            className={`h-2 w-2 rounded-full ${statusTone(capture, scanning)}`}
+            className={`h-2 w-2 rounded-full ${statusTone(capture, scanning, connection)}`}
           />
 
-          {capture?.status ?? "READY"}
+          {connection}
         </div>
       </div>
 
@@ -141,6 +156,24 @@ export function PiCameraPanel({
               {status.detail}
             </p>
           </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3 border-t border-line pt-3 font-mono text-[9px] uppercase tracking-wider text-ink-muted">
+          <span>{health?.workerState ?? "UNKNOWN"}</span>
+          <span>
+            {health?.cpuTemperatureC == null
+              ? "TEMP —"
+              : `${health.cpuTemperatureC.toFixed(1)}°C`}
+          </span>
+          <span>
+            {health?.cpuLoadPercent == null
+              ? "CPU —"
+              : `CPU ${health.cpuLoadPercent.toFixed(1)}%`}
+          </span>
+          <span>
+            {health?.memoryUsedPercent == null
+              ? "RAM —"
+              : `RAM ${health.memoryUsedPercent.toFixed(1)}%`}
+          </span>
         </div>
       </div>
 
