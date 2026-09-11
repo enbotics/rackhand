@@ -8,6 +8,7 @@ import {
   IDENTITY_RESOLVED_NOTICE,
   SCAN_ATTACHED_NOTICE,
   createWarehouseAgent,
+  explicitPhysicalToolForMessage,
   invokeWarehouseAgent,
   validateAgentScanResult,
   stripInlineReasoning,
@@ -154,6 +155,30 @@ describe("agent construction", () => {
     // Credentials resolve lazily at request time, so construction must not
     // depend on them — this is what keeps the local suite runnable offline.
     expect(() => createWarehouseAgent()).not.toThrow();
+  });
+});
+
+describe("explicit physical command routing", () => {
+  it.each([
+    ["can you putaway b5-03", "execute_putaway"],
+    ["Please put away B1-01", "execute_putaway"],
+    ["I'd like you to return B2-03", "execute_putaway"],
+    ["retrieve b2-03", "execute_retrieval"],
+    ["Could you fetch B1-02", "execute_retrieval"],
+    ["Audit bin B1-01", "execute_inventory_audit"],
+    ["please count inventory", "execute_inventory_audit"],
+  ])("routes %s to %s", (message, expected) => {
+    expect(explicitPhysicalToolForMessage(message)).toBe(expected);
+  });
+
+  it.each([
+    "How does putaway work?",
+    "Why can't I retrieve B5-03?",
+    "Do not put away B5-03",
+    "What is the audit history?",
+    "B5-03 status please",
+  ])("does not turn a question or negative statement into an action: %s", (message) => {
+    expect(explicitPhysicalToolForMessage(message)).toBeNull();
   });
 });
 

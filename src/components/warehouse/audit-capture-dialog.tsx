@@ -22,10 +22,6 @@ import type {
   PutawayCaptureView,
 } from "@/lib/warehouse/putaway-capture-types";
 import type {
-  RetrievalCaptureDecision,
-  RetrievalCaptureView,
-} from "@/lib/warehouse/retrieval-capture-types";
-import type {
   AuditCaptureDecision,
   AuditCaptureView,
 } from "@/lib/warehouse/audit-capture-types";
@@ -37,27 +33,17 @@ import { usePrefersReducedMotion } from "./use-reduced-motion";
 interface PendingCapture {
   captureId: string;
   binCode: string;
-  purpose: "AUDIT" | "PUTAWAY" | "RETRIEVAL";
+  purpose: "AUDIT" | "PUTAWAY";
   captureMode: "PROD" | "SIMULATION";
 }
-type CaptureDecision =
-  | PutawayCaptureDecision
-  | RetrievalCaptureDecision
-  | AuditCaptureDecision;
-type CaptureAnalysis =
-  | PutawayCaptureView
-  | RetrievalCaptureView
-  | AuditCaptureView;
+type CaptureDecision = PutawayCaptureDecision | AuditCaptureDecision;
+type CaptureAnalysis = PutawayCaptureView | AuditCaptureView;
 
-/** "putaway" | "retrieval" | "audits" — the API route segment for this purpose. */
+/** "putaway" | "audits" — the API route segment for this purpose. */
 function captureRouteKind(
   purpose: PendingCapture["purpose"],
-): "putaway" | "retrieval" | "audits" {
-  return purpose === "PUTAWAY"
-    ? "putaway"
-    : purpose === "RETRIEVAL"
-      ? "retrieval"
-      : "audits";
+): "putaway" | "audits" {
+  return purpose === "PUTAWAY" ? "putaway" : "audits";
 }
 interface CaptureState {
   pending: PendingCapture | null;
@@ -103,7 +89,7 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         const data = JSON.parse((event as MessageEvent<string>).data) as {
           captureId: string | null;
           binCode?: string;
-          purpose?: "PUTAWAY" | "RETRIEVAL" | "AUDIT";
+          purpose?: "PUTAWAY" | "AUDIT";
           captureMode?: "PROD" | "SIMULATION";
           analysis?: CaptureAnalysis | null;
         };
@@ -584,137 +570,6 @@ export function AuditCaptureDialog() {
     );
   }
 
-  if (audit.result !== null && audit.pending.purpose === "RETRIEVAL") {
-    const result = audit.analysis as RetrievalCaptureView | null;
-    const simulation = result?.captureMode === "SIMULATION";
-    const retryCapture = simulation
-      ? "run the next simulated capture"
-      : "take a fresh photo";
-    const canAccept =
-      result &&
-      ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
-    const warning =
-      result?.outcome === "ANALYSIS_FAILED"
-        ? result.notes || "The saved frame could not be analyzed. Retry analysis without taking another photo."
-        : result?.outcome === "FOREIGN_OBJECTS"
-        ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
-        : result?.outcome === "LOW_CONFIDENCE"
-          ? "The count is not confident enough to check out this bin. Improve the view and retry."
-          : result?.outcome === "CAPACITY_EXCEEDED"
-            ? "The observed quantity exceeds this bin’s capacity — the reading looks wrong. Retry the photo."
-            : audit.result === "failure"
-              ? `The image could not be analyzed. ${simulation ? "Run the next simulated capture." : "Take a fresh photo and retry."}`
-              : null;
-    return (
-      <Modal
-        title={`Retrieval comparison · ${audit.pending.binCode}`}
-        onClose={() => {}}
-        closing={closing}
-        onExitComplete={completeDecision}
-        dismissible={false}
-        maxWidthClassName="max-w-3xl"
-      >
-        <div className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <ComparisonImage
-              label={simulation ? "Simulation baseline" : "Previous snapshot"}
-              src={result?.previousImageUrl ?? null}
-            />
-            <ComparisonImage
-              label={simulation ? "Simulated capture" : "Current verification"}
-              src={result?.currentImageUrl ?? null}
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <Metric
-              label="Recorded qty"
-              value={result?.expectedQuantity ?? "—"}
-            />
-            <Metric
-              label="Observed qty"
-              value={result?.observedQuantity ?? "—"}
-              tone={result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
-            />
-            <Metric
-              label="Confidence"
-              value={result?.confidencePercent ?? "—"}
-              unit={result?.confidencePercent == null ? undefined : "%"}
-              tone={(result?.confidencePercent ?? 0) > 80 ? "ok" : "warn"}
-            />
-          </div>
-          {warning && (
-            <div className="rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm text-warn">
-              <p className="font-semibold">Verification needs attention</p>
-              <p className="mt-1 text-xs leading-relaxed">{warning}</p>
-            </div>
-          )}
-          {result?.outcome === "INCREASED" && (
-            <p className="text-sm text-success">
-              Higher quantity detected. The checked-out quantity will reflect
-              this photo once retrieval completes.
-            </p>
-          )}
-          {result?.outcome === "REVIEW_DECREASE" && (
-            <p className="text-sm text-warn">
-              The quantity is lower than recorded. Confirm this observed count
-              before the bin is checked out.
-            </p>
-          )}
-          {result?.notes && result.outcome !== "ANALYSIS_FAILED" && (
-            <p className="text-xs text-ink-muted">{result.notes}</p>
-          )}
-          {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
-          <div className="flex flex-wrap justify-end gap-2">
-            <button
-              type="button"
-              disabled={audit.deciding || closing}
-              onClick={() => beginDecision("CANCEL")}
-              className={BUTTON_VARIANTS.danger}
-            >
-              Cancel · return to shelf
-            </button>
-            <button
-              type="button"
-              disabled={audit.deciding || audit.submitting || closing}
-              onClick={() => beginDecision("RETRY")}
-              className={BUTTON_VARIANTS.secondary}
-            >
-              {simulation
-                ? result?.outcome === "FOREIGN_OBJECTS"
-                  ? "Removed · next simulation"
-                  : "Run next simulation"
-                : result?.outcome === "FOREIGN_OBJECTS"
-                  ? "Removed · retry photo"
-                  : "Retry photo"}
-            </button>
-            {result?.outcome === "ANALYSIS_FAILED" && !simulation && (
-              <button
-                type="button"
-                disabled={audit.deciding || audit.submitting || closing}
-                onClick={() => void audit.reanalyze()}
-                className={BUTTON_VARIANTS.approve}
-              >
-                Retry analysis
-              </button>
-            )}
-            {canAccept && (
-              <button
-                type="button"
-                disabled={audit.deciding || closing}
-                onClick={() => beginDecision("ACCEPT")}
-                className={BUTTON_VARIANTS.approve}
-              >
-                {result?.outcome === "REVIEW_DECREASE"
-                  ? `Confirm ${result.observedQuantity} & continue`
-                  : "Continue retrieval"}
-              </button>
-            )}
-          </div>
-        </div>
-      </Modal>
-    );
-  }
-
   // status !== "ACCEPTED" is what actually distinguishes "still needs a
   // decision or a dismissal" from an already fully-closed-out result — an
   // unexpected-stock capture finalizes straight to ACCEPTED server-side
@@ -884,19 +739,13 @@ export function AuditCaptureDialog() {
     );
   }
   const popupTitle =
-    audit.pending.purpose === "PUTAWAY"
-      ? "Putaway snapshot"
-      : audit.pending.purpose === "RETRIEVAL"
-        ? "Retrieval verification"
-        : "Audit capture";
+    audit.pending.purpose === "PUTAWAY" ? "Putaway snapshot" : "Audit capture";
   const popupCaptureLabel =
     audit.pending.captureMode === "SIMULATION"
       ? "Run simulated capture"
       : audit.pending.purpose === "PUTAWAY"
         ? "Verify with Pi camera"
-        : audit.pending.purpose === "RETRIEVAL"
-          ? "Verify with Pi camera"
-          : "Capture bin with Pi camera";
+        : "Capture bin with Pi camera";
   return (
     <CapturePopup
       key={audit.pending.captureId}

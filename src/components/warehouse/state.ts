@@ -79,6 +79,8 @@ export interface ApprovalSummaryView {
   quantity: number | null;
   scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS";
   capacity?: { before: number; after: number; limit: number } | null;
+  /** See ApprovalSummary.autoSuggested server-side. */
+  autoSuggested?: boolean;
 }
 
 export interface PendingApprovalView {

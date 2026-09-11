@@ -24,7 +24,12 @@
  * capability surface is WAREHOUSE_AGENT_TOOLS plus the deliberately wrapped
  * Inventory Auditor tool constructed below.
  */
-import { Agent, InterruptResponseContent } from "@strands-agents/sdk";
+import {
+  AfterToolCallEvent,
+  Agent,
+  InterruptResponseContent,
+  InvokeModelStage,
+} from "@strands-agents/sdk";
 import type { BaseModelConfig, Message, Model, Snapshot } from "@strands-agents/sdk";
 import { HumanInTheLoop } from "@strands-agents/sdk/vended-interventions/hitl";
 import { WAREHOUSE_AGENT_PROMPT } from "./warehouse-prompt";
@@ -32,6 +37,8 @@ import {
   APPROVAL_FREE_TOOL_NAMES,
   APPROVAL_REQUIRED_TOOL_NAMES,
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+  EXECUTE_PUTAWAY_TOOL_NAME,
+  EXECUTE_RETRIEVAL_TOOL_NAME,
   WAREHOUSE_AGENT_TOOLS,
 } from "./tools";
 import {
@@ -83,6 +90,113 @@ export type WarehouseApprovalMode = "CLIENT" | "TRUSTED_INTERNAL";
 
 /** Documented MVP cap on a single operator message. */
 export const MAX_AGENT_MESSAGE_LENGTH = 4000;
+
+const FORCED_PHYSICAL_TOOL_STATE_KEY = "warehouseForcedPhysicalTool";
+const PHYSICAL_TOOL_RESULT_STATE_KEY = "warehousePhysicalToolResult";
+
+type ExplicitPhysicalToolName =
+  | typeof EXECUTE_PUTAWAY_TOOL_NAME
+  | typeof EXECUTE_RETRIEVAL_TOOL_NAME
+  | typeof EXECUTE_INVENTORY_AUDIT_TOOL_NAME;
+
+const PHYSICAL_TOOL_NAMES = new Set<string>([
+  EXECUTE_PUTAWAY_TOOL_NAME,
+  EXECUTE_RETRIEVAL_TOOL_NAME,
+  EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+]);
+
+interface CapturedPhysicalToolResult {
+  toolName: ExplicitPhysicalToolName;
+  status: "success" | "error";
+  payload: Record<string, unknown> | null;
+}
+
+/**
+ * Conservatively recognizes an operator's direct physical command.
+ *
+ * This is routing, not authorization: the selected tool still passes through
+ * the normal HITL intervention and its service still revalidates warehouse
+ * state after approval. Questions, explanations and negative commands are
+ * deliberately left to the model.
+ */
+export function explicitPhysicalToolForMessage(message: string): ExplicitPhysicalToolName | null {
+  const command = message
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:please|pls)\s+/, "")
+    .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/, "")
+    .replace(/^(?:i(?:'d| would)\s+like\s+(?:you\s+)?to\s+|i\s+want\s+(?:you\s+)?to\s+)/, "");
+
+  if (/^(?:put\s*away|put\s+back|return|store)\b/.test(command)) {
+    return EXECUTE_PUTAWAY_TOOL_NAME;
+  }
+  // Retrieval needs an authoritative identity on the first tool call. A bin
+  // code is sufficient by warehouse invariant; a natural-language part name
+  // still goes through catalog lookup before any write tool is selected.
+  if (
+    /^(?:retrieve|fetch|bring|check\s*out)\b/.test(command) &&
+    /\bb\d+-\d+\b/.test(command)
+  ) {
+    return EXECUTE_RETRIEVAL_TOOL_NAME;
+  }
+  if (/^(?:audit|count|inspect)\b/.test(command) && /\b(?:bin|warehouse|inventory|b\d+-\d+)\b/.test(command)) {
+    return EXECUTE_INVENTORY_AUDIT_TOOL_NAME;
+  }
+  return null;
+}
+
+function resultPayload(content: readonly unknown[]): Record<string, unknown> | null {
+  for (const block of content) {
+    const candidate = block as { type?: unknown; json?: unknown };
+    if (candidate?.type === "jsonBlock" && typeof candidate.json === "object" && candidate.json) {
+      return candidate.json as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function capturedPhysicalToolResult(
+  invocationState: Record<string, unknown>,
+): CapturedPhysicalToolResult | null {
+  const value = invocationState[PHYSICAL_TOOL_RESULT_STATE_KEY];
+  if (!value || typeof value !== "object") return null;
+  return value as CapturedPhysicalToolResult;
+}
+
+/** Operator-facing outcome derived only from the physical tool's result. */
+function groundedPhysicalReply(result: CapturedPhysicalToolResult | null): string | null {
+  if (!result) return null;
+  const payload = result.payload;
+
+  if (result.status === "error") {
+    return "The physical warehouse operation failed. Nothing was reported as completed.";
+  }
+  if (!payload) return "The physical warehouse operation completed.";
+  if (payload.ok === false) {
+    return typeof payload.message === "string"
+      ? payload.message
+      : `The warehouse refused this operation (${String(payload.reason ?? "unknown reason")}).`;
+  }
+
+  if (result.toolName === EXECUTE_PUTAWAY_TOOL_NAME) {
+    const bin = String(payload.destinationBinCode ?? payload.binCode ?? "the bin");
+    const observed = typeof payload.observedQuantity === "number" ? payload.observedQuantity : null;
+    return `Bin ${bin} was put away successfully${observed === null ? "." : ` with ${observed} item(s) observed.`}`;
+  }
+  if (result.toolName === EXECUTE_RETRIEVAL_TOOL_NAME) {
+    const bin = String(payload.sourceBinCode ?? "the bin");
+    const quantity =
+      typeof payload.checkedOutQuantity === "number" ? payload.checkedOutQuantity : null;
+    return `Bin ${bin} was retrieved to ${String(payload.destination ?? "OUTPUT")}${quantity === null ? "." : ` with ${quantity} last-verified item(s).`}`;
+  }
+
+  const completed = Number(payload.binsCompleted ?? 0);
+  const reconciled = Number(payload.reconciledBins ?? 0);
+  const review = Number(payload.reviewRequiredBins ?? 0);
+  return payload.status === "FAILED"
+    ? "The inventory audit failed. No successful reconciliation was reported."
+    : `Inventory audit completed for ${completed} bin(s): ${reconciled} reconciled and ${review} requiring review.`;
+}
 
 /**
  * Builds the main Warehouse Agent and its scoped Inventory Auditor tool.
@@ -145,6 +259,33 @@ export function createWarehouseAgent(
    * from console output or patched internals.
    */
   attachTraceHooks(agent);
+
+  /**
+   * Force only the FIRST model cycle of a conservatively recognized physical
+   * command to the corresponding high-level tool. The model still supplies
+   * its typed arguments, HITL still pauses before execution, and subsequent
+   * cycles are unforced so it can explain the result normally.
+   */
+  agent.addMiddleware(InvokeModelStage.Input, (context) => {
+    const forced = context.invocationState[FORCED_PHYSICAL_TOOL_STATE_KEY];
+    if (typeof forced !== "string" || !PHYSICAL_TOOL_NAMES.has(forced)) return context;
+
+    delete context.invocationState[FORCED_PHYSICAL_TOOL_STATE_KEY];
+    return { ...context, toolChoice: { tool: { name: forced } } };
+  });
+
+  /**
+   * Preserve the latest structured physical result for the server response.
+   * This hook observes only; it never changes, retries or cancels a tool.
+   */
+  agent.addHook(AfterToolCallEvent, (event) => {
+    if (!PHYSICAL_TOOL_NAMES.has(event.toolUse.name)) return;
+    event.invocationState[PHYSICAL_TOOL_RESULT_STATE_KEY] = {
+      toolName: event.toolUse.name as ExplicitPhysicalToolName,
+      status: event.result.status,
+      payload: resultPayload(event.result.content),
+    } satisfies CapturedPhysicalToolResult;
+  });
   return agent;
 }
 
@@ -193,7 +334,12 @@ function terminalStatusFor(
   workflows: WarehouseGraphResult[],
   /** Tools that failed outright this turn, from the observability hooks (Milestone 13). */
   failedTools: readonly string[] = [],
+  physicalResult: CapturedPhysicalToolResult | null = null,
 ): TraceStatus {
+  if (physicalResult?.status === "error") return "FAILED";
+  if (physicalResult?.payload?.ok === false) return "BLOCKED";
+  if (physicalResult?.payload?.status === "FAILED") return "FAILED";
+  if (physicalResult?.payload?.status === "COMPLETED_WITH_ISSUES") return "BLOCKED";
   if (workflows.some((workflow) => workflow.status === "FAILED")) return "FAILED";
 
   /**
@@ -423,12 +569,26 @@ function extractVisibleText(message: Message): string {
  * retained must be inert data, not a live object graph holding a model client
  * or AWS credentials.
  */
-function captureConversation(agent: Agent): Snapshot {
-  return JSON.parse(
+function captureConversation(agent: Agent, assistantMessageOverride?: string | null): Snapshot {
+  const snapshot = JSON.parse(
     JSON.stringify(
       agent.takeSnapshot({ preset: "session", exclude: ["systemPrompt", "interrupts"] }),
     ),
   ) as Snapshot;
+
+  if (assistantMessageOverride) {
+    const messages = snapshot.data.messages;
+    if (Array.isArray(messages)) {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index] as Record<string, unknown> | null;
+        if (message?.role !== "assistant") continue;
+        message.content = [{ text: assistantMessageOverride }];
+        break;
+      }
+    }
+  }
+
+  return snapshot;
 }
 
 /**
@@ -457,9 +617,10 @@ function persistConversation(
   sessionId: string | null,
   agent: Agent,
   stopReason: string,
+  assistantMessageOverride?: string | null,
 ): void {
   if (!sessionId || stopReason === "interrupt") return;
-  saveConversation(sessionId, captureConversation(agent));
+  saveConversation(sessionId, captureConversation(agent, assistantMessageOverride));
 }
 
 /**
@@ -531,6 +692,7 @@ export async function invokeWarehouseAgent(
   const scanResult = validateAgentScanResult(rawScanResult);
   const scanImageDataUrl = validateScanImageDataUrl(rawScanImageDataUrl);
   const sessionId = validateAgentSessionId(rawSessionId);
+  const forcedPhysicalTool = explicitPhysicalToolForMessage(message);
 
   // Milestone 12. Server-generated: a browser may not choose its own trace id,
   // and the summary is the operator's own words, truncated — never the system
@@ -567,7 +729,12 @@ export async function invokeWarehouseAgent(
   // metadata, and it keeps the hooks independent of this application's
   // async-local context. Held in a variable rather than inlined because the
   // hooks also record a tool failure here, which the turn's status depends on.
-  const invocationState: Record<string, unknown> = { [TRACE_ID_STATE_KEY]: traceId };
+  const invocationState: Record<string, unknown> = {
+    [TRACE_ID_STATE_KEY]: traceId,
+    ...(forcedPhysicalTool
+      ? { [FORCED_PHYSICAL_TOOL_STATE_KEY]: forcedPhysicalTool }
+      : {}),
+  };
 
   try {
     // The scan reaches match_catalog through request-scoped storage, never
@@ -592,7 +759,6 @@ export async function invokeWarehouseAgent(
     // This turn's calls only — with a restored session, `agent.messages` also
     // holds every earlier turn's, which the operator has already been shown.
     const toolCalls = extractToolCalls(messagesSince(agent, marker));
-    persistConversation(sessionId, agent, result.stopReason);
 
     console.log(
       `[warehouse-agent] invocation completed stopReason=${result.stopReason} tools=${toolCalls.join(",") || "none"} scan=${scanResult ? scanResult.scanId : "none"} session=${sessionId ? "yes" : "none"}`,
@@ -643,8 +809,15 @@ export async function invokeWarehouseAgent(
     }
 
     const visible = extractVisibleText(result.lastMessage);
+    const physicalResult = capturedPhysicalToolResult(invocationState);
+    const grounded = groundedPhysicalReply(physicalResult);
+    persistConversation(sessionId, agent, result.stopReason, grounded);
 
-    const status = terminalStatusFor(workflows, failedToolNames(invocationState));
+    const status = terminalStatusFor(
+      workflows,
+      failedToolNames(invocationState),
+      physicalResult,
+    );
     await recordEvent(traceId, {
       type: "AGENT_COMPLETED",
       status: status === "COMPLETED" ? "COMPLETED" : "BLOCKED",
@@ -657,7 +830,7 @@ export async function invokeWarehouseAgent(
 
     return {
       status: "COMPLETED",
-      message: visible || EMPTY_REPLY_FALLBACK,
+      message: grounded ?? (visible || EMPTY_REPLY_FALLBACK),
       agent: WAREHOUSE_AGENT_NAME,
       model: getBedrockModelId(),
       toolCalls,
@@ -690,6 +863,9 @@ export async function invokeWarehouseAgent(
 
 /** Operator-facing sentence for an approval card. Never model text. */
 function approvalPrompt(summary: ApprovalSummary): string {
+  if (summary.autoSuggested) {
+    return `Bin ${summary.destination ?? "it"} was just retrieved — put it back now?`;
+  }
   if (summary.action === "INVENTORY_AUDIT") {
     return (
       `Approval required: physically audit ${summary.source ?? "the auditable shelf bins"}. ` +
@@ -963,6 +1139,8 @@ async function parkForApproval(input: {
   traceId: string | null;
   /** The chat this pause belongs to, so the resumed turn updates its memory. */
   sessionId: string | null;
+  /** See ApprovalSummary.autoSuggested. */
+  autoSuggested?: boolean;
 }): Promise<PendingApprovalView> {
   const call = parseInterruptReason(input.interruptReason);
   const toolName = call?.name ?? "unknown_tool";
@@ -972,6 +1150,7 @@ async function parkForApproval(input: {
     input.scanResult,
     input.catalogResolutionId,
   );
+  if (input.autoSuggested) summary.autoSuggested = true;
 
   // JSON round-trip: the snapshot is stored as plain data, never as a live
   // object graph holding model or credential references.
@@ -1112,7 +1291,44 @@ export async function resumeWarehouseAgent(
           ],
           { invocationState },
         );
-        return { result: invocation, workflows: getContextWorkflows() };
+
+        // The ONE narrow exception in warehouse-prompt.ts asks the model to
+        // propose execute_putaway itself, unprompted, right after this same
+        // execute_retrieval resolves — a proactive multi-step chain across a
+        // HITL pause, which prose cannot be trusted to hit every time (this
+        // is exactly the unreliability explicitPhysicalToolForMessage exists
+        // to route around for the FIRST tool call). If the model finished
+        // this turn on its own without proposing anything further, and the
+        // just-approved tool was a genuinely successful execute_retrieval,
+        // force one more cycle straight to execute_putaway rather than
+        // leaving the offer to chance.
+        const retrievalResult = capturedPhysicalToolResult(invocationState);
+        const shouldForceReturnOffer =
+          decision === "APPROVE" &&
+          parked.toolName === EXECUTE_RETRIEVAL_TOOL_NAME &&
+          invocation.stopReason !== "interrupt" &&
+          retrievalResult?.toolName === EXECUTE_RETRIEVAL_TOOL_NAME &&
+          retrievalResult.status === "success" &&
+          retrievalResult.payload?.ok === true;
+        const binCode =
+          shouldForceReturnOffer && typeof retrievalResult?.payload?.sourceBinCode === "string"
+            ? retrievalResult.payload.sourceBinCode
+            : null;
+
+        if (!binCode) {
+          return { result: invocation, workflows: getContextWorkflows() };
+        }
+
+        const followUpState: Record<string, unknown> = {
+          [TRACE_ID_STATE_KEY]: traceId,
+          [FORCED_PHYSICAL_TOOL_STATE_KEY]: EXECUTE_PUTAWAY_TOOL_NAME,
+        };
+        const followUp = await agent.invoke(
+          `[system: execute_retrieval just completed successfully for bin ${binCode}. ` +
+            `Call execute_putaway now with binCode "${binCode}" to offer putting it back.]`,
+          { invocationState: followUpState },
+        );
+        return { result: followUp, workflows: getContextWorkflows() };
       },
     );
 
@@ -1127,7 +1343,6 @@ export async function resumeWarehouseAgent(
     // the session should remember: the tool ran (or was refused) and the model
     // answered. A run that stopped on another interrupt is skipped and handled
     // by the approval it just raised, which carries the same session id on.
-    persistConversation(parked.sessionId, agent, result.stopReason);
 
     // The model asked again. After a DENIAL that is exactly the harassment the
     // operator just refused, so no new approval is created: the interrupt is
@@ -1152,6 +1367,18 @@ export async function resumeWarehouseAgent(
     // After an approval the model may legitimately need a further action.
     // Nothing has executed; park it rather than pretending the turn finished.
     if (result.stopReason === "interrupt" && result.interrupts?.length) {
+      // The ONE narrow exception in warehouse-prompt.ts: right after a
+      // completed retrieval, the model's very next call may be execute_putaway
+      // offering to put the same bin back. Detected here, not guessed from
+      // wording, so the lightweight confirm question can never appear for a
+      // putaway the operator actually asked for.
+      const nextCall = parseInterruptReason(result.interrupts[0].reason);
+      const autoSuggestedReturn =
+        decision === "APPROVE" &&
+        parked.toolName === "execute_retrieval" &&
+        nextCall?.name === "execute_putaway" &&
+        workflows.some((run) => run.workflow === "RETRIEVAL" && run.status === "COMPLETED");
+
       const approval = await parkForApproval({
         agent,
         interruptId: result.interrupts[0].id,
@@ -1162,6 +1389,7 @@ export async function resumeWarehouseAgent(
         catalogResolutionId: parked.catalogResolutionId,
         traceId,
         sessionId: parked.sessionId,
+        autoSuggested: autoSuggestedReturn,
       });
       await recordEvent(traceId, {
         type: "APPROVAL_REQUIRED",
@@ -1187,6 +1415,13 @@ export async function resumeWarehouseAgent(
     }
 
     const visible = extractVisibleText(result.lastMessage);
+    const physicalResult = capturedPhysicalToolResult(invocationState);
+    const grounded = groundedPhysicalReply(physicalResult);
+    const responseMessage =
+      decision === "DENY"
+        ? DENIED_REPLY
+        : grounded ?? (visible || EMPTY_REPLY_FALLBACK);
+    persistConversation(parked.sessionId, agent, result.stopReason, responseMessage);
 
     console.log(
       `[warehouse-agent] resumed approval=${approvalId} decision=${decision} stopReason=${result.stopReason} tools=${toolCalls.join(",") || "none"}`,
@@ -1195,7 +1430,11 @@ export async function resumeWarehouseAgent(
     const status: TraceStatus =
       decision === "DENY"
         ? "DENIED"
-        : terminalStatusFor(workflows, failedToolNames(invocationState));
+        : terminalStatusFor(
+            workflows,
+            failedToolNames(invocationState),
+            physicalResult,
+          );
     await recordEvent(traceId, {
       type: "AGENT_COMPLETED",
       status: status === "COMPLETED" ? "COMPLETED" : "BLOCKED",
@@ -1215,10 +1454,7 @@ export async function resumeWarehouseAgent(
         // to proceed" — asking again for what the operator had just refused.
         // Prompt rules did not hold reliably, and nothing the model can add
         // after a cancellation is worth that risk, so the sentence is fixed.
-        message:
-          decision === "DENY"
-            ? DENIED_REPLY
-            : visible || EMPTY_REPLY_FALLBACK,
+        message: responseMessage,
         agent: WAREHOUSE_AGENT_NAME,
         model: getBedrockModelId(),
         toolCalls,

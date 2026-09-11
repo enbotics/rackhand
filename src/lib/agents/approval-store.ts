@@ -44,6 +44,14 @@ export interface ApprovalSummary {
   quantity: number | null;
   scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS";
   capacity?: { before: number; after: number; limit: number } | null;
+  /**
+   * True only for the model's own follow-up offer to put a just-retrieved bin
+   * back (see warehouse-prompt.ts's ONE narrow exception), never for a
+   * putaway the operator asked for directly. The UI uses this to show a
+   * short yes/no question instead of the full technical approval card —
+   * Approve/Deny still mean exactly the same thing underneath.
+   */
+  autoSuggested?: boolean;
 }
 
 export interface PendingApprovalView {

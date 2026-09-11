@@ -5,6 +5,7 @@ import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { InventoryPanel } from "../inventory-panel";
 import { WarehouseRack } from "../warehouse-rack";
 import { ManageBinsModal } from "../admin/manage-bins-modal";
+import { ForceResetModal } from "../admin/force-reset-modal";
 import { BinDetailModal } from "../bin-detail-modal";
 import { AgentPanel } from "../agent-panel";
 import { useWarehouseSession } from "../session";
@@ -29,6 +30,7 @@ export function WarehouseView() {
   const inventoryTab = useRef<HTMLButtonElement>(null);
   const waiting = (session.approval ? 1 : 0) + (session.identification ? 1 : 0);
   const [managingBins, setManagingBins] = useState(false);
+  const [forceResetOpen, setForceResetOpen] = useState(false);
   const [selectedBinId, setSelectedBinId] = useState<string | null>(null);
   // Looked up fresh on every render, not captured at click-time, so an edit
   // made inside the modal (which calls onWarehouseChanged -> session.refresh)
@@ -38,6 +40,7 @@ export function WarehouseView() {
   // Stable identities: the rack's shelf is memoised, and a fresh closure on
   // every gantry poll would defeat that.
   const openBinManager = useCallback(() => setManagingBins(true), []);
+  const openForceReset = useCallback(() => setForceResetOpen(true), []);
   const selectBin = useCallback((bin: BinView) => setSelectedBinId(bin.binId), []);
 
   // The settled outcome's movement status chip needs the real row, not the
@@ -72,6 +75,7 @@ export function WarehouseView() {
             activeMovement={session.activeMovement}
             latestAudit={session.latestAudit}
             onManageBins={openBinManager}
+            onForceReset={openForceReset}
             onSelectBin={selectBin}
           />
         </div>
@@ -142,6 +146,14 @@ export function WarehouseView() {
         <ManageBinsModal
           bins={session.bins}
           onClose={() => setManagingBins(false)}
+          onChanged={session.refresh}
+        />
+      )}
+
+      {forceResetOpen && (
+        <ForceResetModal
+          bins={session.bins}
+          onClose={() => setForceResetOpen(false)}
           onChanged={session.refresh}
         />
       )}
