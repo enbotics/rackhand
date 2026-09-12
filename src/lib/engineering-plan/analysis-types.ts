@@ -38,7 +38,13 @@ export interface TodayPlanAnalysisEventView {
 }
 
 export interface TodayPlanAnalysisResultView {
-  readiness: "READY" | "SHORTAGE" | "REVIEW_REQUIRED" | "NO_PLAN" | "NO_MATERIALS";
+  readiness:
+    | "READY"
+    | "PARTIALLY_READY"
+    | "SHORTAGE"
+    | "REVIEW_REQUIRED"
+    | "NO_PLAN"
+    | "NO_MATERIALS";
   message: string;
   selectedBins: Array<{
     sku: string;

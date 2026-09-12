@@ -50,6 +50,9 @@ export type MaterialsFulfillmentPlan =
         | "materials_verification_required"
         | "materials_verification_incomplete";
       message: string;
+      requirements: MaterialRequirement[];
+      /** Bins already proven sufficient for other requirements in this report. */
+      selectedBins: MaterialsFulfillmentBin[];
       shortages: MaterialsFulfillmentShortage[];
       verificationTargets?: MaterialsVerificationTarget[];
     };
@@ -78,7 +81,11 @@ function aggregateRequirements(
 
 export async function prepareMaterialsFulfillment(
   requirements: readonly MaterialRequirement[],
-  options: { excludeVerificationBinCodes?: readonly string[] } = {},
+  options: {
+    excludeVerificationBinCodes?: readonly string[];
+    /** Analysis mode: finish assessing other SKUs after one known shortage. */
+    continueAfterKnownShortage?: boolean;
+  } = {},
 ): Promise<MaterialsFulfillmentPlan> {
   const normalized = aggregateRequirements(requirements);
   if (normalized.length === 0) {
@@ -86,6 +93,8 @@ export async function prepareMaterialsFulfillment(
       ok: false,
       reason: "materials_plan_invalid",
       message: "The materials plan contains no requirements to fulfill.",
+      requirements: normalized,
+      selectedBins: [],
       shortages: [],
     };
   }
@@ -207,7 +216,10 @@ export async function prepareMaterialsFulfillment(
     }
   }
 
-  if (shortages.length > 0) {
+  // Physical fulfillment remains fail-fast by default: there is no reason to
+  // audit more bins for an all-or-nothing retrieval that cannot start. The
+  // read-only Sheet analysis opts into completing every requirement instead.
+  if (shortages.length > 0 && !options.continueAfterKnownShortage) {
     return {
       ok: false,
       reason: "materials_shortage",
@@ -217,21 +229,9 @@ export async function prepareMaterialsFulfillment(
             `${shortage.sku} needs ${shortage.required}, but ${shortage.available} are shelf-available`,
         )
         .join("; ")}. No bin moved.`,
+      requirements: normalized,
+      selectedBins,
       shortages,
-    };
-  }
-
-  if (verificationBlocked.length > 0) {
-    return {
-      ok: false,
-      reason: "materials_verification_incomplete",
-      message: `Fresh evidence could not establish enough stock for ${verificationBlocked
-        .map(
-          (item) =>
-            `${item.sku}: ${item.available} verified of ${item.required} required`,
-        )
-        .join("; ")}. No bin was retrieved.`,
-      shortages: verificationBlocked,
     };
   }
 
@@ -239,9 +239,26 @@ export async function prepareMaterialsFulfillment(
     return {
       ok: false,
       reason: "materials_verification_required",
-      message: `${verificationTargets.length} relevant bin${verificationTargets.length === 1 ? "" : "s"} need fresh verification before fulfillment. No unrelated bin was selected.`,
-      shortages: [],
+      message: `${verificationTargets.length} relevant bin${verificationTargets.length === 1 ? "" : "s"} still need fresh verification before the report is final.`,
+      requirements: normalized,
+      selectedBins,
+      shortages: [...shortages, ...verificationBlocked],
       verificationTargets,
+    };
+  }
+
+  const unavailable = [...shortages, ...verificationBlocked];
+  if (unavailable.length > 0) {
+    const reason = shortages.length > 0
+      ? "materials_shortage" as const
+      : "materials_verification_incomplete" as const;
+    return {
+      ok: false,
+      reason,
+      message: `Analysis finished with ${unavailable.length} unavailable material${unavailable.length === 1 ? "" : "s"}. Ready bins remain listed for operation; unavailable materials will not be used.`,
+      requirements: normalized,
+      selectedBins,
+      shortages: unavailable,
     };
   }
 
@@ -250,6 +267,8 @@ export async function prepareMaterialsFulfillment(
       ok: false,
       reason: "materials_plan_invalid",
       message: `The plan selects ${selectedBins.length} bins; at most ${MAX_MATERIALS_FULFILLMENT_BINS} can be fulfilled in one workflow. No bin moved.`,
+      requirements: normalized,
+      selectedBins,
       shortages: [],
     };
   }

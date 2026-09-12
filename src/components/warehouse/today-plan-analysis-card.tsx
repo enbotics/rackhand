@@ -19,7 +19,7 @@ const STAGE_LABELS: Record<TodayPlanAnalysisStage, string> = {
 function statusPresentation(run: TodayPlanAnalysisRunView): StatusPresentation {
   if (run.status === "FAILED") return { label: "FAILED", symbol: "×", tone: "danger" };
   if (run.status === "COMPLETED_WITH_ISSUES") {
-    return { label: "NEEDS REVIEW", symbol: "!", tone: "warn" };
+    return { label: "REPORT READY", symbol: "✓", tone: "warn" };
   }
   if (run.status === "COMPLETED") return { label: "COMPLETE", symbol: "✓", tone: "ok" };
   if (run.status === "QUEUED") return { label: "QUEUED", symbol: "○", tone: "muted" };
@@ -28,6 +28,7 @@ function statusPresentation(run: TodayPlanAnalysisRunView): StatusPresentation {
 
 function readinessPresentation(readiness: NonNullable<TodayPlanAnalysisRunView["result"]>["readiness"]): StatusPresentation {
   if (readiness === "READY") return { label: "READY", symbol: "✓", tone: "ok" };
+  if (readiness === "PARTIALLY_READY") return { label: "PARTIALLY READY", symbol: "◐", tone: "warn" };
   if (readiness === "SHORTAGE") return { label: "SHORTAGE", symbol: "!", tone: "warn" };
   if (readiness === "NO_PLAN" || readiness === "NO_MATERIALS") {
     return { label: readiness.replaceAll("_", " "), symbol: "○", tone: "muted" };
@@ -39,6 +40,8 @@ function readinessPresentation(readiness: NonNullable<TodayPlanAnalysisRunView["
 export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }) {
   const running = run.status === "QUEUED" || run.status === "RUNNING";
   const latestEvents = run.events.slice(-6);
+  const selectedBins = run.result?.selectedBins ?? [];
+  const shortages = run.result?.shortages ?? [];
 
   return (
     <section className="animate-fade-up overflow-hidden rounded-xl border border-accent-soft/50 bg-accent-tint/30">
@@ -107,15 +110,61 @@ export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }
         )}
 
         {run.result && (
-          <div className="rounded-lg border border-line bg-bg-elevated p-3">
+          <div className="space-y-3 rounded-lg border border-line bg-bg-elevated p-3">
             <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-muted">Final diagnosis</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-muted">Final operations report</p>
               <StatusChip status={readinessPresentation(run.result.readiness)} />
             </div>
-            <p className="mt-2 text-xs leading-relaxed text-ink-muted">{run.result.message}</p>
+            <p className="text-xs leading-relaxed text-ink-muted">{run.result.message}</p>
+
+            {selectedBins.length > 0 && (
+              <div>
+                <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-success">
+                  Ready for operation · {selectedBins.length} bin{selectedBins.length === 1 ? "" : "s"}
+                </p>
+                <div className="mt-1.5 space-y-1.5">
+                  {selectedBins.map((bin) => (
+                    <div key={`${bin.sku}-${bin.binCode}`} className="flex items-center justify-between gap-3 rounded-md border border-success/30 bg-success-soft px-2.5 py-2">
+                      <div className="min-w-0">
+                        <p className="font-mono text-[10px] text-ink">{bin.binCode} · {bin.sku}</p>
+                        <p className="mt-0.5 text-[10px] text-ink-muted">
+                          {bin.recordedQuantity} recorded · {bin.requiredQuantity} required
+                        </p>
+                      </div>
+                      <StatusChip status={{ label: "READY", symbol: "✓", tone: "ok" }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {shortages.length > 0 && (
+              <div>
+                <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-warn">
+                  Not used in this plan · {shortages.length} material{shortages.length === 1 ? "" : "s"}
+                </p>
+                <div className="mt-1.5 space-y-1.5">
+                  {shortages.map((shortage) => (
+                    <div key={shortage.sku} className="flex items-center justify-between gap-3 rounded-md border border-warn/30 bg-warn-soft px-2.5 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-[10px] text-ink">{shortage.sku}</p>
+                        <p className="mt-0.5 text-[10px] text-ink-muted">
+                          {shortage.available} shelf-available · {shortage.required} required
+                        </p>
+                      </div>
+                      <StatusChip status={{ label: "NOT USED", symbol: "–", tone: "warn" }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedBins.length === 0 && shortages.length === 0 && (
+              <p className="text-xs text-ink-faint">No operational bin selection was produced.</p>
+            )}
             {run.result.auditedBinCodes.length > 0 && (
-              <p className="mt-2 font-mono text-[9px] text-ink-faint">
-                VERIFIED BINS · {run.result.auditedBinCodes.join(", ")}
+              <p className="font-mono text-[9px] text-ink-faint">
+                REFRESHED DURING THIS RUN · {run.result.auditedBinCodes.join(", ")}
               </p>
             )}
           </div>
