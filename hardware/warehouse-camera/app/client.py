@@ -88,18 +88,25 @@ class WarehouseServerClient:
         captured_at: str,
         width: int,
         height: int,
+        total_weight_grams: Optional[float] = None,
+        weight_source: Optional[str] = None,
     ) -> dict[str, Any]:
         url = f"{self.settings.server_base_url}/api/camera/device/jobs/{job_id}/upload"
         logger.info("Uploading job %s (%s)", job_id, image_path)
         with image_path.open("rb") as image_file:
+            fields = {
+                "capturedAt": captured_at,
+                "width": str(width),
+                "height": str(height),
+            }
+            if total_weight_grams is not None:
+                fields["totalWeightGrams"] = str(total_weight_grams)
+            if weight_source is not None:
+                fields["weightSource"] = weight_source
             response = self.session.post(
                 url,
                 files={"image": (image_path.name, image_file, "image/jpeg")},
-                data={
-                    "capturedAt": captured_at,
-                    "width": str(width),
-                    "height": str(height),
-                },
+                data=fields,
                 timeout=max(self.settings.request_timeout_seconds, 60),
             )
         response.raise_for_status()

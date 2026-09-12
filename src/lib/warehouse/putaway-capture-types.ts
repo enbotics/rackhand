@@ -18,6 +18,12 @@ export interface PutawayCaptureView {
   expectedQuantity: number;
   observedQuantity: number | null;
   confidencePercent: number | null;
+  /** Gross bin weight from the USB scale, including the container. */
+  totalWeightGrams: number | null;
+  tareWeightGrams: number | null;
+  netWeightGrams: number | null;
+  unitWeightGrams: number | null;
+  weightSource: "SCALE" | "FALLBACK" | null;
   previousImageUrl: string | null;
   currentImageUrl: string | null;
   foreignObjects: string[];

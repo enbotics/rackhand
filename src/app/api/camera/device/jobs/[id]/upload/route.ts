@@ -22,6 +22,7 @@ import {
 } from "@/lib/measurement/measure-image-buffer";
 import { processPutawayCameraCapture } from "@/lib/warehouse/putaway-verification";
 import { processAuditCameraCapture } from "@/lib/warehouse/audit-bin-service";
+import { configuredFallbackTotalWeightGrams } from "@/lib/warehouse/putaway-weight";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,6 +70,8 @@ async function processUploadedCapture(jobId: string, imageBuffer: Buffer) {
       imageWidth: processingJob.imageWidth!,
       imageHeight: processingJob.imageHeight!,
       capturedAt: processingJob.capturedAt!,
+      totalWeightGrams: processingJob.totalWeightGrams,
+      weightSource: processingJob.weightSource,
     };
 
     switch (processingJob.purpose) {
@@ -278,6 +281,10 @@ export async function POST(
 
     const capturedAtRaw = formData.get("capturedAt");
 
+    const totalWeightGramsRaw = formData.get("totalWeightGrams");
+
+    const weightSourceRaw = formData.get("weightSource");
+
     if (!(image instanceof File)) {
       return NextResponse.json(
         {
@@ -410,6 +417,55 @@ export async function POST(
       capturedAt = parsed;
     }
 
+    let totalWeightGrams: number | null = null;
+    if (
+      typeof totalWeightGramsRaw === "string" &&
+      totalWeightGramsRaw.trim() !== ""
+    ) {
+      totalWeightGrams = Number(totalWeightGramsRaw);
+      if (!Number.isFinite(totalWeightGrams) || totalWeightGrams <= 0) {
+        return NextResponse.json(
+          {
+            error: {
+              code: "invalid_total_weight",
+              message: "totalWeightGrams must be a positive number.",
+            },
+          },
+          { status: 422 },
+        );
+      }
+    }
+    let weightSource: "SCALE" | "FALLBACK" | null = null;
+    if (typeof weightSourceRaw === "string" && weightSourceRaw.trim() !== "") {
+      const normalized = weightSourceRaw.trim().toUpperCase();
+      if (normalized !== "SCALE" && normalized !== "FALLBACK") {
+        return NextResponse.json(
+          {
+            error: {
+              code: "invalid_weight_source",
+              message: "weightSource must be SCALE or FALLBACK.",
+            },
+          },
+          { status: 422 },
+        );
+      }
+      weightSource = normalized;
+    }
+    if (
+      existingJob.purpose === "PUTAWAY_VERIFICATION" &&
+      totalWeightGrams === null
+    ) {
+      // Server-side continuity for an older worker or a disconnected scale.
+      // The source flag keeps this synthetic total visibly distinct from a
+      // physical measurement throughout the database and UI.
+      totalWeightGrams = configuredFallbackTotalWeightGrams();
+      weightSource = "FALLBACK";
+    } else if (weightSource === null && totalWeightGrams !== null) {
+      // Compatibility for a scale-aware worker deployed just before source
+      // provenance was added: a supplied physical value was scale-derived.
+      weightSource = "SCALE";
+    }
+
     /*
      * 7. Store evidence.
      *
@@ -434,6 +490,8 @@ export async function POST(
       imageWidth,
       imageHeight,
       capturedAt,
+      totalWeightGrams,
+      weightSource,
     });
 
     /*

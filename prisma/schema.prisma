@@ -134,6 +134,18 @@ model Movement {
   /// independent full-audit workflow.
   verificationImageUrl   String?
   verificationCapturedAt DateTime?
+  /// Gross scale reading for the verified bin, including its container.
+  totalWeightGrams       Float?
+  /// Container tare used for this measurement. Persisted so historical
+  /// calculations remain explainable if the configured box changes later.
+  tareWeightGrams        Float?
+  /// totalWeightGrams - tareWeightGrams.
+  netWeightGrams         Float?
+  /// netWeightGrams divided by the camera-confirmed quantity.
+  unitWeightGrams        Float?
+  /// SCALE | FALLBACK. Prevents a synthetic continuity value from being
+  /// presented later as a physical measurement.
+  weightSource           String?
   destinationBin         Bin?                   @relation("MovementDestination", fields: [destinationBinId], references: [id])
   part                   Part                   @relation(fields: [partId], references: [id])
   sourceBin              Bin?                   @relation("MovementSource", fields: [sourceBinId], references: [id])
@@ -177,6 +189,11 @@ model PutawayCaptureRequest {
   capturedAt             DateTime?
   /// Browser/operator workflow that owns this popup and its decisions.
   ownerSessionId         String?
+  totalWeightGrams       Float?
+  tareWeightGrams        Float?
+  netWeightGrams         Float?
+  unitWeightGrams        Float?
+  weightSource           String?
   movement               Movement  @relation(fields: [movementId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
@@ -490,6 +507,10 @@ model CameraCaptureJob {
   workflowAttempt   Int?
   /// Browser/operator workflow that receives this job's status and result.
   ownerSessionId    String?
+  /// Authenticated USB scale reading supplied with a putaway photo.
+  totalWeightGrams  Float?
+  /// SCALE | FALLBACK.
+  weightSource      String?
 
   @@index([binAuditId])
   @@index([workflowCaptureId, status])
@@ -518,4 +539,46 @@ model CameraDeviceHealth {
   updatedAt         DateTime  @updatedAt
 
   @@index([lastSeenAt])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model EngineeringPlanAnalysisEvent {
+  id                         String                     @id
+  runId                      String
+  sequence                   Int
+  stage                      String
+  status                     String
+  summary                    String
+  metadataJson               String?
+  createdAt                  DateTime                   @default(now())
+  EngineeringPlanAnalysisRun EngineeringPlanAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, sequence])
+  @@index([runId])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model EngineeringPlanAnalysisRun {
+  id                           String                         @id
+  ownerSessionId               String
+  trigger                      String                         @default("MANUAL")
+  status                       String                         @default("QUEUED")
+  stage                        String                         @default("QUEUED")
+  activeKey                    String?                        @unique
+  workDate                     String
+  rowsFound                    Int                            @default(0)
+  currentBinCode               String?
+  planRowsJson                 String                         @default("[]")
+  requirementsJson             String                         @default("[]")
+  resultJson                   String?
+  errorCode                    String?
+  errorMessage                 String?
+  startedAt                    DateTime?
+  completedAt                  DateTime?
+  createdAt                    DateTime                       @default(now())
+  updatedAt                    DateTime
+  EngineeringPlanAnalysisEvent EngineeringPlanAnalysisEvent[]
+
+  @@index([ownerSessionId, createdAt])
+  @@index([status])
 }

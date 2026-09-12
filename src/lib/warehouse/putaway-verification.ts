@@ -39,6 +39,7 @@ import {
   type PutawayCaptureView,
 } from "./putaway-capture-types";
 import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
+import { calculatePutawayWeight } from "./putaway-weight";
 
 export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN"];
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
@@ -82,6 +83,11 @@ function captureView(input: {
   expectedQuantity: number;
   observedQuantity: number | null;
   countConfidence: number | null;
+  totalWeightGrams: number | null;
+  tareWeightGrams: number | null;
+  netWeightGrams: number | null;
+  unitWeightGrams: number | null;
+  weightSource: string | null;
   previousImageUrl: string | null;
   evidenceUrl: string | null;
   foreignObjectsJson: string | null;
@@ -97,6 +103,13 @@ function captureView(input: {
     expectedQuantity: input.expectedQuantity,
     observedQuantity: input.observedQuantity,
     confidencePercent: input.countConfidence === null ? null : confidencePercent(input.countConfidence),
+    totalWeightGrams: input.totalWeightGrams,
+    tareWeightGrams: input.tareWeightGrams,
+    netWeightGrams: input.netWeightGrams,
+    unitWeightGrams: input.unitWeightGrams,
+    weightSource: input.weightSource === "SCALE" || input.weightSource === "FALLBACK"
+      ? input.weightSource
+      : null,
     previousImageUrl: input.previousImageUrl,
     currentImageUrl: input.evidenceUrl,
     foreignObjects: parseInspectionForeignObjects(input.foreignObjectsJson),
@@ -367,6 +380,8 @@ interface PutawayAnalysisInput {
   capturedAt: Date;
   requestedAt: Date;
   workflowAttempt: number;
+  totalWeightGrams?: number | null;
+  weightSource?: string | null;
   captureMode?: "PROD" | "SIMULATION";
 }
 
@@ -441,6 +456,9 @@ async function analyzePutawayCapture(
       throw new Error("This capture stopped being processable during image analysis.");
     }
     const observed = vision.observedCount;
+    const weight = captureMode === "SIMULATION" || observed === null || observed <= 0
+      ? null
+      : calculatePutawayWeight(input.totalWeightGrams ?? Number.NaN, observed);
     const { outcome, foreignObjects } = classifyPutawayVision(vision, capture.expectedQuantity, movement.destinationBin.capacity);
     const nextStatus = outcome === "REVIEW_DECREASE" ? "REVIEW_DECREASE"
       : outcome === "READY" || outcome === "INCREASED" ? "READY"
@@ -463,6 +481,11 @@ async function analyzePutawayCapture(
         imageWidth: input.imageWidth,
         imageHeight: input.imageHeight,
         capturedAt,
+        totalWeightGrams: weight?.totalWeightGrams ?? null,
+        tareWeightGrams: weight?.tareWeightGrams ?? null,
+        netWeightGrams: weight?.netWeightGrams ?? null,
+        unitWeightGrams: weight?.unitWeightGrams ?? null,
+        weightSource: weight ? input.weightSource ?? "SCALE" : null,
         expiresAt: null,
       },
     });
@@ -482,6 +505,11 @@ async function analyzePutawayCapture(
         imageWidth: input.imageWidth,
         imageHeight: input.imageHeight,
         capturedAt: input.capturedAt,
+        totalWeightGrams: null,
+        tareWeightGrams: null,
+        netWeightGrams: null,
+        unitWeightGrams: null,
+        weightSource: null,
         observedQuantity: null,
         countConfidence: null,
         countable: null,
@@ -552,6 +580,8 @@ export async function reanalyzePutawayCapture(
       capturedAt: capture.capturedAt,
       requestedAt: job.requestedAt,
       workflowAttempt: capture.attempt,
+      totalWeightGrams: job.totalWeightGrams,
+      weightSource: job.weightSource,
       captureMode: "PROD",
     },
     "ANALYSIS_FAILED",
@@ -624,6 +654,11 @@ export async function decidePutawayCapture(
           imageWidth: null,
           imageHeight: null,
           capturedAt: null,
+          totalWeightGrams: null,
+          tareWeightGrams: null,
+          netWeightGrams: null,
+          unitWeightGrams: null,
+          weightSource: null,
           attempt: { increment: 1 },
           expiresAt: null,
         },
@@ -664,6 +699,11 @@ export async function decidePutawayCapture(
         imageUrl: capture.evidenceUrl,
         verificationImageUrl: capture.evidenceUrl,
         verificationCapturedAt: capture.capturedAt,
+        totalWeightGrams: capture.totalWeightGrams,
+        tareWeightGrams: capture.tareWeightGrams,
+        netWeightGrams: capture.netWeightGrams,
+        unitWeightGrams: capture.unitWeightGrams,
+        weightSource: capture.weightSource,
       },
     });
     if (movement.count !== 1) throw new Error("The putaway is no longer waiting for verification.");

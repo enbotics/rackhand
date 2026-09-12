@@ -155,6 +155,13 @@ async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
         verificationImageUrl: true,
         verificationCapturedAt: true,
         status: true,
+        quantity: true,
+        newQuantity: true,
+        totalWeightGrams: true,
+        tareWeightGrams: true,
+        netWeightGrams: true,
+        unitWeightGrams: true,
+        weightSource: true,
       },
     }),
     prisma.binAudit.findMany({
@@ -186,6 +193,14 @@ async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
       source: "PUTAWAY",
       recordId: row.id,
       status: row.status,
+      measuredQuantity: row.newQuantity ?? row.quantity,
+      totalWeightGrams: row.totalWeightGrams,
+      tareWeightGrams: row.tareWeightGrams,
+      netWeightGrams: row.netWeightGrams,
+      unitWeightGrams: row.unitWeightGrams,
+      weightSource: row.weightSource === "SCALE" || row.weightSource === "FALLBACK"
+        ? row.weightSource
+        : null,
     });
   }
   for (const row of auditRows) {

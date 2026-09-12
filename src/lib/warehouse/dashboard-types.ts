@@ -42,6 +42,13 @@ export interface BinSnapshotView {
   recordId: string;
   status: string;
   confidencePercent?: number | null;
+  /** Quantity and scale values recorded with this exact putaway snapshot. */
+  measuredQuantity?: number | null;
+  totalWeightGrams?: number | null;
+  tareWeightGrams?: number | null;
+  netWeightGrams?: number | null;
+  unitWeightGrams?: number | null;
+  weightSource?: "SCALE" | "FALLBACK" | null;
 }
 
 /**

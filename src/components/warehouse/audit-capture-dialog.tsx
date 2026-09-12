@@ -492,6 +492,38 @@ export function AuditCaptureDialog() {
               tone={(result?.confidencePercent ?? 0) > 80 ? "ok" : "warn"}
             />
           </div>
+          {result?.totalWeightGrams != null && (
+            <div>
+              {result.weightSource === "FALLBACK" && (
+                <p className="mb-2 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-xs text-warn">
+                  Scale unavailable · using the configured {result.totalWeightGrams} g fallback total.
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Metric
+                  label="Total weight"
+                  value={result.totalWeightGrams}
+                  unit="g"
+                />
+                <Metric
+                  label="Box tare"
+                  value={result.tareWeightGrams ?? "—"}
+                  unit="g"
+                />
+                <Metric
+                  label="Net weight"
+                  value={result.netWeightGrams ?? "—"}
+                  unit="g"
+                />
+                <Metric
+                  label="Each item"
+                  value={result.unitWeightGrams ?? "—"}
+                  unit="g"
+                  tone="accent"
+                />
+              </div>
+            </div>
+          )}
           {warning && (
             <div className="rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm text-warn">
               <p className="font-semibold">Verification needs attention</p>

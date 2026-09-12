@@ -12,6 +12,7 @@ import requests
 from .camera import WarehouseCamera
 from .client import WarehouseServerClient
 from .config import load_settings
+from .scale import ScaleReadError, UsbScale
 
 
 logging.basicConfig(
@@ -62,12 +63,25 @@ def process_existing_spool(client: WarehouseServerClient, settings) -> None:
         try:
             metadata = json.loads(meta_path.read_text())
             logger.info("Retrying pending upload for job %s", metadata["jobId"])
+            if (
+                metadata.get("purpose") == "PUTAWAY_VERIFICATION"
+                and metadata.get("totalWeightGrams") is None
+            ):
+                metadata["totalWeightGrams"] = settings.scale_fallback_weight_grams
+                metadata["weightSource"] = "FALLBACK"
+                save_spool_metadata(image_path, metadata)
+                logger.warning(
+                    "Spool frame has no scale reading; using configured %.3f g fallback",
+                    settings.scale_fallback_weight_grams,
+                )
             client.upload_image(
                 job_id=metadata["jobId"],
                 image_path=image_path,
                 captured_at=metadata["capturedAt"],
                 width=metadata["width"],
                 height=metadata["height"],
+                total_weight_grams=metadata.get("totalWeightGrams"),
+                weight_source=metadata.get("weightSource"),
             )
             delete_spool_files(image_path)
         except requests.HTTPError as error:
@@ -78,7 +92,13 @@ def process_existing_spool(client: WarehouseServerClient, settings) -> None:
             raise
 
 
-def capture_job(job: dict, camera: WarehouseCamera, client: WarehouseServerClient, settings) -> None:
+def capture_job(
+    job: dict,
+    camera: WarehouseCamera,
+    scale: UsbScale,
+    client: WarehouseServerClient,
+    settings,
+) -> None:
     job_id = safe_job_id(job["jobId"])
     image_path = settings.spool_dir / f"{job_id}.jpg"
     stop_heartbeat = threading.Event()
@@ -108,6 +128,23 @@ def capture_job(job: dict, camera: WarehouseCamera, client: WarehouseServerClien
                 job_id,
                 job.get("purpose"),
             )
+            total_weight_grams = None
+            weight_source = None
+            if job.get("purpose") == "PUTAWAY_VERIFICATION":
+                # Read immediately before the evidence frame while the bin is
+                # stationary on the scale. Both values are then spooled as one
+                # durable physical observation.
+                try:
+                    total_weight_grams = scale.read_stable_grams()
+                    weight_source = "SCALE"
+                except ScaleReadError as error:
+                    total_weight_grams = settings.scale_fallback_weight_grams
+                    weight_source = "FALLBACK"
+                    logger.warning(
+                        "USB scale unavailable (%s); using configured %.3f g fallback",
+                        error,
+                        total_weight_grams,
+                    )
             camera.capture(image_path)
             metadata = {
                 "jobId": job_id,
@@ -115,6 +152,8 @@ def capture_job(job: dict, camera: WarehouseCamera, client: WarehouseServerClien
                 "width": settings.camera_width,
                 "height": settings.camera_height,
                 "purpose": job.get("purpose"),
+                "totalWeightGrams": total_weight_grams,
+                "weightSource": weight_source,
             }
             save_spool_metadata(image_path, metadata)
 
@@ -124,6 +163,8 @@ def capture_job(job: dict, camera: WarehouseCamera, client: WarehouseServerClien
             captured_at=metadata["capturedAt"],
             width=metadata["width"],
             height=metadata["height"],
+            total_weight_grams=metadata.get("totalWeightGrams"),
+            weight_source=metadata.get("weightSource"),
         )
         delete_spool_files(image_path)
         logger.info("Job %s uploaded successfully", job_id)
@@ -132,7 +173,12 @@ def capture_job(job: dict, camera: WarehouseCamera, client: WarehouseServerClien
         heartbeat_thread.join(timeout=1)
 
 
-def drain_jobs(client: WarehouseServerClient, camera: WarehouseCamera, settings) -> None:
+def drain_jobs(
+    client: WarehouseServerClient,
+    camera: WarehouseCamera,
+    scale: UsbScale,
+    settings,
+) -> None:
     """Catch up durable jobs after one Realtime wake-up, then return to SSE."""
     process_existing_spool(client, settings)
     while running:
@@ -140,7 +186,7 @@ def drain_jobs(client: WarehouseServerClient, camera: WarehouseCamera, settings)
         if job is None:
             return
         try:
-            capture_job(job, camera, client, settings)
+            capture_job(job, camera, scale, client, settings)
         except Exception as error:
             job_id = job.get("jobId")
             logger.exception("Capture job failed: %s", job_id)
@@ -159,9 +205,12 @@ def drain_jobs(client: WarehouseServerClient, camera: WarehouseCamera, settings)
 
 def run() -> None:
     settings = load_settings()
+    if settings.scale_fallback_weight_grams <= 0:
+        raise RuntimeError("SCALE_FALLBACK_WEIGHT_GRAMS must be positive")
     logger.info("Warehouse live camera starting device=%s", settings.device_id)
     logger.info("Server: %s", settings.server_base_url)
     camera = WarehouseCamera(settings)
+    scale = UsbScale(settings)
     client = WarehouseServerClient(settings)
     camera.start()
     backoff_seconds = settings.reconnect_delay_seconds
@@ -177,7 +226,7 @@ def run() -> None:
                         continue
                     backoff_seconds = settings.reconnect_delay_seconds
                     logger.info("Realtime wake received; checking durable queue")
-                    drain_jobs(client, camera, settings)
+                    drain_jobs(client, camera, scale, settings)
                 if running:
                     raise requests.ConnectionError("Camera Realtime stream ended")
             except requests.RequestException as error:

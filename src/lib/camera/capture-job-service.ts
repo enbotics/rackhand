@@ -86,6 +86,10 @@ export interface UploadedCaptureMetadata {
   imageHeight: number;
 
   capturedAt: Date;
+  /** Gross USB-scale reading. Required for physical putaway verification. */
+  totalWeightGrams?: number | null;
+  /** SCALE for a physical reading, FALLBACK for configured continuity data. */
+  weightSource?: "SCALE" | "FALLBACK" | null;
 }
 
 export interface CompleteCaptureJobInput {
@@ -510,6 +514,29 @@ export async function markCaptureUploaded(
 
   assertPositiveInteger(input.imageHeight, "imageHeight");
 
+  if (
+    input.totalWeightGrams !== null &&
+    input.totalWeightGrams !== undefined &&
+    (!Number.isFinite(input.totalWeightGrams) || input.totalWeightGrams <= 0)
+  ) {
+    throw new CameraCaptureJobError(
+      "camera_invalid_metadata",
+      "totalWeightGrams must be a positive number.",
+    );
+  }
+
+  if (
+    input.weightSource !== null &&
+    input.weightSource !== undefined &&
+    input.weightSource !== "SCALE" &&
+    input.weightSource !== "FALLBACK"
+  ) {
+    throw new CameraCaptureJobError(
+      "camera_invalid_metadata",
+      "weightSource must be SCALE or FALLBACK.",
+    );
+  }
+
   if (!input.evidenceUrl.trim()) {
     throw new CameraCaptureJobError(
       "camera_invalid_evidence",
@@ -608,6 +635,10 @@ export async function markCaptureUploaded(
       imageHeight: input.imageHeight,
 
       capturedAt: input.capturedAt,
+
+      totalWeightGrams: input.totalWeightGrams ?? null,
+
+      weightSource: input.weightSource ?? null,
 
       uploadedAt: now,
       expiresAt: calculateProcessingExpiryDate(now),

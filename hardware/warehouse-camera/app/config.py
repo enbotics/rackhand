@@ -2,7 +2,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_FILE = PROJECT_ROOT / "camera.env"
 
@@ -67,6 +66,13 @@ class Settings:
     preview_port: int
     autofocus_timeout_seconds: float
     camera_settle_seconds: float
+    scale_serial_port: str
+    scale_baud_rate: int
+    scale_unit: str
+    scale_read_timeout_seconds: float
+    scale_stable_samples: int
+    scale_stability_tolerance_grams: float
+    scale_fallback_weight_grams: float
     spool_dir: Path
 
 
@@ -88,5 +94,14 @@ def load_settings() -> Settings:
         preview_port=get_int("PREVIEW_PORT", 8000),
         autofocus_timeout_seconds=get_float("AUTOFOCUS_TIMEOUT_SECONDS", 8.0),
         camera_settle_seconds=get_float("CAMERA_SETTLE_SECONDS", 2.0),
+        scale_serial_port=os.getenv("SCALE_SERIAL_PORT", "/dev/ttyUSB0").strip(),
+        scale_baud_rate=get_int("SCALE_BAUD_RATE", 9600),
+        scale_unit=os.getenv("SCALE_UNIT", "g").strip().lower(),
+        scale_read_timeout_seconds=get_float("SCALE_READ_TIMEOUT_SECONDS", 10.0),
+        scale_stable_samples=get_int("SCALE_STABLE_SAMPLES", 3),
+        scale_stability_tolerance_grams=get_float(
+            "SCALE_STABILITY_TOLERANCE_GRAMS", 1.0
+        ),
+        scale_fallback_weight_grams=get_float("SCALE_FALLBACK_WEIGHT_GRAMS", 150.0),
         spool_dir=spool_dir,
     )

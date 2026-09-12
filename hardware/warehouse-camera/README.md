@@ -4,6 +4,7 @@ One `Picamera2` process owns Camera Module 3 NoIR for both:
 
 - a `1280x720` MJPEG preview at `/stream.mjpg`;
 - full-resolution evidence captures uploaded for durable camera jobs.
+- a stable USB serial-scale reading attached to every physical putaway photo.
 
 The worker holds an authenticated SSE connection to the Next.js app. Supabase
 Realtime wakes that connection when `CameraCaptureJob` is inserted. On every
@@ -20,3 +21,37 @@ attempt is rejected safely.
 
 Install `warehouse-camera.service` as `/etc/systemd/system/warehouse-camera.service`
 and keep the real `camera.env` only on the Pi.
+
+## USB scale
+
+The worker expects a scale that appears as a serial device and continuously
+prints a numeric weight such as `234.5 g` or `0.234 kg`. Configure its device
+path and serial format in `camera.env`:
+
+```env
+SCALE_SERIAL_PORT=/dev/ttyUSB0
+SCALE_BAUD_RATE=9600
+SCALE_UNIT=g
+SCALE_READ_TIMEOUT_SECONDS=10
+SCALE_STABLE_SAMPLES=3
+SCALE_STABILITY_TOLERANCE_GRAMS=1
+SCALE_FALLBACK_WEIGHT_GRAMS=150
+```
+
+Install dependencies and grant the service user serial-port access:
+
+```bash
+python3 -m pip install -r requirements.txt
+sudo usermod -aG dialout pi
+sudo systemctl restart warehouse-camera.service
+```
+
+`SCALE_UNIT` is used only when the scale sends a number without a unit. The
+server subtracts `PUTAWAY_CONTAINER_TARE_GRAMS` (117 g by default), then divides
+the net weight by the camera-confirmed quantity. If the scale presents itself
+as a USB HID device instead of a serial port, a model-specific HID reader is
+required.
+
+If the serial scale is disconnected, unreadable or unstable, capture continues
+with `SCALE_FALLBACK_WEIGHT_GRAMS` as the gross total. The database and UI mark
+that value as `FALLBACK`; it is never represented as a physical scale reading.

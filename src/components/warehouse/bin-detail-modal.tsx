@@ -6,6 +6,10 @@ import { BIN_STATUS_PRESENTATION } from "@/lib/warehouse/dashboard-presentation"
 import { Modal } from "./modal";
 import { BUTTON_VARIANTS, EmptyState, ErrorNote, Field, NumberField, StatusChip } from "./ui";
 
+function formatGrams(value: number): string {
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value)} g`;
+}
+
 interface ApiErrorBody {
   error: { code: string; message: string; issues?: string[] };
 }
@@ -254,6 +258,45 @@ export function BinDetailModal({
                   : ` · ${bin.latestSnapshot.confidencePercent}%`}
               </span>
             </div>
+            {bin.latestSnapshot.source === "PUTAWAY" &&
+              bin.latestSnapshot.totalWeightGrams != null && (
+                <div className="border-t border-line">
+                  {bin.latestSnapshot.weightSource === "FALLBACK" && (
+                    <p className="border-b border-warn/30 bg-warn-soft px-3 py-2 font-mono text-[9px] uppercase tracking-[0.1em] text-warn">
+                      Scale unavailable · fallback total
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 gap-px bg-line sm:grid-cols-5">
+                    <SnapshotMetric
+                      label="Quantity"
+                      value={bin.latestSnapshot.measuredQuantity?.toString() ?? "—"}
+                    />
+                    <SnapshotMetric
+                      label="Total"
+                      value={formatGrams(bin.latestSnapshot.totalWeightGrams)}
+                    />
+                    <SnapshotMetric
+                      label="Box"
+                      value={bin.latestSnapshot.tareWeightGrams == null
+                        ? "—"
+                        : formatGrams(bin.latestSnapshot.tareWeightGrams)}
+                    />
+                    <SnapshotMetric
+                      label="Net"
+                      value={bin.latestSnapshot.netWeightGrams == null
+                        ? "—"
+                        : formatGrams(bin.latestSnapshot.netWeightGrams)}
+                    />
+                    <SnapshotMetric
+                      label="Each"
+                      value={bin.latestSnapshot.unitWeightGrams == null
+                        ? "—"
+                        : formatGrams(bin.latestSnapshot.unitWeightGrams)}
+                      accent
+                    />
+                  </div>
+                </div>
+              )}
           </section>
         )}
 
@@ -268,5 +311,26 @@ export function BinDetailModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+function SnapshotMetric({
+  label,
+  value,
+  accent = false,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="bg-bg-elevated px-3 py-2.5">
+      <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-ink-faint">
+        {label}
+      </p>
+      <p className={`mt-1 font-mono text-xs font-semibold ${accent ? "text-accent" : "text-ink"}`}>
+        {value}
+      </p>
+    </div>
   );
 }
