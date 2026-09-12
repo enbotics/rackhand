@@ -1,8 +1,11 @@
 import { compareBinsInShelfOrder } from "./bin-layout";
+import {
+  getBinVerificationEvidence,
+  type BinVerificationState,
+} from "./bin-verification-evidence";
 import { prisma } from "./db";
 
 const OBSERVATION_WINDOW_HOURS = 24;
-const AUDIT_COOLDOWN_HOURS = 6;
 
 export interface DailyBinActivity {
   binCode: string;
@@ -16,6 +19,9 @@ export interface DailyBinActivity {
   lastMovementAt: string | null;
   lastAuditAt: string | null;
   lastAuditStatus: string | null;
+  lastVerifiedAt: string | null;
+  lastInventoryChangeAt: string | null;
+  verificationState: BinVerificationState;
   priorityScore: number;
   eligibleNow: boolean;
   reasons: string[];
@@ -116,20 +122,20 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
     0,
     ...Array.from(byBin.values(), (activity) => activity.retrievals),
   );
+  const evidenceByBin = await getBinVerificationEvidence(bins.map((bin) => bin.code));
   const candidates = bins.map((bin): DailyBinActivity => {
     const activity = byBin.get(bin.id);
     const movementCount = activity?.movements.size ?? 0;
     const lastAudit = bin.binAudits[0] ?? null;
     const lastAuditAgeHours = lastAudit ? hoursSince(lastAudit.createdAt, now) : null;
-    const inCooldown = lastAuditAgeHours !== null && lastAuditAgeHours < AUDIT_COOLDOWN_HOURS;
     const priorIssue =
       lastAudit?.status === "REVIEW_REQUIRED" || lastAudit?.status === "FAILED";
     const priorReconciliation = lastAudit?.status === "AUTO_RECONCILED";
     const highActivity = movementCount >= 5;
     const mostRetrieved =
       (activity?.retrievals ?? 0) > 0 && activity?.retrievals === mostRetrievals;
-    const recentlyAdjusted = (activity?.adjustments ?? 0) > 0;
     const reasons: string[] = [];
+    const evidence = evidenceByBin.get(bin.code);
 
     const activityPoints = Math.min(60, movementCount * 12);
     const freshnessPoints =
@@ -148,16 +154,17 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
     if (!lastAudit) reasons.push("no prior physical audit");
     else if (priorIssue) reasons.push(`latest audit requires attention (${lastAudit.status})`);
     else if (priorReconciliation) reasons.push("latest audit found and reconciled a discrepancy");
-    if (inCooldown) reasons.push("inside the six-hour audit cooldown");
     if (highActivity) reasons.push("high activity threshold reached");
     if (mostRetrieved) reasons.push("most retrieved shelf bin in the observation window");
 
     const inventory = bin.inventory[0] ?? null;
+    const recordedQuantity = bin.inventory.reduce((sum, row) => sum + row.quantity, 0);
+    if (evidence && !evidence.trusted) reasons.push(evidence.reason);
     return {
       binCode: bin.code,
       binStatus: bin.status,
       sku: inventory?.part.sku ?? null,
-      recordedQuantity: bin.inventory.reduce((sum, row) => sum + row.quantity, 0),
+      recordedQuantity,
       movements: movementCount,
       retrievals: activity?.retrievals ?? 0,
       putaways: activity?.putaways ?? 0,
@@ -165,10 +172,11 @@ export async function observeDailyBinActivity(now: Date = new Date()): Promise<D
       lastMovementAt: activity?.lastMovementAt?.toISOString() ?? null,
       lastAuditAt: lastAudit?.createdAt.toISOString() ?? null,
       lastAuditStatus: lastAudit?.status ?? null,
+      lastVerifiedAt: evidence?.lastVerifiedAt ?? null,
+      lastInventoryChangeAt: evidence?.lastInventoryChangeAt ?? null,
+      verificationState: evidence?.state ?? "NEVER_VERIFIED",
       priorityScore,
-      eligibleNow:
-        !inCooldown &&
-        (highActivity || mostRetrieved || recentlyAdjusted || priorIssue),
+      eligibleNow: recordedQuantity > 0 && !(evidence?.trusted ?? false),
       reasons,
     };
   });

@@ -5,11 +5,9 @@ import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session"
 /**
  * GET /api/warehouse/materials-plan/latest
  *
- * This session's own latest build-plan stock check, polled by the client the
- * same way audit progress already is — see use-materials-plan.ts. Session-
- * scoped (mirrors pendingAuditCapture's ownerSessionId pattern) rather than
- * folded into the shared, unscoped /api/warehouse/overview: two operators
- * running their own build-plan checks must never see each other's.
+ * This session's latest legacy build-plan stock check. New plans use
+ * approval-gated fulfillment and create no check rows; this read-only route is
+ * retained so historical reports remain renderable and session-isolated.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

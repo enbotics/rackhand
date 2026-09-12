@@ -40,9 +40,9 @@ type AuditRunWithBins = Prisma.InventoryAuditRunGetPayload<{
 }>;
 
 /**
- * Shared with the materials-plan endpoint (materials-plan-service.ts's
- * PLAN_VERIFICATION sweeps are just InventoryAuditRun rows under the hood) —
- * one mapping from the durable rows to the operator-facing view, not two.
+ * Shared with the legacy materials-plan endpoint, whose historical stock
+ * checks referenced InventoryAuditRun rows. One mapping keeps those durable
+ * records renderable without retaining their retired execution path.
  */
 export function toInventoryAuditView(run: AuditRunWithBins): InventoryAuditView {
   return {

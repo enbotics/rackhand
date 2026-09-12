@@ -23,7 +23,10 @@ import { InventoryAuditPanel } from "./inventory-audit-panel";
 import { MaterialsPlanPipelineCard } from "./materials-plan-pipeline-card";
 import { materialsCheckRunning } from "./materials-check-progress-card";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
+import { useAgentSuggestions } from "@/lib/use-agent-suggestions";
 import { BUTTON_VARIANTS, EmptyState, ErrorNote, Panel } from "./ui";
+import type { TodayPlanAnalysisRunView } from "@/lib/engineering-plan/analysis-types";
+import { TodayPlanAnalysisCard } from "./today-plan-analysis-card";
 
 /**
  * The Warehouse Agent conversation.
@@ -54,7 +57,6 @@ const TOOL_LABELS: Record<string, string> = {
   inventory_auditor: "Inventory auditor agent",
   execute_inventory_audit: "Physical inventory audit",
   materials_planner: "Materials planner agent",
-  verify_materials_availability: "Stock check started",
 };
 
 /**
@@ -390,6 +392,7 @@ export function AgentPanel({
   materialsPlan,
   materialsPlanCheck,
   onDismissMaterialsPlan,
+  todayPlanAnalysis = null,
   latestAudit,
   onAuditChanged = () => {},
   detectedName,
@@ -426,6 +429,8 @@ export function AgentPanel({
   materialsPlanCheck: MaterialsPlanCheckView | null;
   /** Retires the build-plan pipeline card for good — see the card's own comment below. */
   onDismissMaterialsPlan: () => void;
+  /** Durable manual/event-triggered analysis; intentionally survives page refreshes. */
+  todayPlanAnalysis?: TodayPlanAnalysisRunView | null;
   latestAudit: InventoryAuditView | null;
   /** Re-reads the warehouse snapshot after a human applies/dismisses an audit observation. */
   onAuditChanged?: () => void;
@@ -444,6 +449,11 @@ export function AgentPanel({
   const followLatest = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
+  // Only worth asking for while the chat is genuinely empty and idle — the
+  // same condition that renders EmptyState below, plus the tab actually
+  // being visible so a hidden tab doesn't keep refreshing in the background.
+  const showEmptyState = turns.length === 0 && !busy && !todayPlanAnalysis;
+  const suggestions = useAgentSuggestions(active && showEmptyState);
 
   // The overview intentionally includes the latest durable audit for machine
   // telemetry and recovery. That does not make a settled historical run part
@@ -549,6 +559,11 @@ export function AgentPanel({
     materialsPlanCheck?.id,
     materialsPlanCheck?.status,
     materialsPlanCheck?.binsCompleted,
+    todayPlanAnalysis?.id,
+    todayPlanAnalysis?.status,
+    todayPlanAnalysis?.stage,
+    todayPlanAnalysis?.currentBinCode,
+    todayPlanAnalysis?.events.length,
     displayedAudit?.auditRunId,
     displayedAudit?.status,
   ].join("|");
@@ -614,11 +629,25 @@ export function AgentPanel({
           className="agent-transcript min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-line-soft bg-bg/35 p-3"
         >
           <div ref={contentRef} className="space-y-5">
-          {turns.length === 0 && !busy ? (
+          {showEmptyState ? (
             <EmptyState>
               Ask about inventory, bins, or the gantry—or request a guided putaway.
               <br />
               Putaway continues in the guided dialog; retrieval pauses for approval.
+              {suggestions.length > 0 && (
+                <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+                  {suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => send(suggestion)}
+                      className="rounded-full border border-line bg-bg-elevated px-2.5 py-1 font-mono text-[9px] text-ink-faint transition-all hover:-translate-y-0.5 hover:border-accent-soft hover:bg-accent-tint hover:text-accent"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
             </EmptyState>
           ) : (
             turns.map((turn) => (
@@ -632,6 +661,8 @@ export function AgentPanel({
           )}
 
           {busy && <AgentWorking liveToolName={liveToolName} />}
+
+          {todayPlanAnalysis && <TodayPlanAnalysisCard run={todayPlanAnalysis} />}
 
           {/* Trailing "current state" cards — the live tail of the conversation.
               Each one is the SAME component that used to sit beside the chat as

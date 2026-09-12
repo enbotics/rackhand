@@ -9,6 +9,10 @@
  * to recover from safely.
  */
 import { compareBinsInShelfOrder } from "./bin-layout";
+import {
+  getBinVerificationEvidence,
+  type BinVerificationEvidence,
+} from "./bin-verification-evidence";
 import { getInventoryForPart } from "./inventory-service";
 import type { MaterialRequirement } from "./materials-plan-service";
 
@@ -25,6 +29,13 @@ export interface MaterialsFulfillmentShortage {
   available: number;
 }
 
+export interface MaterialsVerificationTarget {
+  sku: string;
+  binCode: string;
+  recordedQuantity: number;
+  evidence: BinVerificationEvidence;
+}
+
 export type MaterialsFulfillmentPlan =
   | {
       ok: true;
@@ -33,9 +44,14 @@ export type MaterialsFulfillmentPlan =
     }
   | {
       ok: false;
-      reason: "materials_shortage" | "materials_plan_invalid";
+      reason:
+        | "materials_shortage"
+        | "materials_plan_invalid"
+        | "materials_verification_required"
+        | "materials_verification_incomplete";
       message: string;
       shortages: MaterialsFulfillmentShortage[];
+      verificationTargets?: MaterialsVerificationTarget[];
     };
 
 /** Keep one approved workflow bounded even if an upstream model misbehaves. */
@@ -62,6 +78,7 @@ function aggregateRequirements(
 
 export async function prepareMaterialsFulfillment(
   requirements: readonly MaterialRequirement[],
+  options: { excludeVerificationBinCodes?: readonly string[] } = {},
 ): Promise<MaterialsFulfillmentPlan> {
   const normalized = aggregateRequirements(requirements);
   if (normalized.length === 0) {
@@ -75,20 +92,34 @@ export async function prepareMaterialsFulfillment(
 
   const selectedBins: MaterialsFulfillmentBin[] = [];
   const shortages: MaterialsFulfillmentShortage[] = [];
+  const verificationTargets: MaterialsVerificationTarget[] = [];
+  const verificationBlocked: MaterialsFulfillmentShortage[] = [];
+  const excluded = new Set(
+    (options.excludeVerificationBinCodes ?? []).map((code) => code.trim().toUpperCase()),
+  );
+  const locationsBySku = new Map<
+    string,
+    Awaited<ReturnType<typeof getInventoryForPart>>["locations"]
+  >();
 
   for (const requirement of normalized) {
-    let locations: Awaited<ReturnType<typeof getInventoryForPart>>["locations"] = [];
     try {
       const inventory = await getInventoryForPart(requirement.sku);
-      locations = inventory.locations;
+      locationsBySku.set(requirement.sku, inventory.locations);
     } catch {
-      shortages.push({
-        sku: requirement.sku,
-        required: requirement.quantity,
-        available: 0,
-      });
-      continue;
+      locationsBySku.set(requirement.sku, []);
     }
+  }
+
+  const evidenceByBin = await getBinVerificationEvidence(
+    [...locationsBySku.values()]
+      .flat()
+      .filter((location) => location.binStatus === "OCCUPIED" && location.quantity > 0)
+      .map((location) => location.binCode),
+  );
+
+  for (const requirement of normalized) {
+    const locations = locationsBySku.get(requirement.sku) ?? [];
 
     const stocked = locations
       .filter(
@@ -115,8 +146,56 @@ export async function prepareMaterialsFulfillment(
       continue;
     }
 
+    const trusted = stocked.filter(
+      (location) => evidenceByBin.get(location.binCode)?.trusted === true,
+    );
+    const trustedAvailable = trusted.reduce((sum, location) => sum + location.quantity, 0);
+    if (trustedAvailable < requirement.quantity) {
+      let potential = trustedAvailable;
+      const uncertain = stocked
+        .filter(
+          (location) =>
+            evidenceByBin.get(location.binCode)?.trusted !== true &&
+            !excluded.has(location.binCode),
+        )
+        // Largest bins first minimizes physical audit trips. Shelf order is
+        // the stable tie-breaker, not the primary selection rule.
+        .sort(
+          (left, right) =>
+            right.quantity - left.quantity ||
+            compareBinsInShelfOrder({ code: left.binCode }, { code: right.binCode }),
+        );
+      for (const location of uncertain) {
+        if (potential >= requirement.quantity) break;
+        verificationTargets.push({
+          sku: requirement.sku,
+          binCode: location.binCode,
+          recordedQuantity: location.quantity,
+          evidence:
+            evidenceByBin.get(location.binCode) ?? {
+              binCode: location.binCode,
+              state: "NEVER_VERIFIED",
+              trusted: false,
+              lastVerifiedAt: null,
+              lastInventoryChangeAt: null,
+              latestAuditStatus: null,
+              reason: "no persisted verification evidence was found",
+            },
+        });
+        potential += location.quantity;
+      }
+      if (potential < requirement.quantity) {
+        verificationBlocked.push({
+          sku: requirement.sku,
+          required: requirement.quantity,
+          available: trustedAvailable,
+        });
+      }
+      continue;
+    }
+
     let covered = 0;
-    for (const location of stocked) {
+    for (const location of trusted) {
       if (covered >= requirement.quantity) break;
       selectedBins.push({
         sku: requirement.sku,
@@ -139,6 +218,30 @@ export async function prepareMaterialsFulfillment(
         )
         .join("; ")}. No bin moved.`,
       shortages,
+    };
+  }
+
+  if (verificationBlocked.length > 0) {
+    return {
+      ok: false,
+      reason: "materials_verification_incomplete",
+      message: `Fresh evidence could not establish enough stock for ${verificationBlocked
+        .map(
+          (item) =>
+            `${item.sku}: ${item.available} verified of ${item.required} required`,
+        )
+        .join("; ")}. No bin was retrieved.`,
+      shortages: verificationBlocked,
+    };
+  }
+
+  if (verificationTargets.length > 0) {
+    return {
+      ok: false,
+      reason: "materials_verification_required",
+      message: `${verificationTargets.length} relevant bin${verificationTargets.length === 1 ? "" : "s"} need fresh verification before fulfillment. No unrelated bin was selected.`,
+      shortages: [],
+      verificationTargets,
     };
   }
 

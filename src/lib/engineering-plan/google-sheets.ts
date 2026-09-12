@@ -133,13 +133,50 @@ export function findEngineeringPlanRows(
     .map(({ row }) => row);
 }
 
+/**
+ * Sheets returns a Date-formatted cell as displayed, not as entered — this
+ * spreadsheet's own "Work Date" column renders as US "M/D/YYYY" (unpadded),
+ * never the ISO "YYYY-MM-DD" currentEngineeringPlanWorkDate() produces. A
+ * live check against the real sheet found a strict string match between
+ * those two forms silently missed every real row, every day, project-wide.
+ * Normalizing both sides here — rather than changing what
+ * currentEngineeringPlanWorkDate() emits — is what stays correct if the
+ * sheet's own locale/number-format ever changes back to ISO.
+ *
+ * Returns null for anything unrecognized: an unparseable date must never be
+ * coerced into matching today by accident.
+ */
+function normalizeWorkDate(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const us = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!us) return null;
+  const [, month, day, year] = us;
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+/** Exact work-date selection for event/manual analysis; no fuzzy fallback. */
+export function findTodayEngineeringPlanRows(
+  rows: EngineeringPlanRow[],
+  workDate: string,
+  limit = 24,
+): EngineeringPlanRow[] {
+  return rows
+    .filter((row) => normalizeWorkDate(row.workDate) === workDate)
+    .sort(
+      (left, right) =>
+        left.priority.localeCompare(right.priority) || left.planId.localeCompare(right.planId),
+    )
+    .slice(0, limit);
+}
+
 function sheetsConfig() {
   const spreadsheetId = process.env.ENGINEERING_PLAN_SPREADSHEET_ID?.trim();
   const range = process.env.ENGINEERING_PLAN_SHEET_RANGE?.trim() || "'Daily Plan'!A1:N250";
   return spreadsheetId ? { spreadsheetId, range } : null;
 }
 
-function currentWorkDate(): string {
+export function currentEngineeringPlanWorkDate(): string {
   const timeZone = process.env.ENGINEERING_PLAN_TIME_ZONE?.trim() || "UTC";
   try {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -171,17 +208,23 @@ async function authorizationHeader(): Promise<string | null> {
   return token ? `Bearer ${token}` : null;
 }
 
-/** Read-only, bounded Google Sheets lookup used by the Materials Planner. */
-export async function getEngineeringPlanContext(query: string): Promise<EngineeringPlanContext> {
+async function readEngineeringPlanRows(): Promise<{
+  configured: boolean;
+  currentWorkDate: string;
+  rows: EngineeringPlanRow[];
+  reason?: "not_configured" | "unavailable";
+}> {
   const config = sheetsConfig();
-  const workDate = currentWorkDate();
-  if (!config) return { configured: false, query, currentWorkDate: workDate, matchCount: 0, rows: [], reason: "not_configured" };
+  const workDate = currentEngineeringPlanWorkDate();
+  if (!config) {
+    return { configured: false, currentWorkDate: workDate, rows: [], reason: "not_configured" };
+  }
 
   try {
     const authorization = await authorizationHeader();
     const apiKey = process.env.GOOGLE_SHEETS_API_KEY?.trim();
     if (!authorization && !apiKey) {
-      return { configured: false, query, currentWorkDate: workDate, matchCount: 0, rows: [], reason: "not_configured" };
+      return { configured: false, currentWorkDate: workDate, rows: [], reason: "not_configured" };
     }
     const url = new URL(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(config.spreadsheetId)}/values/${encodeURIComponent(config.range)}`,
@@ -194,17 +237,62 @@ export async function getEngineeringPlanContext(query: string): Promise<Engineer
     });
     if (!response.ok) throw new Error(`Sheets returned ${response.status}`);
     const payload = (await response.json()) as { values?: unknown[][] };
-    const matches = findEngineeringPlanRows(parseEngineeringPlanValues(payload.values ?? []), query);
     return {
       configured: true,
-      query,
       currentWorkDate: workDate,
-      matchCount: matches.length,
-      rows: matches,
-      ...(matches.length === 0 ? { reason: "no_match" as const } : {}),
+      rows: parseEngineeringPlanValues(payload.values ?? []),
     };
   } catch (error) {
     console.error("[engineering-plan] Google Sheets read failed:", error);
-    return { configured: true, query, currentWorkDate: workDate, matchCount: 0, rows: [], reason: "unavailable" };
+    return { configured: true, currentWorkDate: workDate, rows: [], reason: "unavailable" };
   }
+}
+
+/** Read-only, bounded Google Sheets lookup used by the Materials Planner. */
+export async function getEngineeringPlanContext(query: string): Promise<EngineeringPlanContext> {
+  const sheet = await readEngineeringPlanRows();
+  if (sheet.reason) {
+    return {
+      configured: sheet.configured,
+      query,
+      currentWorkDate: sheet.currentWorkDate,
+      matchCount: 0,
+      rows: [],
+      reason: sheet.reason,
+    };
+  }
+  const matches = findEngineeringPlanRows(sheet.rows, query);
+  return {
+    configured: true,
+    query,
+    currentWorkDate: sheet.currentWorkDate,
+    matchCount: matches.length,
+    rows: matches,
+    ...(matches.length === 0 ? { reason: "no_match" as const } : {}),
+  };
+}
+
+/** Read all enabled rows for the configured warehouse work date. */
+export async function getTodayEngineeringPlanContext(): Promise<EngineeringPlanContext> {
+  const query = "today's enabled engineering plan";
+  const sheet = await readEngineeringPlanRows();
+  if (sheet.reason) {
+    return {
+      configured: sheet.configured,
+      query,
+      currentWorkDate: sheet.currentWorkDate,
+      matchCount: 0,
+      rows: [],
+      reason: sheet.reason,
+    };
+  }
+  const matches = findTodayEngineeringPlanRows(sheet.rows, sheet.currentWorkDate);
+  return {
+    configured: true,
+    query,
+    currentWorkDate: sheet.currentWorkDate,
+    matchCount: matches.length,
+    rows: matches,
+    ...(matches.length === 0 ? { reason: "no_match" as const } : {}),
+  };
 }

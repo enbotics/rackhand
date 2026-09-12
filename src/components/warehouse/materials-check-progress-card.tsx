@@ -58,6 +58,22 @@ export function materialsCheckVerdict(
   const readyCount = total - shortages;
   const items = (count: number) => `${count} item${count === 1 ? "" : "s"}`;
 
+  // Old releases stored an all-zero SHORTAGE report when their background
+  // audit could not start (most often because another audit held the global
+  // lock). With no inspected bins, those zeroes are not stock evidence and
+  // must never be presented as an inventory conclusion.
+  if (check.binsPlanned === 0) {
+    return {
+      tone: "warn",
+      chip: { label: "UNVERIFIED", tone: "warn", symbol: "!" },
+      headline: "Stock was not verified",
+      detail:
+        "This legacy check inspected no bins, so its recorded zeroes are not evidence of a shortage. Run a current plan or inventory audit for an authoritative result.",
+      readyCount: 0,
+      total,
+    };
+  }
+
   if (shortages === 0) {
     return {
       tone: "ok",
@@ -79,19 +95,11 @@ export function materialsCheckVerdict(
         total === 1
           ? "The item you need is not in stock"
           : `None of the ${total} required materials are in stock`,
-      // WHY TWO WORDINGS: binsPlanned === 0 is recordUnstartedCheck's path —
-      // no sweep ran at all, either because nothing on the shelf is recorded
-      // against these parts or because another audit already held the shelf
-      // lock. Claiming "we checked and found nothing" there would be a lie
-      // about a physical action that never happened, so it says so plainly.
-      detail:
-        check.binsPlanned === 0
-          ? `No bins were audited: nothing on the shelf is currently recorded against these parts, or the shelf was busy with another audit. Every item is reported unavailable — the conservative reading. Nothing here can be built until they are sourced.`
-          : `Every one of the ${check.binsPlanned} bin${
-              check.binsPlanned === 1 ? "" : "s"
-            } holding these parts was checked, and not one item reached the quantity the plan calls for. All ${items(
-              total,
-            )} need sourcing before this build can start.`,
+      detail: `Every one of the ${check.binsPlanned} bin${
+        check.binsPlanned === 1 ? "" : "s"
+      } holding these parts was checked, and not one item reached the quantity the plan calls for. All ${items(
+        total,
+      )} need sourcing before this build can start.`,
       readyCount,
       total,
     };
@@ -183,6 +191,7 @@ export function MaterialsCheckStage({ check }: { check: MaterialsPlanCheckView }
 
   const results = check.results ?? [];
   const verdict = materialsCheckVerdict(check);
+  const unverified = check.binsPlanned === 0;
   // A part number alone is not what the operator asked about — they asked for
   // the thing it is FOR. The planner already said, so each row carries it.
   const purposeBySku = new Map(check.requirements.map((req) => [req.sku, req.purpose]));
@@ -221,12 +230,14 @@ export function MaterialsCheckStage({ check }: { check: MaterialsPlanCheckView }
                 {purposeBySku.get(result.sku) ?? result.sku}
               </p>
               <p className="mt-0.5 truncate font-mono text-[10px] text-ink-faint">
-                {result.sku} · {result.available} on the shelf · {result.required} needed
+                {result.sku} · {unverified ? "availability not verified" : `${result.available} on the shelf`} · {result.required} needed
               </p>
             </div>
             <StatusChip
               status={
-                result.status === "AVAILABLE"
+                unverified
+                  ? { label: "UNVERIFIED", tone: "warn", symbol: "!" }
+                  : result.status === "AVAILABLE"
                   ? { label: "AVAILABLE", tone: "ok", symbol: "✓" }
                   : { label: "SHORTAGE", tone: "warn", symbol: "!" }
               }

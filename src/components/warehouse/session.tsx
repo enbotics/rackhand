@@ -50,6 +50,8 @@ import type {
 } from "@/lib/warehouse/dashboard-types";
 import { usePendingMaterialsPlan } from "@/lib/use-materials-plan";
 import { useLiveToolStatus } from "@/lib/use-agent-status";
+import { useTodayPlanAnalysis } from "@/lib/use-today-plan-analysis";
+import type { TodayPlanAnalysisRunView } from "@/lib/engineering-plan/analysis-types";
 
 import type { MeasurementResult, ScanResult } from "@/lib/warehouse/scan-types";
 
@@ -179,6 +181,12 @@ export interface WarehouseSession {
   send: (message: string) => void;
   retryLast: () => void;
 
+  /* ---- durable, no-HITL analysis of today's engineering plan ---- */
+  todayPlanAnalysis: TodayPlanAnalysisRunView | null;
+  todayPlanAnalysisTriggering: boolean;
+  todayPlanAnalysisError: string | null;
+  triggerTodayPlanAnalysis: () => Promise<boolean>;
+
   /* ---- workflow and observability ---- */
   workflow: WarehouseGraphResult | null;
   materialsPlan: { requirements: MaterialRequirementView[] } | null;
@@ -256,22 +264,15 @@ export function WarehouseSessionProvider({
   const [traceId, setTraceId] = useState<string | null>(null);
   const lastOperatorMessage = useRef<string | null>(null);
   /**
-   * Set the moment verify_materials_availability appears in a reply's
-   * toolCalls — before the row even exists, since the sweep is scheduled via
-   * after() and hasn't run yet. Drives the poll to its fast cadence right
-   * away rather than waiting up to 20s to notice a check exists. Cleared
-   * once the poll reports a terminal status.
-   */
-  const [watchingMaterialsPlan, setWatchingMaterialsPlan] = useState(false);
-  /**
-   * The build-plan check that has been retired from the transcript.
+   * A historical build-plan check that has been retired from the transcript.
    *
    * WHY THIS IS NEEDED AT ALL. `workflow` and `materialsPlan` are per-turn —
    * `send` clears them, so they cannot outlive the question that produced
    * them. The stock check cannot work that way: it is a background sweep
    * discovered by polling "this browser session's LATEST check", so the row
    * keeps coming back long after the build-plan turn is history. The card is
-   * now manually dismissible rather than auto-fading (see agent-panel.tsx), so
+   * New plans use approval-gated fulfillment and never create this row. It is
+   * still manually dismissible rather than auto-fading (see agent-panel.tsx), so
    * without this the poll would simply re-render a completed check from an
    * old question underneath every unrelated turn that followed it. Holding the
    * dismissed id — rather than clearing the value — is what makes that stick
@@ -285,8 +286,14 @@ export function WarehouseSessionProvider({
     useWarehouseOverview(actionInFlight || agentBusy);
   const { trace, error: traceError } = useAgentTrace(traceId);
   const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
-  const { materialsPlanCheck } = usePendingMaterialsPlan(watchingMaterialsPlan);
+  const { materialsPlanCheck } = usePendingMaterialsPlan();
   const { liveToolName } = useLiveToolStatus(agentBusy);
+  const {
+    run: todayPlanAnalysis,
+    triggering: todayPlanAnalysisTriggering,
+    error: todayPlanAnalysisError,
+    trigger: triggerTodayPlanAnalysis,
+  } = useTodayPlanAnalysis();
   // Read by `send` and by the dismiss action, neither of which should be
   // rebuilt every second just because a poll returned. A ref keeps them
   // stable while still seeing the latest check.
@@ -305,18 +312,15 @@ export function WarehouseSessionProvider({
    * changed external value, as SettlingCard does) rather than in an effect,
    * which would flash the stale card for a frame before retiring it.
    *
-   * CRITICALLY, a check this page is itself expecting is never treated as
-   * stale, however finished it looks. The "nothing is stocked anywhere" path
-   * (recordUnstartedCheck) writes a COMPLETED, all-SHORTAGE row instantly, so
-   * the very first row a just-asked build plan sees can already be terminal —
-   * and that is precisely the report the operator most needs to read.
+   * No current request expects a new check: the legacy producer has been
+   * removed. A terminal row first seen after load is therefore always stale.
+   * A genuinely RUNNING historical sweep remains visible because physical
+   * work in progress must never be hidden.
    */
   const [firstCheckSeen, setFirstCheckSeen] = useState(false);
   if (materialsPlanCheck && !firstCheckSeen) {
     setFirstCheckSeen(true);
-    const expectingOurOwn = watchingMaterialsPlan || materialsPlan !== null;
     if (
-      !expectingOurOwn &&
       materialsPlanCheck.status !== "RUNNING" &&
       materialsPlanCheck.status !== "PENDING"
     ) {
@@ -330,19 +334,6 @@ export function WarehouseSessionProvider({
     const current = latestMaterialsCheck.current;
     if (current) setDismissedMaterialsCheckId(current.id);
   }, []);
-  // Stop polling fast once the sweep is truly done — the hook's own poll
-  // keeps itself fast independently while status is RUNNING, so this only
-  // needs to release the kick-start flag once there is nothing left running.
-  useEffect(() => {
-    if (
-      watchingMaterialsPlan &&
-      materialsPlanCheck &&
-      materialsPlanCheck.status !== "RUNNING" &&
-      materialsPlanCheck.status !== "PENDING"
-    ) {
-      setWatchingMaterialsPlan(false);
-    }
-  }, [watchingMaterialsPlan, materialsPlanCheck]);
   const { status: gantry, error: gantryError } = useGantryStatus(
     actionInFlight || agentBusy || overview?.latestAudit?.status === "RUNNING",
   );
@@ -802,12 +793,6 @@ export function WarehouseSessionProvider({
       | { requirements: MaterialRequirementView[] }
       | undefined;
     if (materialsPlanResult) setMaterialsPlan(materialsPlanResult);
-    // verify_materials_availability schedules its sweep via after() — the
-    // row doesn't exist yet at reply time, so poll fast starting now rather
-    // than waiting for the idle-rate poll to eventually notice it.
-    if (toolCalls.includes("verify_materials_availability")) {
-      setWatchingMaterialsPlan(true);
-    }
     setTurns((previous) => [
       ...previous,
       {
@@ -1200,10 +1185,21 @@ export function WarehouseSessionProvider({
         if (lastOperatorMessage.current) void send(lastOperatorMessage.current);
       },
 
+      todayPlanAnalysis,
+      todayPlanAnalysisTriggering,
+      todayPlanAnalysisError,
+      triggerTodayPlanAnalysis,
+
       workflow,
       materialsPlan,
+      // A current approval-gated plan never owns a legacy stock-check row.
+      // Do not combine its requirements with an older report from this
+      // browser session; the old record can be viewed again after this plan
+      // leaves the current-turn card.
       materialsPlanCheck:
-        materialsPlanCheck && materialsPlanCheck.id !== dismissedMaterialsCheckId
+        materialsPlan === null &&
+        materialsPlanCheck &&
+        materialsPlanCheck.id !== dismissedMaterialsCheckId
           ? materialsPlanCheck
           : null,
       dismissMaterialsPlan,
@@ -1247,6 +1243,10 @@ export function WarehouseSessionProvider({
     agentUnavailable,
     liveToolName,
     send,
+    todayPlanAnalysis,
+    todayPlanAnalysisTriggering,
+    todayPlanAnalysisError,
+    triggerTodayPlanAnalysis,
     workflow,
     materialsPlan,
     materialsPlanCheck,

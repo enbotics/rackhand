@@ -76,6 +76,15 @@ export interface ApprovalSummary {
    * a separate "is this the first one" flag threaded through every call site.
    */
   fulfillmentTotal?: number;
+  /**
+   * Set only when creating THIS approval automatically retired an older,
+   * still-undecided approval left open on the same session — see
+   * settleStaleApprovalForSession. Always computed here from the retired
+   * entry's own recorded summary, never supplied by the model, so the
+   * operator-facing note this produces can only ever describe a real
+   * cancelled approval.
+   */
+  supersededDestination?: string | null;
 }
 
 export interface PendingApprovalView {
@@ -269,6 +278,53 @@ export async function settleApproval(
   });
   console.log(`[approval] settled=${approvalId} status=${status}`);
   return { humanDecisionDurationMs: resolvedAt.getTime() - updated.createdAt.getTime() };
+}
+
+/**
+ * Retires any OTHER pending approval already open for this session before a
+ * new one is created for it — see parkForApproval in warehouse-agent.ts.
+ *
+ * WHY THIS EXISTS. A physical-tool approval pauses the turn that raised it,
+ * but nothing stops the operator from typing a brand new message instead of
+ * deciding that card. A fresh turn started that way has no way of knowing an
+ * older offer is still sitting there, and can end up creating a SECOND live
+ * approval for the same bin — a live multi-item test surfaced exactly this:
+ * an ignored auto-suggested "put it back?" offer stayed pending in the
+ * background while a freshly typed "put away now" opened its own approval
+ * for the identical bin. Whichever one executed first genuinely moved it;
+ * the other, decided afterward, correctly reported "nothing to put away" —
+ * true in the moment, but read as flatly contradictory with no explanation.
+ *
+ * The fix enforces "at most one live approval per session" at the one point
+ * it actually matters — right before a NEW one is created — rather than ever
+ * blocking the composer. A session that never creates a second approval (the
+ * overwhelming majority of turns: read-only questions, an unrelated request)
+ * never touches this at all, so an operator is always free to ask something
+ * else while a card waits. Only when their NEXT action also raises a fresh
+ * physical-tool approval does the older, still-undecided one get retired.
+ *
+ * Safe to retire: an approval that never executed changed nothing, so
+ * DENYING it here costs exactly what an explicit decline would have.
+ */
+export async function settleStaleApprovalForSession(
+  sessionId: string | null,
+): Promise<PendingApproval | null> {
+  if (!sessionId) return null;
+  for (const entry of pending.values()) {
+    if (entry.sessionId !== sessionId) continue;
+    pending.delete(entry.approvalId);
+    // Guarded on status: if a genuine concurrent APPROVE/DENY already settled
+    // this exact approval a moment ago, that real decision must never be
+    // overwritten by this cleanup.
+    const updated = await prisma.actionApproval.updateMany({
+      where: { id: entry.approvalId, status: "PENDING" },
+      data: { status: "DENIED", resolvedAt: new Date() },
+    });
+    if (updated.count === 0) continue;
+    console.log(`[approval] superseded=${entry.approvalId} session=${sessionId}`);
+    return entry;
+  }
+  return null;
 }
 
 /** Test helper: forget every pending snapshot without touching the audit trail. */

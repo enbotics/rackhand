@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ENGINEERING_PLAN_HEADERS,
   findEngineeringPlanRows,
+  findTodayEngineeringPlanRows,
   parseEngineeringPlanValues,
 } from "@/lib/engineering-plan/google-sheets";
 
@@ -42,5 +43,29 @@ describe("engineering plan Google Sheet", () => {
 
   it("does not substitute an unrelated plan when the prompt has no match", () => {
     expect(findEngineeringPlanRows(parseEngineeringPlanValues(values), "solar bicycle")).toEqual([]);
+  });
+
+  it("selects only enabled rows scheduled for the exact warehouse work date", () => {
+    const matches = findTodayEngineeringPlanRows(
+      parseEngineeringPlanValues(values),
+      "2026-09-14",
+    );
+    expect(matches.map((row) => row.planId)).toEqual(["PLAN-101"]);
+  });
+
+  it("matches a work date even when Sheets renders it as unpadded US M/D/YYYY", () => {
+    const usFormatted = [
+      [...ENGINEERING_PLAN_HEADERS],
+      [
+        "PLAN-201", "9/9/2026", "Mara", "Tabletop Enclosure",
+        "Build a small aluminum enclosure", "Assemble frame", "Join corners",
+        "aluminum extrusion connectors", "4", "None", "In Progress", "High", "Yes", "2026-09-09",
+      ],
+    ];
+    const matches = findTodayEngineeringPlanRows(
+      parseEngineeringPlanValues(usFormatted),
+      "2026-09-09",
+    );
+    expect(matches.map((row) => row.planId)).toEqual(["PLAN-201"]);
   });
 });
