@@ -36,13 +36,17 @@ export type ApprovalDecision = "APPROVE" | "DENY";
 
 /** What the browser is allowed to see. No reasoning, no raw model output. */
 export interface ApprovalSummary {
-  action: "PUTAWAY" | "RETRIEVAL" | "INVENTORY_AUDIT";
+  action:
+    | "PUTAWAY"
+    | "RETRIEVAL"
+    | "INVENTORY_AUDIT"
+    | "MATERIALS_FULFILLMENT";
   sku: string | null;
   canonicalName: string | null;
   source: string | null;
   destination: string | null;
   quantity: number | null;
-  scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS";
+  scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS" | "MATERIALS_PLAN";
   capacity?: { before: number; after: number; limit: number } | null;
   /**
    * True only for the model's own follow-up offer to put a just-retrieved bin

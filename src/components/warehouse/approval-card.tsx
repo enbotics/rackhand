@@ -93,6 +93,11 @@ export function ApprovalCard({
             One camera frame per bin; confidence must be strictly above 80% for an automatic
             inventory update.
           </p>
+        ) : summary.action === "MATERIALS_FULFILLMENT" ? (
+          <p className="mt-1 text-sm text-ink-muted">
+            RackHand will select enough stocked bins for the approved requirements and process
+            one bin at a time.
+          </p>
         ) : (
           <p className="mt-1 text-sm">
             <span className="font-mono text-accent">{summary.sku ?? "part not yet identified"}</span>
@@ -111,6 +116,8 @@ export function ApprovalCard({
               ? summary.source === "all auditable shelf bins"
                 ? "All auditable shelf bins, sequentially"
                 : `One physical bin (${summary.source})`
+              : summary.scope === "MATERIALS_PLAN"
+                ? `${summary.quantity ?? "Planned"} material requirement${summary.quantity === 1 ? "" : "s"}`
               : summary.scope === "ENTIRE_BIN"
               ? "Entire physical bin"
               : `${summary.quantity ?? "Camera count pending"} counted unit${summary.quantity === 1 ? "" : "s"}`}
@@ -131,6 +138,13 @@ export function ApprovalCard({
           After approval, frame the whole bin and manually verify it. The comparison shows both snapshots,
           quantity and confidence; decreases need confirmation while safe increases update automatically.
         </p>}
+
+        {summary.action === "MATERIALS_FULFILLMENT" && (
+          <p className="mt-3 rounded-lg border border-accent-soft/40 bg-accent-tint p-3 text-xs text-ink-muted">
+            Each selected bin moves to OUTPUT. Remove the requested items, then approve its return
+            and complete the fresh-photo comparison before RackHand retrieves the next bin.
+          </p>
+        )}
 
         <p className="mt-3 text-xs leading-relaxed text-ink-muted">
           Nothing has moved yet. No bin is reserved and no stock has changed. Approving authorises

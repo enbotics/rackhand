@@ -77,7 +77,7 @@ export interface ApprovalSummaryView {
   source: string | null;
   destination: string | null;
   quantity: number | null;
-  scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS";
+  scope?: "COUNTED_UNITS" | "ENTIRE_BIN" | "AUDIT_BINS" | "MATERIALS_PLAN";
   capacity?: { before: number; after: number; limit: number } | null;
   /** See ApprovalSummary.autoSuggested server-side. */
   autoSuggested?: boolean;

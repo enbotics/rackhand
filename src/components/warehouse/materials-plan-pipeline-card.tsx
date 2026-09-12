@@ -36,7 +36,7 @@ import {
  */
 
 const PLANNER_DONE: StatusPresentation = { label: "DONE", tone: "ok", symbol: "✓" };
-const CHECK_STARTING: StatusPresentation = { label: "STARTING", tone: "accent", symbol: "○" };
+const FULFILLMENT_READY: StatusPresentation = { label: "APPROVAL", tone: "warn", symbol: "!" };
 const CHECK_RUNNING: StatusPresentation = { label: "RUNNING", tone: "accent", symbol: "●" };
 const CHECK_FAILED: StatusPresentation = { label: "NO REPORT", tone: "danger", symbol: "✕" };
 const CHECK_SKIPPED: StatusPresentation = { label: "NOT NEEDED", tone: "muted", symbol: "–" };
@@ -114,9 +114,8 @@ export function MaterialsPlanPipelineCard({
   // answer ("nothing in the catalog is relevant"), not a still-running one.
   const running = check !== null && materialsCheckRunning(check);
   const verdict = check ? materialsCheckVerdict(check) : null;
-  // The stock check was never going to start at all — not merely hasn't
-  // started YET — when the planner itself found nothing to check. Distinct
-  // from `check === null` while genuinely awaiting the sweep's first row.
+  // Historical sessions may still have a completed stock-check row from the
+  // previous pipeline. New plans go directly to approval-gated fulfillment.
   const nothingToCheck = requirements.length === 0 && check === null;
 
   const checkStatus: StatusPresentation = verdict
@@ -124,7 +123,7 @@ export function MaterialsPlanPipelineCard({
     : nothingToCheck
       ? CHECK_SKIPPED
       : check === null
-        ? CHECK_STARTING
+        ? FULFILLMENT_READY
         : running
           ? CHECK_RUNNING
           : CHECK_FAILED;
@@ -150,8 +149,12 @@ export function MaterialsPlanPipelineCard({
 
         <PipelineStage
           index={2}
-          title="Stock check"
-          actor="Unattended physical audit · no approval, no capture button"
+          title={check ? "Stock check" : "Fulfillment"}
+          actor={
+            check
+              ? "Recorded physical stock verification"
+              : "RackHand Agent · operator approval required"
+          }
           status={checkStatus}
           last
         >
@@ -164,15 +167,15 @@ export function MaterialsPlanPipelineCard({
             </p>
           ) : (
             <p className="text-xs leading-relaxed text-ink-muted">
-              Starting an automatic stock check of every bin that holds one of these parts.
-              Progress appears here within a few seconds.
+              Ready to select stocked bins. Approve the fulfillment action below; RackHand then
+              retrieves one bin to OUTPUT and waits for its fresh-photo return before continuing.
             </p>
           )}
         </PipelineStage>
       </ol>
 
       <p className="mt-3 font-mono text-[10px] text-ink-faint">
-        Planning and stock verification only · nothing is retrieved or put away by this flow
+        Planner output is read-only · every fulfillment starts behind operator approval
       </p>
     </Panel>
   );

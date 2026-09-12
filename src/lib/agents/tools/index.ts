@@ -1,10 +1,11 @@
 /**
  * The Warehouse Agent's approved tool list — its entire capability boundary.
  *
- * Nine READ-ONLY tools plus four high-level physical tools: execute_putaway,
- * execute_retrieval, execute_inventory_audit and verify_materials_availability
- * (the one approval-free physical tool — see its entry in
- * APPROVAL_FREE_TOOL_NAMES for why). The Inventory Auditor and Materials
+ * Nine READ-ONLY tools plus five high-level physical tools: execute_putaway,
+ * execute_retrieval, execute_inventory_audit, verify_materials_availability
+ * and fulfill_materials_plan. verify_materials_availability is the one
+ * approval-free physical tool (see its entry in APPROVAL_FREE_TOOL_NAMES for
+ * why); fulfillment always pauses. The Inventory Auditor and Materials
  * Planner agents are mounted dynamically by warehouse-agent.ts as additional
  * read-only orchestration tools for client calls. Every tool delegates to a warehouse service, repository
  * function or the GantryController; none holds a Prisma client, and there is
@@ -46,6 +47,10 @@ import {
   VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
 } from "./verify-materials-availability";
 import {
+  fulfillMaterialsPlanTool,
+  FULFILL_MATERIALS_PLAN_TOOL_NAME,
+} from "./fulfill-materials-plan";
+import {
   requestGuidedPutawayTool,
   REQUEST_GUIDED_PUTAWAY_TOOL_NAME,
 } from "./request-guided-putaway";
@@ -72,6 +77,7 @@ export const WAREHOUSE_AGENT_TOOLS = [
   executeRetrievalTool,
   executeInventoryAuditTool,
   verifyMaterialsAvailabilityTool,
+  fulfillMaterialsPlanTool,
 ];
 
 /**
@@ -115,6 +121,7 @@ export const APPROVAL_REQUIRED_TOOL_NAMES = [
   EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
+  FULFILL_MATERIALS_PLAN_TOOL_NAME,
 ] as const;
 
 /** The names the agent is expected to expose, for assertion in tests and at startup. */
@@ -134,6 +141,7 @@ export const WAREHOUSE_AGENT_TOOL_NAMES = [
   INVENTORY_AUDITOR_TOOL_NAME,
   MATERIALS_PLANNER_TOOL_NAME,
   VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
+  FULFILL_MATERIALS_PLAN_TOOL_NAME,
 ] as const;
 
 export {
@@ -167,4 +175,6 @@ export {
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
   verifyMaterialsAvailabilityTool,
   VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
+  fulfillMaterialsPlanTool,
+  FULFILL_MATERIALS_PLAN_TOOL_NAME,
 };
