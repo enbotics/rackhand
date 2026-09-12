@@ -732,8 +732,14 @@ export function AuditCaptureDialog() {
         maxWidthClassName="max-w-md"
       >
         <div className="rounded-2xl border border-line bg-bg-elevated p-6 text-center">
-          <div className="mx-auto h-3 w-3 animate-pulse rounded-full bg-success" />
-          <p className="mt-4 text-sm font-semibold text-ink">{headline}</p>
+          <CaptureSpinner />
+          <p
+            className="mt-4 text-sm font-semibold text-ink"
+            role="status"
+            aria-live="polite"
+          >
+            {headline}
+          </p>
           <p className="mt-2 text-xs leading-relaxed text-ink-muted">
             {audit.reanalyzing
               ? "No new camera capture is being taken. The existing durable frame is being inspected again."
@@ -773,6 +779,13 @@ export function AuditCaptureDialog() {
                 : cameraStatus === "PENDING"
                   ? "Next in the Pi camera queue"
                   : "Joining the Pi camera queue";
+  // A spinner over a dead attempt would claim progress that is not happening,
+  // so the ring stops on exactly the states the headline calls out as stuck.
+  const waitingStalled =
+    cameraStatus === "FAILED" ||
+    cameraStatus === "CANCELLED" ||
+    cameraStatus === "EXPIRED" ||
+    health?.connection === "OFFLINE";
   return (
     <Modal
       title={`${waitingTitle} · ${audit.pending.binCode}`}
@@ -781,8 +794,12 @@ export function AuditCaptureDialog() {
       maxWidthClassName="max-w-md"
     >
       <div className="rounded-2xl border border-line bg-bg-elevated p-6 text-center">
-        <div className="mx-auto h-3 w-3 animate-pulse rounded-full bg-success" />
-        <p className="mt-4 text-sm font-semibold text-ink">
+        <CaptureSpinner stalled={waitingStalled} />
+        <p
+          className="mt-4 text-sm font-semibold text-ink"
+          role="status"
+          aria-live="polite"
+        >
           {waitingHeadline}
         </p>
         <p className="mt-2 text-xs leading-relaxed text-ink-muted">
@@ -820,6 +837,28 @@ export function AuditCaptureDialog() {
   );
 }
 
+/**
+ * The waiting dialogs have no other sign of life: a queued capture can sit for
+ * a while with every word on the panel unchanged, which reads as a hung
+ * dialog. A rotating ring says the attempt is still moving.
+ *
+ * It deliberately STOPS when the attempt has stalled — a spinner over a failed
+ * capture or an offline Pi would promise progress that is not happening, and
+ * the operator's next move is Retry or Abort, not waiting. Reduced motion is
+ * honoured by .animate-spin-slow itself (globals.css), and the ring is
+ * decorative: the headline beside it carries the state for screen readers.
+ */
+function CaptureSpinner({ stalled = false }: { stalled?: boolean }) {
+  return (
+    <div
+      aria-hidden
+      className={`mx-auto h-8 w-8 rounded-full border-2 border-line ${
+        stalled ? "border-t-danger" : "animate-spin-slow border-t-accent"
+      }`}
+    />
+  );
+}
+
 function CameraProgress({ status }: { status?: CameraCaptureJobView["status"] }) {
   const stages = ["Queued", "Pi capture", "Uploaded", "Gemini"];
   const current = status === "CLAIMED"
@@ -841,9 +880,11 @@ function CameraProgress({ status }: { status?: CameraCaptureJobView["status"] })
             className={`h-1 rounded-full transition-colors duration-500 ${
               failed && index === current
                 ? "bg-danger"
-                : index <= current
-                  ? "bg-accent"
-                  : "bg-line"
+                : index === current
+                  ? "animate-breathe bg-accent"
+                  : index < current
+                    ? "bg-accent"
+                    : "bg-line"
             }`}
           />
           <p className={`mt-1 truncate font-mono text-[8px] uppercase tracking-wide ${

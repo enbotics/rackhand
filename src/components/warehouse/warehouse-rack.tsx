@@ -16,14 +16,53 @@ import { ErrorNote } from "./ui";
 import { useCameraHealth } from "./camera-health-provider";
 
 type Point = { x: number; y: number };
-const CHECKOUT_SCALE = 1.28;
-const CHECKOUT_ORIGIN: Point = { x: 138, y: 120 };
-const DOCK: Point = {
-  x: CHECKOUT_ORIGIN.x + (155 - CHECKOUT_ORIGIN.x) * CHECKOUT_SCALE,
-  y: CHECKOUT_ORIGIN.y + (255 - CHECKOUT_ORIGIN.y) * CHECKOUT_SCALE,
+/**
+ * THE LEFT COLUMN. Everything the checkout station occupies is derived here,
+ * from one box and one scale, rather than from hand-placed magic numbers.
+ *
+ * CHECKOUT_ART is the box CameraRig draws itself inside, in its own
+ * coordinates. The shelf frame's outer post starts at x=321, so the scale is
+ * the largest that still leaves the station clear of it — grow the station by
+ * raising CHECKOUT_SCALE and the dock, the tote and the card below all follow.
+ */
+const CHECKOUT_ART = { x: 31, y: 39, width: 214, height: 355 };
+/**
+ * The shelf and everything bolted to it (uprights, lead screw, aisle, bin
+ * grid) slide right by this much, which is what buys the station its size.
+ * It costs nothing on a real shelf: a six-bed scene is far taller than it is
+ * wide, so fitting it into its panel is limited by HEIGHT, and the canvas has
+ * unused width on both sides. Widening the canvas spends that, not the shelf.
+ */
+const SHELF_SHIFT = 170;
+const CHECKOUT_SCALE = 1.9;
+const CHECKOUT_LEFT = 10;
+const CHECKOUT_TOP = 14;
+const CHECKOUT_OFFSET: Point = {
+  x: CHECKOUT_LEFT - CHECKOUT_ART.x * CHECKOUT_SCALE,
+  y: CHECKOUT_TOP - CHECKOUT_ART.y * CHECKOUT_SCALE,
 };
-const HOME: Point = { x: 278, y: 104 };
-const AISLE_X = 278;
+const CHECKOUT_WIDTH = CHECKOUT_ART.width * CHECKOUT_SCALE;
+const CHECKOUT_BOTTOM = CHECKOUT_TOP + CHECKOUT_ART.height * CHECKOUT_SCALE;
+/** The tote's own origin inside CameraRig (155, 225 + the 30 the dock group shifts). */
+const DOCK: Point = {
+  x: CHECKOUT_OFFSET.x + 155 * CHECKOUT_SCALE,
+  y: CHECKOUT_OFFSET.y + 255 * CHECKOUT_SCALE,
+};
+/**
+ * Directly under the station, same width, in the space the shelf never uses.
+ * StationBinCard is drawn at CARD_ART size and scaled to the station's width,
+ * so its type stays in proportion however big the station gets.
+ */
+const CARD_ART = { width: 304, height: 172 };
+const CARD_SCALE = CHECKOUT_WIDTH / CARD_ART.width;
+const STATION_CARD = {
+  x: CHECKOUT_LEFT,
+  y: CHECKOUT_BOTTOM + 24,
+  width: CHECKOUT_WIDTH,
+  height: CARD_ART.height * CARD_SCALE,
+};
+const AISLE_X = 278 + SHELF_SHIFT;
+const HOME: Point = { x: AISLE_X, y: 104 };
 const TOP = 120;
 const PITCH = 174;
 const BIN_BASE = 112;
@@ -31,12 +70,20 @@ const BIN_BASE = 112;
 function geometryFor(bins: BinView[]) {
   const rows = groupBinsInShelfOrder(bins);
   const columns = Math.max(3, ...rows.map((row) => row.bins.length), ...bins.map((bin) => parseBinCode(bin.code)?.slot ?? 1));
-  const width = Math.max(980, 388 + columns * 120);
-  const height = Math.max(600, TOP + rows.length * PITCH + 65);
+  const width = SHELF_SHIFT + Math.max(980, 388 + columns * 120);
+  // The left column has its own floor now: the station plus the card beneath
+  // it must fit even when there are too few beds to make the scene that tall.
+  const height = Math.max(
+    STATION_CARD.y + STATION_CARD.height + 34,
+    TOP + rows.length * PITCH + 65,
+  );
   const points = new Map<string, Point>();
   rows.forEach((row, r) => row.bins.forEach((bin, c) => {
     const column = (parseBinCode(bin.code)?.slot ?? c + 1) - 1;
-    points.set(bin.code, { x: 394 + column * ((width - 425) / columns), y: TOP + r * PITCH + BIN_BASE });
+    points.set(bin.code, {
+      x: SHELF_SHIFT + 394 + column * ((width - SHELF_SHIFT - 425) / columns),
+      y: TOP + r * PITCH + BIN_BASE,
+    });
   }));
   return { rows, width, height, points };
 }
@@ -66,17 +113,17 @@ function travelPoint(from: Point, to: Point, progress: number): Point {
   return to;
 }
 
-function itemNameLines(name: string): string[] {
+function itemNameLines(name: string, limit = 17): string[] {
   const words = name.trim().split(/\s+/);
   const lines = [""];
   for (const word of words) {
     const index = lines.length - 1;
     const next = `${lines[index]} ${word}`.trim();
-    if (next.length <= 17) lines[index] = next;
+    if (next.length <= limit) lines[index] = next;
     else if (lines.length === 1 && lines[0]) lines.push(word);
-    else { lines[index] = `${next.slice(0, 16).trimEnd()}…`; break; }
+    else { lines[index] = `${next.slice(0, limit - 1).trimEnd()}…`; break; }
   }
-  return lines.map((line) => line.length > 17 ? `${line.slice(0, 16)}…` : line);
+  return lines.map((line) => line.length > limit ? `${line.slice(0, limit - 1)}…` : line);
 }
 
 function BinItemLabel({ name, quantity }: { name: string; quantity?: number }) {
@@ -210,11 +257,11 @@ function Carriage({ arm, point, bin }: { arm: RackArmState; point: Point; bin?: 
   const handling = arm.phase === "PICKING" || arm.phase === "DROPPING";
   return <g aria-hidden="true">
     <g transform={`translate(0 ${point.y})`}>
-      <rect x="263" y="-34" width="30" height="52" rx="5" fill="#60717d" stroke="#a2bac9" />
-      <rect x="268" y="-25" width="20" height="32" rx="3" fill="#182a38" />
-      <circle cx="278" cy="-10" r="5" fill={arm.phase === "FAULT" ? "#fb7185" : "#83e1f6"} />
-      <path d={`M278 4 H${point.x}`} stroke="#111e29" strokeWidth="15" strokeLinecap="round" />
-      <path d={`M278 0 H${point.x}`} stroke="#778c9b" strokeWidth="5" />
+      <rect x={AISLE_X - 15} y="-34" width="30" height="52" rx="5" fill="#60717d" stroke="#a2bac9" />
+      <rect x={AISLE_X - 10} y="-25" width="20" height="32" rx="3" fill="#182a38" />
+      <circle cx={AISLE_X} cy="-10" r="5" fill={arm.phase === "FAULT" ? "#fb7185" : "#83e1f6"} />
+      <path d={`M${AISLE_X} 4 H${point.x}`} stroke="#111e29" strokeWidth="15" strokeLinecap="round" />
+      <path d={`M${AISLE_X} 0 H${point.x}`} stroke="#778c9b" strokeWidth="5" />
     </g>
     <g transform={`translate(${point.x} ${point.y})`}>
       {arm.carrying && <Tote code={arm.focusBin ?? "BIN"} bin={bin} active />}
@@ -228,9 +275,11 @@ function Carriage({ arm, point, bin }: { arm: RackArmState; point: Point; bin?: 
 }
 
 const Structure = memo(function Structure({ geometry, id }: { geometry: Geometry; id: string }) {
-  const right = geometry.width - 45;
+  // Shelf-local: the group below is translated, so `right` is measured from
+  // the shelf's own origin rather than from the canvas edge.
+  const right = geometry.width - 45 - SHELF_SHIFT;
   const bottom = TOP + geometry.rows.length * PITCH;
-  return <g aria-hidden="true">
+  return <g aria-hidden="true" transform={`translate(${SHELF_SHIFT} 0)`}>
     {/* Back uprights, diagonal bracing and recessed bays create real shelf depth. */}
     <path d={`M371 81 L${right + 18} ${bottom - 20} M${right + 18} 81 L371 ${bottom - 20}`}
       stroke="#2e414d" strokeWidth="4" opacity=".45" />
@@ -316,6 +365,104 @@ function CameraRig({ scanning, dockBin, scanImage, connection, temperature }: {
         <path d="M144 147 L102 251 M159 147 L207 251" stroke="#67e8f9" strokeOpacity=".5" strokeDasharray="4 5" />
         <ellipse className="machine-scan-ring" cx="155" cy="243" rx="49" ry="10" fill="none" stroke="#8dedf8" strokeWidth="2" />
       </g>
+    </g>}
+  </g>;
+}
+
+const STATION_STATUS_COLOR: Record<string, string> = {
+  CHECKED_OUT: "#f4c078",
+  OCCUPIED: "#9adff1",
+  RESERVED: "#d6ab64",
+  AVAILABLE: "#90a6b6",
+  DISABLED: "#fb7185",
+};
+
+/**
+ * WHAT IS ON THE DOCK RIGHT NOW, in words.
+ *
+ * The station's own readout is a one-line status strip with room for a bin
+ * code and nothing else, so the tote sitting at the dock had no part name, no
+ * SKU and no count anywhere in the scene — the operator had to go and find the
+ * bin on the shelf, which is exactly where it is not.
+ *
+ * It sits directly beneath the station rather than beside it because the left
+ * column is only as wide as the shelf frame allows (the outer post starts at
+ * x=321). A card narrow enough to fit alongside would be a few dozen pixels
+ * across once the scene is scaled into its panel, which is no card at all.
+ * Below the station the width is free and the space is otherwise unused.
+ *
+ * Reads only from the bin the scene already resolved to the dock. It never
+ * fetches, and it never states a count the overview did not report.
+ */
+function StationBinCard({ bin, scanning, onSelect }: {
+  bin?: BinView;
+  scanning: boolean;
+  onSelect?: (bin: BinView) => void;
+}) {
+  const clipId = useId().replace(/:/g, "");
+  const [failedImage, setFailedImage] = useState<string | null>(null);
+  const { width: w, height: h } = CARD_ART;
+  const item = bin?.contents[0];
+  const photo = item?.catalogImageUrl ?? item?.imageUrl ?? bin?.latestSnapshot?.imageUrl ?? null;
+  const statusColor = bin ? STATION_STATUS_COLOR[bin.status] ?? "#90a6b6" : "#5c7787";
+  const interactive = !!bin && !!onSelect;
+
+  return <g
+    transform={`translate(${STATION_CARD.x} ${STATION_CARD.y}) scale(${CARD_SCALE})`}
+    className={interactive ? "cursor-pointer outline-none" : undefined}
+    role={interactive ? "button" : "group"}
+    tabIndex={interactive ? 0 : undefined}
+    aria-label={bin
+      ? `At the checkout station: bin ${bin.code}, ${item?.canonicalName ?? "no recorded contents"}, ${bin.totalQuantity} on record. View bin.`
+      : "Checkout station is clear. No bin is docked."}
+    onClick={() => bin && onSelect?.(bin)}
+    onKeyDown={(event) => {
+      if (!bin || (event.key !== "Enter" && event.key !== " ")) return;
+      event.preventDefault();
+      onSelect?.(bin);
+    }}
+  >
+    {bin && <title>{`${bin.code} · ${bin.status} · ${item?.canonicalName ?? "No recorded contents"}`}</title>}
+    <rect width={w} height={h} rx="12" fill="#071824" fillOpacity=".92"
+      stroke={bin ? "#41748c" : "#28414f"} strokeWidth="1.5" />
+    <path d={`M0 31 H${w}`} stroke="#223d4b" />
+    <circle cx="19" cy="16" r="4.5" fill={scanning ? "#67e8f9" : bin ? statusColor : "#425a68"} />
+    <text x="33" y="20" fill="#9adff1" fontSize="10" letterSpacing="1.6">
+      {scanning ? "VERIFYING AT STATION" : "AT CHECKOUT STATION"}
+    </text>
+    {bin ? <g>
+      <text x={w - 14} y="20" textAnchor="end" fill="#c8f3fa" fontSize="11" fontWeight="700">
+        {bin.totalQuantity.toLocaleString("en-US")}<tspan fontSize="8" fontWeight="500" fill="#8fb6c4"> PCS</tspan>
+      </text>
+      <defs><clipPath id={clipId}><rect x="14" y="44" width="96" height="70" rx="6" /></clipPath></defs>
+      <rect x="14" y="44" width="96" height="70" rx="6" fill="#0c202c" stroke="#3d6274" strokeOpacity=".8" />
+      {photo && failedImage !== photo
+        ? <image href={photo} x="14" y="44" width="96" height="70" preserveAspectRatio="xMidYMid meet"
+            clipPath={`url(#${clipId})`} onError={() => setFailedImage(photo)} />
+        : <g fill="none" stroke="#5c8496" strokeWidth="1.3">
+            <path d="M44 92 L58 72 L70 88 L77 80 L88 92Z" />
+            <circle cx="76" cy="63" r="5" />
+          </g>}
+      <text x="124" y="66" fill="#e6f2f8" fontSize="19" fontWeight="700" letterSpacing="1">{bin.code}</text>
+      <text x="124" y="85" fill="#7e9aaf" fontSize="10">{item ? item.sku.slice(0, 20) : "No recorded contents"}</text>
+      <text x="124" y="105" fill={statusColor} fontSize="9" letterSpacing="1.2">
+        {bin.status.replaceAll("_", " ")}
+      </text>
+      <text x="124" y="105" dx="0" dy="15" fill="#68849a" fontSize="8.5" letterSpacing=".8">
+        {`CAPACITY ${bin.capacity}`}
+      </text>
+      <path d={`M14 128 H${w - 14}`} stroke="#1d3543" />
+      <text x="14" fill="#c2d8e4" fontSize="12.5">
+        {itemNameLines(item?.canonicalName ?? "No recorded contents", 34)
+          .map((line, index) => <tspan key={index} x="14" y={148 + index * 16}>{line}</tspan>)}
+      </text>
+    </g> : <g>
+      <rect x="14" y="46" width={w - 28} height={h - 62} rx="8" fill="none"
+        stroke="#2b4655" strokeDasharray="5 6" />
+      <text x={w / 2} y="98" textAnchor="middle" fill="#8ba7b8" fontSize="12">Station clear</text>
+      <text x={w / 2} y="118" textAnchor="middle" fill="#5f7c8d" fontSize="9.5">
+        A retrieved bin appears here
+      </text>
     </g>}
   </g>;
 }
@@ -450,7 +597,7 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
               aria-label={`${bin.code}, ${bin.contents[0]?.canonicalName ?? "Empty bin"}, ${bin.status.replaceAll("_", " ").toLowerCase()}, ${bin.totalQuantity} on record. View bin.`}
               onClick={() => onSelectBin?.(bin)}
               onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectBin?.(bin); } }}>
-              <title>{bin.code} · {bin.status} · {bin.contents[0]?.canonicalName ?? "No recorded contents"}</title>
+              <title>{`${bin.code} · ${bin.status} · ${bin.contents[0]?.canonicalName ?? "No recorded contents"}`}</title>
               <rect className="machine-bin-focus" x="-55" y="-103" width="119" height="155" rx="9" fill="transparent" stroke="transparent" />
               {absent ? <g>
                 <path d="M-44 -43 L40 -43 L35 1 H-38Z" fill="#142532" fillOpacity=".3" stroke="#607583" strokeDasharray="4 5" />
@@ -462,12 +609,13 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
                 active={bin.code === arm.focusBin && !!gantry?.activeOperationId} />}
             </g>;
           }))}
-          <g className="machine-checkout" transform={`translate(${CHECKOUT_ORIGIN.x} ${CHECKOUT_ORIGIN.y}) scale(${CHECKOUT_SCALE}) translate(${-CHECKOUT_ORIGIN.x} ${-CHECKOUT_ORIGIN.y})`}>
+          <g className="machine-checkout" transform={`translate(${CHECKOUT_OFFSET.x} ${CHECKOUT_OFFSET.y}) scale(${CHECKOUT_SCALE})`}>
             <CameraRig scanning={scanning} dockBin={dockBin ?? undefined}
               scanImage={session.scanning ? session.shots[0]?.dataUrl : undefined}
               connection={cameraHealth?.connection ?? "OFFLINE"}
               temperature={cameraHealth?.cpuTemperatureC ?? null} />
           </g>
+          <StationBinCard bin={dockBin ?? undefined} scanning={scanning} onSelect={onSelectBin} />
           <Carriage arm={arm} point={point} bin={activeBin} />
         </svg>
       </div>}
