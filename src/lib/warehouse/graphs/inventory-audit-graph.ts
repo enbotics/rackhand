@@ -17,7 +17,7 @@ const READY_KEY = "inventoryAuditReady";
 
 export interface InventoryAuditGraphRequest {
   binAuditId: string;
-  /** Browser session that owns interactive PLAN_VERIFICATION capture decisions. */
+  /** Browser session that owns interactive client-audit capture decisions. */
   ownerSessionId?: string | null;
 }
 

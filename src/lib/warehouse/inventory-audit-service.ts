@@ -10,14 +10,7 @@ import {
   recoverStaleInventoryAudit,
 } from "./audit-recovery-service";
 
-/**
- * PLAN_VERIFICATION is the materials-plan stock check (materials-plan-service.ts):
- * it starts and captures automatically, but every bin waits for its owning
- * operator to acknowledge/confirm/retry the analysis before the next bin may
- * move. It targets an explicit bin list and deliberately does NOT go through
- * the TRUSTED_INTERNAL eligibility/cooldown gate below.
- */
-export type InventoryAuditTrigger = "CLIENT" | "TRUSTED_INTERNAL" | "PLAN_VERIFICATION";
+export type InventoryAuditTrigger = "CLIENT" | "TRUSTED_INTERNAL";
 
 function isUniqueViolation(value: unknown): boolean {
   return typeof value === "object" && value !== null && (value as { code?: unknown }).code === "P2002";
@@ -25,17 +18,11 @@ function isUniqueViolation(value: unknown): boolean {
 
 export async function runInventoryAudit(input: {
   binCode?: string;
-  /** An explicit set of bins to audit — PLAN_VERIFICATION's own selection, never "all". */
-  binCodes?: string[];
   trigger: InventoryAuditTrigger;
   /** Owner of interactive capture decisions for client-visible workflows. */
   ownerSessionId?: string | null;
 }): Promise<InventoryAuditRunResult> {
   const requestedBinCode = input.binCode?.trim().toUpperCase();
-  const requestedBinCodes = input.binCodes?.map((code) => code.trim().toUpperCase());
-  if (input.trigger === "PLAN_VERIFICATION" && !input.ownerSessionId) {
-    throw new Error("plan_verification_owner_required");
-  }
   // A process restart can interrupt the in-memory wait while leaving the
   // durable ACTIVE lock behind. Recover only rows whose own deadline plus a
   // safety grace has elapsed; a genuinely live audit remains untouched.
@@ -79,18 +66,13 @@ export async function runInventoryAudit(input: {
           where: { code: requestedBinCode },
           include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
         })
-      : requestedBinCodes
-        ? await prisma.bin.findMany({
-            where: { code: { in: requestedBinCodes } },
-            include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
-          })
-        : await prisma.bin.findMany({
-            where: { status: { in: ["AVAILABLE", "OCCUPIED"] } },
-            include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
-          });
+      : await prisma.bin.findMany({
+          where: { status: { in: ["AVAILABLE", "OCCUPIED"] } },
+          include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
+        });
     bins.sort(compareBinsInShelfOrder);
     if (bins.length === 0) {
-      throw new Error(requestedBinCode || requestedBinCodes ? "bin_not_found" : "no_auditable_bins");
+      throw new Error(requestedBinCode ? "bin_not_found" : "no_auditable_bins");
     }
 
     await prisma.inventoryAuditRun.update({

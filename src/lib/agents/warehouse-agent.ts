@@ -41,13 +41,13 @@ import {
   EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
   FULFILL_MATERIALS_PLAN_TOOL_NAME,
-  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
   WAREHOUSE_AGENT_TOOLS,
 } from "./tools";
 import {
   claimApproval,
   createPendingApproval,
   settleApproval,
+  settleStaleApprovalForSession,
   type ApprovalDecision,
   type ApprovalSummary,
   type PendingApprovalView,
@@ -115,15 +115,13 @@ type ExplicitPhysicalToolName =
   | typeof EXECUTE_PUTAWAY_TOOL_NAME
   | typeof EXECUTE_RETRIEVAL_TOOL_NAME
   | typeof EXECUTE_INVENTORY_AUDIT_TOOL_NAME
-  | typeof FULFILL_MATERIALS_PLAN_TOOL_NAME
-  | typeof VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME;
+  | typeof FULFILL_MATERIALS_PLAN_TOOL_NAME;
 
 const PHYSICAL_TOOL_NAMES = new Set<string>([
   EXECUTE_PUTAWAY_TOOL_NAME,
   EXECUTE_RETRIEVAL_TOOL_NAME,
   EXECUTE_INVENTORY_AUDIT_TOOL_NAME,
   FULFILL_MATERIALS_PLAN_TOOL_NAME,
-  VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME,
 ]);
 
 interface CapturedPhysicalToolResult {
@@ -223,13 +221,6 @@ function groundedPhysicalReply(result: CapturedPhysicalToolResult | null): strin
       typeof payload.checkedOutQuantity === "number" ? payload.checkedOutQuantity : null;
     return `Bin ${bin} was retrieved to ${String(payload.destination ?? "OUTPUT")}${quantity === null ? "." : ` with ${quantity} last-verified item(s).`}`;
   }
-  if (result.toolName === VERIFY_MATERIALS_AVAILABILITY_TOOL_NAME) {
-    // The sweep hasn't run yet at reply time — it's scheduled via after() to
-    // start once this response has already reached the operator. Progress
-    // and the final report arrive on their own card, not in this reply.
-    return "Checking current stock for those materials now.";
-  }
-
   const completed = Number(payload.binsCompleted ?? 0);
   const reconciled = Number(payload.reconciledBins ?? 0);
   const review = Number(payload.reviewRequiredBins ?? 0);
@@ -993,13 +984,30 @@ function fulfillmentLeadIn(summary: ApprovalSummary): string {
   return `Next up (${queue.length} more after this one). `;
 }
 
+/**
+ * When creating this approval retired an older, undecided one for the same
+ * session (see settleStaleApprovalForSession), say so up front — the exact
+ * confusion this closes off is a stale offer silently vanishing while a new
+ * one appears, leaving the operator unsure whether the earlier one still
+ * needs a decision or already happened.
+ */
+function supersededNote(summary: ApprovalSummary): string {
+  if (summary.supersededDestination === undefined) return "";
+  return (
+    `An earlier pending approval${summary.supersededDestination ? ` for ${summary.supersededDestination}` : ""} ` +
+    "was cancelled — nothing had moved, and this request replaces it. "
+  );
+}
+
 /** Operator-facing sentence for an approval card. Never model text. */
 function approvalPrompt(summary: ApprovalSummary): string {
+  const superseded = supersededNote(summary);
   if (summary.autoSuggested) {
-    return `Bin ${summary.destination ?? "it"} was just retrieved — put it back now?`;
+    return `${superseded}Bin ${summary.destination ?? "it"} was just retrieved — put it back now?`;
   }
   if (summary.action === "INVENTORY_AUDIT") {
     return (
+      superseded +
       `Approval required: physically audit ${summary.source ?? "the auditable shelf bins"}. ` +
       "Each bin will travel to SCAN_STATION, receive one camera count, and return before any safe reconciliation. " +
       "Nothing has been moved and no inventory has changed yet."
@@ -1007,6 +1015,7 @@ function approvalPrompt(summary: ApprovalSummary): string {
   }
   if (summary.action === "MATERIALS_FULFILLMENT") {
     return (
+      superseded +
       `Approval required: fulfill ${summary.quantity ?? "the selected"} planned material ` +
       `requirement${summary.quantity === 1 ? "" : "s"}. RackHand will select enough stocked bins, ` +
       "retrieve them to OUTPUT one at a time, and require a fresh-photo return before continuing. " +
@@ -1018,6 +1027,7 @@ function approvalPrompt(summary: ApprovalSummary): string {
     ? ` Capacity ${summary.capacity.before} → ${summary.capacity.after}/${summary.capacity.limit}.`
     : "";
   return (
+    superseded +
     fulfillmentLeadIn(summary) +
     `Approval required: ${summary.action} of ${what}, ` +
     `${summary.source ?? "?"} \u2192 ${summary.destination ?? "?"}, ` +
@@ -1333,6 +1343,15 @@ async function parkForApproval(input: {
     // the first item, so the total is itself plus whatever it just queued.
     summary.fulfillmentTotal = input.fulfillmentTotal ?? fulfillmentQueue.length + 1;
   }
+
+  // At most one live approval per session — see settleStaleApprovalForSession's
+  // own comment for why. A legitimate chained offer (e.g. retrieval's own
+  // auto-suggested putaway) never trips this: the approval it continues from
+  // is already settled to APPROVED before this runs, so nothing is left
+  // pending for this session to find. This only ever fires for a genuinely
+  // abandoned, still-undecided approval from an earlier turn.
+  const superseded = await settleStaleApprovalForSession(input.sessionId);
+  if (superseded) summary.supersededDestination = superseded.summary.destination;
 
   // JSON round-trip: the snapshot is stored as plain data, never as a live
   // object graph holding model or credential references.

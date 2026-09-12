@@ -95,8 +95,8 @@ export function ApprovalCard({
           </p>
         ) : summary.action === "MATERIALS_FULFILLMENT" ? (
           <p className="mt-1 text-sm text-ink-muted">
-            RackHand will select enough stocked bins for the approved requirements and process
-            one bin at a time.
+            RackHand will reuse trustworthy bin evidence, verify only the minimum relevant
+            uncertain bins, and then process the selected stock one bin at a time.
           </p>
         ) : (
           <p className="mt-1 text-sm">

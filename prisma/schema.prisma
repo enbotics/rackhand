@@ -338,11 +338,8 @@ model TraceEvent {
 
 /// One explicitly requested inventory-audit run. There is no nightly scheduler;
 /// runs are started by the Warehouse Agent or a trusted internal invocation.
-/// trigger: CLIENT | TRUSTED_INTERNAL | PLAN_VERIFICATION — PLAN_VERIFICATION
-/// is the materials-plan stock check: same automatic-capture/no-approval
-/// behavior as TRUSTED_INTERNAL, but targets an explicit bin list and skips
-/// the daily-activity eligibility/cooldown gate, which has nothing to do
-/// with "does this build have enough stock."
+/// New rows use trigger CLIENT | TRUSTED_INTERNAL. Historical rows may contain
+/// PLAN_VERIFICATION from the retired background materials-check workflow.
 model InventoryAuditRun {
   id                 String              @id @default(cuid())
   trigger            String
@@ -367,10 +364,9 @@ model InventoryAuditRun {
   @@index([createdAt])
 }
 
-/// Ties a Planner's requirements list to the InventoryAuditRun verifying it.
-/// Deliberately thin — bin-level detail and progress live entirely on the
-/// linked InventoryAuditRun/BinAudit rows; this only remembers what was asked
-/// for and the final per-SKU required/available comparison.
+/// Historical link between a Planner requirements list and its old stock-check
+/// InventoryAuditRun. New approval-gated fulfillment does not create these.
+/// Retained so earlier reports remain readable.
 model MaterialsPlanCheck {
   id               String            @id @default(cuid())
   /// Browser/operator workflow that requested this check.
@@ -386,6 +382,50 @@ model MaterialsPlanCheck {
   auditRun         InventoryAuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
 
   @@index([ownerSessionId, createdAt])
+}
+
+/// Durable, manually/event-triggered analysis of today's enabled engineering
+/// plan. It may run targeted trusted audits, but never retrieves materials.
+model EngineeringPlanAnalysisRun {
+  id                 String                         @id @default(cuid())
+  ownerSessionId     String
+  trigger            String                         @default("MANUAL")
+  status             String                         @default("QUEUED")
+  stage              String                         @default("QUEUED")
+  /// One warehouse has one physical gantry/camera. Null once terminal.
+  activeKey          String?                        @unique
+  workDate           String
+  rowsFound          Int                            @default(0)
+  currentBinCode     String?
+  planRowsJson       String                         @default("[]")
+  requirementsJson   String                         @default("[]")
+  resultJson         String?
+  errorCode          String?
+  errorMessage       String?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+  events             EngineeringPlanAnalysisEvent[]
+
+  @@index([ownerSessionId, createdAt])
+  @@index([status])
+}
+
+/// Ordered, operator-readable progress emitted by one engineering-plan run.
+model EngineeringPlanAnalysisEvent {
+  id           String                     @id @default(cuid())
+  runId        String
+  sequence     Int
+  stage        String
+  status       String
+  summary      String
+  metadataJson String?
+  createdAt    DateTime                   @default(now())
+  run          EngineeringPlanAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, sequence])
+  @@index([runId])
 }
 
 /// Persisted physical-vs-digital observation for one bin.
@@ -541,44 +581,44 @@ model CameraDeviceHealth {
   @@index([lastSeenAt])
 }
 
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model EngineeringPlanAnalysisEvent {
-  id                         String                     @id
-  runId                      String
-  sequence                   Int
-  stage                      String
-  status                     String
-  summary                    String
-  metadataJson               String?
-  createdAt                  DateTime                   @default(now())
-  EngineeringPlanAnalysisRun EngineeringPlanAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+// /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+// model EngineeringPlanAnalysisEvent {
+//   id                         String                     @id
+//   runId                      String
+//   sequence                   Int
+//   stage                      String
+//   status                     String
+//   summary                    String
+//   metadataJson               String?
+//   createdAt                  DateTime                   @default(now())
+//   EngineeringPlanAnalysisRun EngineeringPlanAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
-  @@unique([runId, sequence])
-  @@index([runId])
-}
+//   @@unique([runId, sequence])
+//   @@index([runId])
+// }
 
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model EngineeringPlanAnalysisRun {
-  id                           String                         @id
-  ownerSessionId               String
-  trigger                      String                         @default("MANUAL")
-  status                       String                         @default("QUEUED")
-  stage                        String                         @default("QUEUED")
-  activeKey                    String?                        @unique
-  workDate                     String
-  rowsFound                    Int                            @default(0)
-  currentBinCode               String?
-  planRowsJson                 String                         @default("[]")
-  requirementsJson             String                         @default("[]")
-  resultJson                   String?
-  errorCode                    String?
-  errorMessage                 String?
-  startedAt                    DateTime?
-  completedAt                  DateTime?
-  createdAt                    DateTime                       @default(now())
-  updatedAt                    DateTime
-  EngineeringPlanAnalysisEvent EngineeringPlanAnalysisEvent[]
+// /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+// model EngineeringPlanAnalysisRun {
+//   id                           String                         @id
+//   ownerSessionId               String
+//   trigger                      String                         @default("MANUAL")
+//   status                       String                         @default("QUEUED")
+//   stage                        String                         @default("QUEUED")
+//   activeKey                    String?                        @unique
+//   workDate                     String
+//   rowsFound                    Int                            @default(0)
+//   currentBinCode               String?
+//   planRowsJson                 String                         @default("[]")
+//   requirementsJson             String                         @default("[]")
+//   resultJson                   String?
+//   errorCode                    String?
+//   errorMessage                 String?
+//   startedAt                    DateTime?
+//   completedAt                  DateTime?
+//   createdAt                    DateTime                       @default(now())
+//   updatedAt                    DateTime
+//   EngineeringPlanAnalysisEvent EngineeringPlanAnalysisEvent[]
 
-  @@index([ownerSessionId, createdAt])
-  @@index([status])
-}
+//   @@index([ownerSessionId, createdAt])
+//   @@index([status])
+// }

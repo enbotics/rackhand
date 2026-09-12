@@ -427,9 +427,8 @@ export async function executeBinAudit(
   if (!audit) throw new Error("bin_audit_not_found");
   const { bin } = audit;
   const originalStatus = bin.status;
-  // Only a genuine idle-agent audit is unattended. PLAN_VERIFICATION starts
-  // without initial HITL, but belongs to the requesting browser and must stop
-  // at every capture acknowledgement/review before advancing to another bin.
+  // Only a trusted idle-agent audit is unattended. Client audits belong to
+  // their requesting browser and stop for any required human decision.
   const isTrusted = audit.auditRun.trigger === "TRUSTED_INTERNAL";
   // Refuse before touching bin/gantry state: Simulation mode must never
   // silently fall through to a real capture on a bin it doesn't cover.

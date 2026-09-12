@@ -19,14 +19,10 @@ import {
  *
  * WHY THIS EXISTS. "What do I need to build a chair?" is answered by two
  * different pieces of machinery — a read-only Materials Planner specialist
- * that produces the requirements list, and an unattended physical stock check
- * that then walks the shelf bin by bin. Shown as two separate floating panels
- * they looked like two unrelated things happening to the operator, with no
- * indication that the second was caused by the first. Numbering them as Step 1
- * and Step 2 of one pipeline, with a connector between them and a single
- * header verdict, makes the causality readable at a glance. WorkflowPanel's
- * ordered step list is the existing precedent; this pipeline simply has two
- * coarse stages instead of many fine-grained graph nodes.
+ * that produces the requirements list, and approval-gated fulfillment that
+ * checks persisted evidence before it moves anything. Historical rows from
+ * the retired all-bin stock check can still render as Step 2, but new plans
+ * verify only the minimum relevant uncertain bins inside fulfillment.
  *
  * WHAT IT NEVER CLAIMS. There is no live streaming of tool calls from the
  * server today, so nothing here asserts what the model is "currently doing".
@@ -104,7 +100,7 @@ export function MaterialsPlanPipelineCard({
    * reload or a later turn without losing what the build actually needs.
    */
   requirements: MaterialRequirementView[];
-  /** Null until the scheduled sweep has written its first row. */
+  /** Historical stock-check row; new plans leave this null. */
   check: MaterialsPlanCheckView | null;
 }) {
   // Step 1 is always DONE by the time this card exists at all — it only ever
@@ -167,8 +163,9 @@ export function MaterialsPlanPipelineCard({
             </p>
           ) : (
             <p className="text-xs leading-relaxed text-ink-muted">
-              Ready to select stocked bins. Approve the fulfillment action below; RackHand then
-              retrieves one bin to OUTPUT and waits for its fresh-photo return before continuing.
+              Ready for evidence-aware fulfillment. After approval, RackHand skips unchanged,
+              previously verified bins; if needed, it checks only the minimum relevant uncertain
+              bins before retrieving one bin to OUTPUT at a time.
             </p>
           )}
         </PipelineStage>

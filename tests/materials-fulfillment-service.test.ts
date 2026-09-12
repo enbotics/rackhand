@@ -4,6 +4,7 @@ const inventoryBySku = new Map<
   string,
   Array<{ binCode: string; binStatus: "OCCUPIED" | "CHECKED_OUT"; quantity: number }>
 >();
+const untrustedBins = new Set<string>();
 
 vi.mock("@/lib/warehouse/inventory-service", () => ({
   getInventoryForPart: vi.fn(async (sku: string) => {
@@ -24,6 +25,29 @@ vi.mock("@/lib/warehouse/inventory-service", () => ({
   }),
 }));
 
+vi.mock("@/lib/warehouse/bin-verification-evidence", () => ({
+  getBinVerificationEvidence: vi.fn(async (binCodes: string[]) =>
+    new Map(
+      binCodes.map((binCode) => [
+        binCode,
+        {
+          binCode,
+          state: untrustedBins.has(binCode) ? "CHANGED_AFTER_VERIFICATION" : "TRUSTED",
+          trusted: !untrustedBins.has(binCode),
+          lastVerifiedAt: "2026-09-12T00:00:00.000Z",
+          lastInventoryChangeAt: untrustedBins.has(binCode)
+            ? "2026-09-12T01:00:00.000Z"
+            : "2026-09-12T00:00:00.000Z",
+          latestAuditStatus: "VERIFIED",
+          reason: untrustedBins.has(binCode)
+            ? "inventory-changing activity occurred after the latest trusted verification"
+            : "latest trusted verification is current",
+        },
+      ]),
+    ),
+  ),
+}));
+
 import { prepareMaterialsFulfillment } from "@/lib/warehouse/materials-fulfillment-service";
 
 const requirement = (sku: string, quantity: number) => ({
@@ -33,7 +57,10 @@ const requirement = (sku: string, quantity: number) => ({
   quantity,
 });
 
-beforeEach(() => inventoryBySku.clear());
+beforeEach(() => {
+  inventoryBySku.clear();
+  untrustedBins.clear();
+});
 
 describe("materials fulfillment preparation", () => {
   it("selects only enough occupied bins and uses physical shelf order", async () => {
@@ -89,5 +116,41 @@ describe("materials fulfillment preparation", () => {
     expect(plan.requirements).toHaveLength(1);
     expect(plan.requirements[0].quantity).toBe(4);
     expect(plan.selectedBins).toHaveLength(2);
+  });
+
+  it("selects only the minimum uncertain stock needed for physical verification", async () => {
+    inventoryBySku.set("SKU-1", [
+      { binCode: "B1-01", binStatus: "OCCUPIED", quantity: 2 },
+      { binCode: "B2-01", binStatus: "OCCUPIED", quantity: 3 },
+      { binCode: "B3-01", binStatus: "OCCUPIED", quantity: 6 },
+    ]);
+    untrustedBins.add("B2-01");
+    untrustedBins.add("B3-01");
+
+    const plan = await prepareMaterialsFulfillment([requirement("SKU-1", 8)]);
+
+    expect(plan).toMatchObject({
+      ok: false,
+      reason: "materials_verification_required",
+      verificationTargets: [{ sku: "SKU-1", binCode: "B3-01", recordedQuantity: 6 }],
+    });
+  });
+
+  it("does not reselect an uncertain bin that was already attempted", async () => {
+    inventoryBySku.set("SKU-1", [
+      { binCode: "B1-01", binStatus: "OCCUPIED", quantity: 2 },
+      { binCode: "B2-01", binStatus: "OCCUPIED", quantity: 6 },
+    ]);
+    untrustedBins.add("B2-01");
+
+    const plan = await prepareMaterialsFulfillment([requirement("SKU-1", 8)], {
+      excludeVerificationBinCodes: ["B2-01"],
+    });
+
+    expect(plan).toMatchObject({
+      ok: false,
+      reason: "materials_verification_incomplete",
+      shortages: [{ sku: "SKU-1", required: 8, available: 2 }],
+    });
   });
 });

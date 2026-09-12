@@ -13,8 +13,8 @@ export interface MaterialsPlanState {
   materialsPlanCheck: MaterialsPlanCheckView | null;
 }
 
-/** This session's own latest build-plan stock check — see materials-plan-service.ts. */
-export function usePendingMaterialsPlan(active: boolean): MaterialsPlanState {
+/** This session's latest legacy build-plan stock check, retained for history. */
+export function usePendingMaterialsPlan(): MaterialsPlanState {
   const [materialsPlanCheck, setMaterialsPlanCheck] = useState<MaterialsPlanCheckView | null>(null);
   const mounted = useRef(true);
 
@@ -52,8 +52,10 @@ export function usePendingMaterialsPlan(active: boolean): MaterialsPlanState {
     const tick = async () => {
       const latest = await refresh();
       if (!stopped) {
-        const stayFast = active || latest?.status === "RUNNING";
-        timer = setTimeout(tick, stayFast ? MATERIALS_PLAN_ACTIVE_POLL_MS : MATERIALS_PLAN_IDLE_POLL_MS);
+        const delay = latest?.status === "RUNNING"
+          ? MATERIALS_PLAN_ACTIVE_POLL_MS
+          : MATERIALS_PLAN_IDLE_POLL_MS;
+        timer = setTimeout(tick, delay);
       }
     };
     timer = setTimeout(tick, 0);
@@ -61,7 +63,7 @@ export function usePendingMaterialsPlan(active: boolean): MaterialsPlanState {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [active, refresh]);
+  }, [refresh]);
 
   return { materialsPlanCheck };
 }
