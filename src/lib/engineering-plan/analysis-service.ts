@@ -125,14 +125,34 @@ function finalResult(
 ): TodayPlanAnalysisResultView {
   const ready = plan?.ok === true;
   const shortages = plan && !plan.ok ? plan.shortages : [];
+  const selectedBins = plan?.selectedBins ?? [];
+  const readySkuCount = new Set(selectedBins.map((bin) => bin.sku)).size;
+  const unavailableCount = shortages.length;
+  const availabilityFinal = plan && !plan.ok && (
+    plan.reason === "materials_shortage" ||
+    plan.reason === "materials_verification_incomplete"
+  );
+  const partial = Boolean(availabilityFinal && unavailableCount > 0 && readySkuCount > 0);
+  const unavailableReason = plan && !plan.ok && plan.reason === "materials_verification_incomplete"
+    ? "could not be fully verified"
+    : "has insufficient shelf stock";
+  const message = plan
+    ? ready
+      ? `Analysis finished: all ${plan.requirements.length} material requirement${plan.requirements.length === 1 ? " is" : "s are"} covered by verified shelf stock.`
+      : plan.reason === "materials_shortage" || plan.reason === "materials_verification_incomplete"
+        ? `Analysis finished: ${readySkuCount} of ${plan.requirements.length} required material${plan.requirements.length === 1 ? " is" : "s are"} ready for operation. ${unavailableCount} ${unavailableCount === 1 ? "material" : "materials"} ${unavailableReason} and will not be used.`
+        : plan.message
+    : fallback.message;
   return {
     readiness: ready
       ? "READY"
+      : partial
+        ? "PARTIALLY_READY"
       : plan?.reason === "materials_shortage"
         ? "SHORTAGE"
         : fallback.readiness,
-    message: plan ? (plan.ok ? "Today's required materials have sufficient verified stock." : plan.message) : fallback.message,
-    selectedBins: ready ? plan.selectedBins : [],
+    message,
+    selectedBins,
     shortages,
     auditedBinCodes,
     verificationAuditRunIds,
@@ -191,7 +211,7 @@ export async function createTodayPlanAnalysisRun(ownerSessionId: string) {
             sequence: 1,
             stage: "QUEUED",
             status: "QUEUED",
-            summary: "RackHand analysis was queued.",
+            summary: "Today’s plan analysis is waiting to start.",
           },
         },
       },
@@ -225,7 +245,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       runId,
       stage: "READING_SHEET",
       status: "RUNNING",
-      summary: "Reading enabled rows for today's configured warehouse date.",
+      summary: "Reading today’s enabled work from the Google Sheet.",
     });
     const context = await getTodayEngineeringPlanContext();
     await prisma.engineeringPlanAnalysisRun.update({
@@ -259,7 +279,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       runId,
       stage: "PLANNING_MATERIALS",
       status: "RUNNING",
-      summary: `Found ${context.rows.length} enabled row${context.rows.length === 1 ? "" : "s"}; RackHand delegated material diagnosis to the Materials Planner.`,
+      summary: `Found ${context.rows.length} enabled work row${context.rows.length === 1 ? "" : "s"}. Resolving every required material against the warehouse catalog.`,
       rowsFound: context.rows.length,
       planRowsJson: JSON.stringify(visibleRows(context.rows)),
     });
@@ -292,13 +312,15 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       runId,
       stage: "CHECKING_EVIDENCE",
       status: "RUNNING",
-      summary: `Resolved ${requirements.length} catalog-grounded material requirement${requirements.length === 1 ? "" : "s"}; checking trusted bin evidence.`,
+      summary: `Resolved ${requirements.length} material requirement${requirements.length === 1 ? "" : "s"}. Checking all of them before finalizing the report.`,
       requirementsJson: JSON.stringify(requirements),
       currentBinCode: null,
     });
 
     const attempted = new Set<string>();
-    let plan = await prepareMaterialsFulfillment(requirements);
+    let plan = await prepareMaterialsFulfillment(requirements, {
+      continueAfterKnownShortage: true,
+    });
     while (!plan.ok && plan.reason === "materials_verification_required") {
       const next = plan.verificationTargets?.find((target) => !attempted.has(target.binCode));
       if (!next || attempted.size >= MAX_MATERIALS_FULFILLMENT_BINS) break;
@@ -308,7 +330,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
         runId,
         stage: "AUDITING_BIN",
         status: "RUNNING",
-        summary: `Auditing ${next.binCode} for ${next.sku}: ${next.evidence.reason}.`,
+        summary: `Verifying bin ${next.binCode} for ${next.sku} because its saved verification is no longer current.`,
         currentBinCode: next.binCode,
       });
 
@@ -326,8 +348,8 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
           stage: "CHECKING_EVIDENCE",
           status: "RUNNING",
           summary: result
-            ? `${next.binCode} finished as ${result.status}; recalculating only the remaining requirement gap.`
-            : `${next.binCode} finished without a usable observation; recalculating the remaining requirement gap.`,
+            ? `Bin ${next.binCode} verification finished (${result.status}). Continuing with the remaining materials.`
+            : `Bin ${next.binCode} produced no usable observation. Continuing with the remaining materials.`,
           currentBinCode: null,
         });
         if (result?.reason === "audit_return_failed") {
@@ -339,7 +361,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
             runId,
             stage: "CHECKING_EVIDENCE",
             status: "RUNNING",
-            summary: `${next.binCode} changed before the audit could start; re-reading current evidence.`,
+            summary: `Bin ${next.binCode} changed before verification started. Refreshing its current warehouse state.`,
             currentBinCode: null,
           });
         } else {
@@ -349,6 +371,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
 
       plan = await prepareMaterialsFulfillment(requirements, {
         excludeVerificationBinCodes: [...attempted],
+        continueAfterKnownShortage: true,
       });
     }
 
@@ -356,6 +379,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       ? plan
       : await prepareMaterialsFulfillment(requirements, {
           excludeVerificationBinCodes: [...attempted],
+          continueAfterKnownShortage: true,
         });
     const result = finalResult(completedPlan, auditedBinCodes, verificationAuditRunIds, {
       readiness: "REVIEW_REQUIRED",

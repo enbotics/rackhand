@@ -80,7 +80,7 @@ describe("materials fulfillment preparation", () => {
     ]);
   });
 
-  it("rejects the whole plan when any required SKU is short", async () => {
+  it("reports a shortage without discarding bins ready for other materials", async () => {
     inventoryBySku.set("SKU-1", [
       { binCode: "B2-01", binStatus: "OCCUPIED", quantity: 3 },
     ]);
@@ -96,7 +96,37 @@ describe("materials fulfillment preparation", () => {
     expect(plan).toMatchObject({
       ok: false,
       reason: "materials_shortage",
+      selectedBins: [
+        {
+          sku: "SKU-1",
+          binCode: "B2-01",
+          recordedQuantity: 3,
+          requiredQuantity: 2,
+        },
+      ],
       shortages: [{ sku: "SKU-2", required: 4, available: 1 }],
+    });
+  });
+
+  it("continues requesting relevant verification even when another SKU is already short", async () => {
+    inventoryBySku.set("SKU-SHORT", [
+      { binCode: "B2-01", binStatus: "OCCUPIED", quantity: 1 },
+    ]);
+    inventoryBySku.set("SKU-CHECK", [
+      { binCode: "B3-01", binStatus: "OCCUPIED", quantity: 4 },
+    ]);
+    untrustedBins.add("B3-01");
+
+    const plan = await prepareMaterialsFulfillment(
+      [requirement("SKU-SHORT", 4), requirement("SKU-CHECK", 4)],
+      { continueAfterKnownShortage: true },
+    );
+
+    expect(plan).toMatchObject({
+      ok: false,
+      reason: "materials_verification_required",
+      shortages: [{ sku: "SKU-SHORT", required: 4, available: 1 }],
+      verificationTargets: [{ sku: "SKU-CHECK", binCode: "B3-01" }],
     });
   });
 
