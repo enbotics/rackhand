@@ -4,7 +4,6 @@ import {
   calculatePutawayWeight,
   configuredContainerTareGrams,
   configuredFallbackTotalWeightGrams,
-  PutawayWeightError,
 } from "@/lib/warehouse/putaway-weight";
 
 const originalTare = process.env.PUTAWAY_CONTAINER_TARE_GRAMS;
@@ -43,8 +42,22 @@ describe("putaway weight", () => {
     expect(calculatePutawayWeight(225.5, 2).unitWeightGrams).toBe(50);
   });
 
-  it("rejects totals that do not exceed the container tare", () => {
-    expect(() => calculatePutawayWeight(117, 2)).toThrow(PutawayWeightError);
+  it("uses a reading equal to the tare as an already-tared item total", () => {
+    expect(calculatePutawayWeight(117, 2)).toEqual({
+      totalWeightGrams: 117,
+      tareWeightGrams: 0,
+      netWeightGrams: 117,
+      unitWeightGrams: 58.5,
+    });
+  });
+
+  it("divides a reading below the tare directly by quantity", () => {
+    expect(calculatePutawayWeight(100, 4)).toEqual({
+      totalWeightGrams: 100,
+      tareWeightGrams: 0,
+      netWeightGrams: 100,
+      unitWeightGrams: 25,
+    });
   });
 
   it("uses a configurable 150 g server fallback total", () => {

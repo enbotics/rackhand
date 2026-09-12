@@ -44,7 +44,13 @@ export function configuredFallbackTotalWeightGrams(): number {
   return roundedGrams(value);
 }
 
-/** Calculate contents and per-item weight from one verified bin reading. */
+/**
+ * Calculate contents and per-item weight from one verified bin reading.
+ *
+ * A reading above the configured container tare is treated as a gross weight,
+ * so the tare is subtracted. A reading at or below the tare is treated as an
+ * already-tared scale reading and divided directly by the observed quantity.
+ */
 export function calculatePutawayWeight(
   totalWeightGrams: number,
   quantity: number,
@@ -62,16 +68,13 @@ export function calculatePutawayWeight(
     throw new PutawayWeightError("The container tare must be non-negative.");
   }
 
-  const netWeightGrams = totalWeightGrams - tareWeightGrams;
-  if (netWeightGrams <= 0) {
-    throw new PutawayWeightError(
-      `The scale total must be greater than the ${roundedGrams(tareWeightGrams)} g container tare.`,
-    );
-  }
+  const appliedTareWeightGrams =
+    totalWeightGrams > tareWeightGrams ? tareWeightGrams : 0;
+  const netWeightGrams = totalWeightGrams - appliedTareWeightGrams;
 
   return {
     totalWeightGrams: roundedGrams(totalWeightGrams),
-    tareWeightGrams: roundedGrams(tareWeightGrams),
+    tareWeightGrams: roundedGrams(appliedTareWeightGrams),
     netWeightGrams: roundedGrams(netWeightGrams),
     unitWeightGrams: roundedGrams(netWeightGrams / quantity),
   };
