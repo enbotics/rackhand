@@ -38,6 +38,7 @@ interface PendingCapture {
 }
 type CaptureDecision = PutawayCaptureDecision | AuditCaptureDecision;
 type CaptureAnalysis = PutawayCaptureView | AuditCaptureView;
+const AUTO_RETURN_DELAY_SECONDS = 5;
 
 /** "putaway" | "audits" — the API route segment for this purpose. */
 function captureRouteKind(
@@ -382,11 +383,14 @@ const AUDIT_COPY: Record<
     primary: { label: "Done", decision: "ACCEPT" },
   },
   AUTO_RECONCILED: {
-    headline: "Updated automatically",
+    headline: "Higher count detected",
     tone: "success",
     message: (view) =>
-      `Higher quantity detected. Inventory has already been updated to ${view.observedQuantity ?? "—"}.`,
-    primary: { label: "Done", decision: "ACCEPT" },
+      `Click update to record ${view.observedQuantity ?? "—"}; otherwise the bin returns unchanged when the timer ends.`,
+    primary: {
+      label: (view) => `Update to ${view.observedQuantity ?? ""}`,
+      decision: "ACCEPT",
+    },
   },
   REVIEW_DECREASE: {
     headline: "Confirm the lower count",
@@ -428,6 +432,10 @@ export function AuditCaptureDialog() {
   const audit = useAuditCapture();
   const { health } = useCameraHealth();
   const [closing, setClosing] = useState(false);
+  const [autoReturnClock, setAutoReturnClock] = useState<{
+    key: string | null;
+    seconds: number;
+  }>({ key: null, seconds: AUTO_RETURN_DELAY_SECONDS });
   const pendingDecision = useRef<CaptureDecision | null>(null);
   const reduced = usePrefersReducedMotion();
   const auditRef = useRef(audit);
@@ -443,6 +451,37 @@ export function AuditCaptureDialog() {
     const frame = requestAnimationFrame(() => completeDecision());
     return () => cancelAnimationFrame(frame);
   }, [closing, reduced]);
+
+  const autoReturnKey =
+    audit.pending && audit.result === "success" && audit.analysis
+      ? `${audit.pending.captureId}:${audit.analysis.status}:${audit.analysis.outcome}`
+      : null;
+  const autoReturnSeconds =
+    autoReturnClock.key === autoReturnKey
+      ? autoReturnClock.seconds
+      : AUTO_RETURN_DELAY_SECONDS;
+
+  useEffect(() => {
+    if (!autoReturnKey || closing || audit.deciding) return;
+
+    const deadline = Date.now() + AUTO_RETURN_DELAY_SECONDS * 1_000;
+    const countdown = window.setInterval(() => {
+      setAutoReturnClock({
+        key: autoReturnKey,
+        seconds: Math.max(0, Math.ceil((deadline - Date.now()) / 1_000)),
+      });
+    }, 1_000);
+    const autoReturn = window.setTimeout(() => {
+      if (pendingDecision.current !== null) return;
+      pendingDecision.current = "AUTO_RETURN";
+      setClosing(true);
+    }, AUTO_RETURN_DELAY_SECONDS * 1_000);
+
+    return () => {
+      window.clearInterval(countdown);
+      window.clearTimeout(autoReturn);
+    };
+  }, [audit.deciding, autoReturnKey, closing]);
 
   function beginDecision(decision: CaptureDecision) {
     if (closing || audit.deciding) return;
@@ -567,6 +606,7 @@ export function AuditCaptureDialog() {
               inventory is changed.
             </p>
           )}
+          <AutoReturnNotice seconds={autoReturnSeconds} />
           {result?.notes && result.outcome !== "ANALYSIS_FAILED" && (
             <p className="text-xs text-ink-muted">{result.notes}</p>
           )}
@@ -684,6 +724,7 @@ export function AuditCaptureDialog() {
               {copy.message(result)}
             </p>
           </div>
+          <AutoReturnNotice seconds={autoReturnSeconds} />
           {result.notes && result.outcome !== "LOW_CONFIDENCE" && (
             <p className="text-xs text-ink-muted">{result.notes}</p>
           )}
@@ -891,6 +932,18 @@ export function AuditCaptureDialog() {
         </div>
       </div>
     </Modal>
+  );
+}
+
+function AutoReturnNotice({ seconds }: { seconds: number }) {
+  return (
+    <p
+      className="rounded-lg border border-line bg-bg-elevated px-3 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted"
+      role="status"
+      aria-live="polite"
+    >
+      Returning bin unchanged in {seconds}s · inventory quantity will not be updated
+    </p>
   );
 }
 

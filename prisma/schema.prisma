@@ -165,7 +165,7 @@ model PutawayCaptureRequest {
   id                     String    @id @default(cuid())
   movementId             String    @unique
   /// WAITING_FOR_CAMERA | CAPTURING | READY | REVIEW_DECREASE |
-  /// RETRY_REQUIRED | ACCEPTED | FAILED
+  /// RETRY_REQUIRED | ACCEPTED | AUTO_RETURNED | FAILED
   status                 String    @default("WAITING_FOR_CAMERA")
   expectedQuantity       Int
   observedQuantity       Int?
@@ -475,12 +475,10 @@ model BinAudit {
 /// UI and decision-policy helpers, so their durable state should look alike.
 ///
 /// status: WAITING_FOR_CAMERA | CAPTURING | PENDING_ACK | REVIEW_DECREASE |
-/// RETRY_REQUIRED | ACCEPTED | FAILED. Unlike PutawayCaptureRequest there is
-/// no standalone
-/// "READY" status: a safe equal/higher observation needs no human decision,
-/// so the capture route finalizes it immediately and writes ACCEPTED
-/// directly — REVIEW_DECREASE and RETRY_REQUIRED are the only statuses a
-/// human ever actually acts on.
+/// RETRY_REQUIRED | FINALIZING | ACCEPTED | FAILED. Unlike
+/// PutawayCaptureRequest there is no standalone "READY" status: a safe
+/// equal/higher observation waits in PENDING_ACK for either a manual decision
+/// or the no-write automatic return.
 model AuditCaptureRequest {
   id                     String    @id @default(cuid())
   binAuditId             String    @unique

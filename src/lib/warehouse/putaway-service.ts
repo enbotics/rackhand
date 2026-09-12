@@ -1,10 +1,10 @@
 /**
  * Authoritative putaway and checked-out-bin return.
  *
- * The model supplies neither the scan, photo nor quantity. One manual image
- * is analyzed before motion: confident increases apply automatically and
- * decreases require an explicit human decision. The accepted absolute count
- * is committed only after the gantry completes.
+ * The model supplies neither the scan, photo nor quantity. One image is
+ * analyzed before motion. A human acceptance may update quantity; an
+ * automatic return preserves recorded quantity. Any accepted count is
+ * committed only after the gantry completes.
  */
 import { prisma } from "./db";
 import { matchScanToCatalog } from "./catalog-matcher";
@@ -391,11 +391,13 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
   let imageUrl: string;
   let verifiedQuantity: number;
   let simulatedVerification = false;
+  let inventoryUpdateApproved = false;
   try {
     const verified = await requirePutawayVerification(movement.id);
     imageUrl = verified.imageUrl;
     verifiedQuantity = verified.quantity;
     simulatedVerification = verified.simulated;
+    inventoryUpdateApproved = verified.inventoryUpdateApproved;
   } catch (error) {
     await releaseClaim(movement.id, bin.id, bin.status, undefined, relocatingCheckout ? checkedOutBin : null);
     console.error(`[putaway] photo upload failed scan=${scanId} movement=${movement.id}`, error);
@@ -463,7 +465,9 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     });
   }
 
-  const inventoryAfter = verifiedQuantity;
+  const inventoryAfter = inventoryUpdateApproved
+    ? verifiedQuantity
+    : baselineQuantity;
   try {
     await prisma.$transaction(async (tx) => {
       if (checkedOutReturn) {
@@ -728,11 +732,13 @@ export async function returnCheckedOutBin(
   let imageUrl: string;
   let verifiedQuantity: number;
   let simulatedVerification = false;
+  let inventoryUpdateApproved = false;
   try {
     const verified = await requirePutawayVerification(movement.id, true);
     imageUrl = verified.imageUrl;
     verifiedQuantity = verified.quantity;
     simulatedVerification = verified.simulated;
+    inventoryUpdateApproved = verified.inventoryUpdateApproved;
   } catch (error) {
     await releaseClaim(movement.id, bin.id, "CHECKED_OUT");
     console.error(`[putaway] return verification failed bin=${bin.code} movement=${movement.id}`, error);
@@ -747,6 +753,7 @@ export async function returnCheckedOutBin(
   }
 
   let operation: GantryOperation;
+  const inventoryAfter = inventoryUpdateApproved ? verifiedQuantity : quantity;
   try {
     const claimedForMotion = await prisma.movement.updateMany({
       where: {
@@ -796,11 +803,11 @@ export async function returnCheckedOutBin(
       if (!existing || existing.quantity !== quantity) {
         throw new Error("checked-out inventory baseline changed after physical return");
       }
-      if (verifiedQuantity === 0) await tx.inventory.delete({ where: { id: existing.id } });
-      else await tx.inventory.update({ where: { id: existing.id }, data: { quantity: verifiedQuantity } });
+      if (inventoryAfter === 0) await tx.inventory.delete({ where: { id: existing.id } });
+      else await tx.inventory.update({ where: { id: existing.id }, data: { quantity: inventoryAfter } });
       const committed = await tx.bin.updateMany({
         where: { id: bin!.id, status: "RESERVED" },
-        data: { status: verifiedQuantity > 0 ? "OCCUPIED" : "AVAILABLE" },
+        data: { status: inventoryAfter > 0 ? "OCCUPIED" : "AVAILABLE" },
       });
       if (committed.count !== 1) {
         throw new Error("return reservation was lost after physical movement");
@@ -827,7 +834,7 @@ export async function returnCheckedOutBin(
     );
   }
 
-  if (simulatedVerification && verifiedQuantity !== quantity) {
+  if (simulatedVerification && inventoryAfter !== quantity) {
     scheduleSimulationRevert({
       partId: part.id,
       binId: bin.id,
@@ -848,10 +855,10 @@ export async function returnCheckedOutBin(
     gantryOperationId: operation.operationId,
     observedQuantity: verifiedQuantity,
     inventoryQuantityBefore: quantity,
-    inventoryQuantityAfter: verifiedQuantity,
-    inventoryQuantityAdded: Math.max(0, verifiedQuantity - quantity),
-    inventoryQuantityRemoved: Math.max(0, quantity - verifiedQuantity),
-    inventoryQuantityDelta: verifiedQuantity - quantity,
+    inventoryQuantityAfter: inventoryAfter,
+    inventoryQuantityAdded: Math.max(0, inventoryAfter - quantity),
+    inventoryQuantityRemoved: Math.max(0, quantity - inventoryAfter),
+    inventoryQuantityDelta: inventoryAfter - quantity,
     reconciledCheckout: true,
     imageUrl,
     status: "COMPLETED",

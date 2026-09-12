@@ -44,9 +44,8 @@ import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
 const CAPTURE_POLL_MS = 400;
 /**
  * Statuses a legitimate retry may reset from. PENDING_ACK is deliberately
- * excluded — its write already happened (VERIFIED/AUTO_RECONCILED), so
- * resetting it to WAITING_FOR_CAMERA would leave the BinAudit finalized
- * while the capture row went back to waiting for a photo nobody needs.
+ * excluded because the observation is already trusted and only awaits either
+ * a manual write decision or the no-write automatic return.
  */
 const RETRYABLE_CAPTURE_STATUSES = ["REVIEW_DECREASE", "RETRY_REQUIRED"];
 const RECOVERABLE_CAPTURE_STATUSES = [
@@ -194,6 +193,75 @@ function visionFromCaptureRow(capture: {
     occlusion: (capture.occlusion as AuditVisionResult["occlusion"]) ?? "NONE",
     notes: capture.notes ?? "",
   };
+}
+
+/**
+ * Finish an analyzed audit without accepting its quantity. This is the
+ * timeout path (and the equivalent explicit dismissal): evidence is retained,
+ * the audit is terminal, the bin lock is released, and Inventory is untouched.
+ */
+async function returnAuditCaptureWithoutInventory(
+  captureId: string,
+  reason: "audit_auto_returned" | "audit_dismissed_by_operator",
+): Promise<void> {
+  const capture = await prisma.auditCaptureRequest.findUnique({
+    where: { id: captureId },
+    include: { binAudit: { include: { bin: true } } },
+  });
+  if (
+    !capture ||
+    !["PENDING_ACK", "REVIEW_DECREASE", "RETRY_REQUIRED"].includes(
+      capture.status,
+    )
+  ) {
+    throw new Error("audit_capture_not_pending");
+  }
+
+  const originalStatus =
+    capture.expectedQuantity > 0 ? "OCCUPIED" : "AVAILABLE";
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.auditCaptureRequest.updateMany({
+      where: { id: captureId, status: capture.status },
+      data: { status: "FINALIZING" },
+    });
+    if (claimed.count !== 1) throw new Error("audit_capture_not_pending");
+
+    const released = await tx.bin.updateMany({
+      where: { id: capture.binAudit.binId, status: "AUDITING" },
+      data: { status: originalStatus },
+    });
+    if (released.count !== 1) throw new Error("audit_lock_lost");
+
+    await tx.binAudit.update({
+      where: { id: capture.binAudit.id },
+      data: {
+        status: "DISMISSED",
+        observedQuantity: capture.observedQuantity,
+        countConfidence: capture.countConfidence,
+        countable: capture.countable,
+        expectedPartPresent: capture.expectedPartPresent,
+        foreignObjectSuspected: capture.foreignObjectSuspected,
+        occlusion: capture.occlusion,
+        notes: capture.notes,
+        evidenceUrl: capture.evidenceUrl,
+        priorEvidenceUrl: capture.previousImageUrl,
+        capturedAt: capture.capturedAt,
+        inventoryUpdated: false,
+        previousQuantity: capture.expectedQuantity,
+        newQuantity: null,
+        errorCode: reason,
+        errorMessage:
+          reason === "audit_auto_returned"
+            ? "The confirmation window elapsed; the bin was returned without changing inventory."
+            : "The operator dismissed this observation without changing inventory.",
+        completedAt: new Date(),
+      },
+    });
+    await tx.auditCaptureRequest.update({
+      where: { id: captureId },
+      data: { status: "ACCEPTED" },
+    });
+  });
 }
 
 /** Durable browser recovery for capture, review and acknowledgement states. */
@@ -382,13 +450,10 @@ async function waitForTerminalCapture(captureId: string, isTrusted: boolean): Pr
     // REVIEW_DECREASE or RETRY_REQUIRED prompt. Waiting for either would be
     // an indefinite hang, so the very first analysis is final either way.
     if (isTrusted && capture.status === "PENDING_ACK" && capture.evidenceUrl) {
-      // The write already happened when this was classified — only the
-      // administrative "operator dismissed it" flip is missing, and there is
-      // no operator, so this run performs that flip on its own behalf.
-      await prisma.auditCaptureRequest.updateMany({
-        where: { id: captureId, status: "PENDING_ACK" },
-        data: { status: "ACCEPTED" },
-      });
+      // No operator is present to make a manual quantity-changing decision.
+      // Close the observation exactly like the browser's five-second timeout:
+      // return the bin and preserve recorded inventory.
+      await returnAuditCaptureWithoutInventory(captureId, "audit_auto_returned");
       return { ok: true, finalized: true, evidenceUrl: capture.evidenceUrl, vision: visionFromCaptureRow(capture) };
     }
     if (isTrusted && (capture.status === "REVIEW_DECREASE" || capture.status === "RETRY_REQUIRED")) {
@@ -564,9 +629,9 @@ export async function executeBinAudit(
     };
   }
 
-  // The operator's decision (auto-applied or explicitly confirmed) already
-  // finalized Inventory and this BinAudit row via the capture/decision
-  // route — read that authoritative result back rather than recomputing it.
+  // The operator's decision, or the no-write automatic return, already
+  // finalized this BinAudit row via the capture/decision route. Read that
+  // authoritative result back rather than recomputing it.
   const finalAudit = await prisma.binAudit.findUniqueOrThrow({ where: { id: audit.id } });
   if (workflowCaptureId) clearSimulatedWorkflowCapture(workflowCaptureId);
   return {
@@ -587,11 +652,10 @@ export async function executeBinAudit(
 }
 
 /**
- * Classifies one freshly captured audit frame and, for a safe automatic
- * outcome, finalizes it immediately — called by the captures/[id] route.
- * REVIEW_DECREASE and RETRY_REQUIRED persist the analysis and stop there;
- * only an explicit decision (confirmAuditCaptureDecision) can move them
- * forward.
+ * Classifies one freshly captured audit frame. Every actionable observation
+ * persists and waits for either a manual decision or the five-second no-write
+ * return. Unexpected stock remains terminal because there is no catalog row
+ * to update.
  */
 export async function classifyAndPersistAuditCapture(input: {
   captureId: string;
@@ -638,26 +702,22 @@ export async function classifyAndPersistAuditCapture(input: {
     return { outcome, status };
   }
 
-  // VERIFIED, AUTO_RECONCILED, UNEXPECTED_STOCK — no human decision governs
-  // WHETHER this writes, so finalize now.
-  await applyAuditOutcome({
-    binAuditId: input.binAuditId,
-    binId: input.binId,
-    originalStatus: input.originalStatus,
-    expectedPartId: input.expectedPartId,
-    expectedQuantity: input.expectedQuantity,
-    outcome,
-    vision: input.vision,
-    evidenceUrl: input.evidenceUrl,
-  });
-  // UNEXPECTED_STOCK has no confirmable comparison — there is no part on
-  // file to attribute the count to, so there is nothing left to dismiss or
-  // retry either. It goes straight to ACCEPTED so the bin can be returned,
-  // and the dialog shows the plain fallback screen rather than offering a
-  // "Retry" that would reopen a camera for an audit already closed out.
-  // VERIFIED/AUTO_RECONCILED still need the operator to actively dismiss
-  // the comparison before the bin is considered safe to move (PENDING_ACK),
-  // even though the write itself already happened.
+  // Unexpected stock has no catalog row that a person could safely update,
+  // so preserve its existing terminal handling. Equal and higher trusted
+  // counts now wait in PENDING_ACK: a manual click applies the observation,
+  // while AUTO_RETURN returns the bin with Inventory untouched.
+  if (outcome === "UNEXPECTED_STOCK") {
+    await applyAuditOutcome({
+      binAuditId: input.binAuditId,
+      binId: input.binId,
+      originalStatus: input.originalStatus,
+      expectedPartId: input.expectedPartId,
+      expectedQuantity: input.expectedQuantity,
+      outcome,
+      vision: input.vision,
+      evidenceUrl: input.evidenceUrl,
+    });
+  }
   const status = outcome === "UNEXPECTED_STOCK" ? "ACCEPTED" : "PENDING_ACK";
   const persisted = await prisma.auditCaptureRequest.updateMany({
     where: { id: input.captureId, status: "CAPTURING", attempt: input.workflowAttempt },
@@ -841,18 +901,6 @@ export async function processAuditCameraCapture(id: string, input: {
       capturedAt: input.capturedAt,
       workflowAttempt: input.workflowAttempt,
     });
-    if (
-      captureMode === "SIMULATION" &&
-      outcome === "AUTO_RECONCILED" &&
-      binAudit.expectedPartId
-    ) {
-      scheduleSimulationRevert({
-        partId: binAudit.expectedPartId,
-        binId: binAudit.binId,
-        previousQuantity: binAudit.expectedQuantity,
-        source: "audit",
-      });
-    }
     await prisma.auditCaptureRequest.update({
       where: { id },
       data: { imageWidth: input.imageWidth, imageHeight: input.imageHeight },
@@ -943,6 +991,11 @@ export async function decideAuditCapture(
   });
   if (!capture) throw new Error("audit_capture_not_found");
 
+  if (decision === "AUTO_RETURN") {
+    await returnAuditCaptureWithoutInventory(captureId, "audit_auto_returned");
+    return;
+  }
+
   if (decision === "RETRY") {
     if (!["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES].includes(capture.status)) {
       throw new Error("audit_capture_not_retryable");
@@ -988,14 +1041,10 @@ export async function decideAuditCapture(
   }
 
   if (decision === "DISMISS") {
-    // A safe PENDING_ACK result was already finalized. Here dismissal is only
-    // acknowledgement that the operator has read it, identical to Done.
+    // PENDING_ACK has not changed inventory yet. Dismissing it follows the
+    // same no-write return path as the timer.
     if (capture.status === "PENDING_ACK") {
-      const accepted = await prisma.auditCaptureRequest.updateMany({
-        where: { id: captureId, status: "PENDING_ACK" },
-        data: { status: "ACCEPTED" },
-      });
-      if (accepted.count !== 1) throw new Error("audit_capture_not_pending");
+      await returnAuditCaptureWithoutInventory(captureId, "audit_dismissed_by_operator");
       return;
     }
 
@@ -1061,11 +1110,51 @@ export async function decideAuditCapture(
 
   // ACCEPT
   if (capture.status === "PENDING_ACK") {
-    const accepted = await prisma.auditCaptureRequest.updateMany({
+    const claimed = await prisma.auditCaptureRequest.updateMany({
       where: { id: captureId, status: "PENDING_ACK" },
+      data: { status: "FINALIZING" },
+    });
+    if (claimed.count !== 1) throw new Error("audit_capture_not_pending");
+
+    const vision = visionFromCaptureRow(capture);
+    const outcome = classifyAuditVision(vision, {
+      quantity: capture.expectedQuantity,
+      partId: capture.binAudit.expectedPartId,
+      capacity: capture.binAudit.bin.capacity,
+    });
+    if (outcome !== "VERIFIED" && outcome !== "AUTO_RECONCILED") {
+      await prisma.auditCaptureRequest.updateMany({
+        where: { id: captureId, status: "FINALIZING" },
+        data: { status: "PENDING_ACK" },
+      });
+      throw new Error("audit_capture_not_confirmable");
+    }
+    const applied = await applyAuditOutcome({
+      binAuditId: capture.binAudit.id,
+      binId: capture.binAudit.binId,
+      originalStatus: capture.expectedQuantity > 0 ? "OCCUPIED" : "AVAILABLE",
+      expectedPartId: capture.binAudit.expectedPartId,
+      expectedQuantity: capture.expectedQuantity,
+      outcome,
+      vision,
+      evidenceUrl: capture.evidenceUrl ?? "",
+    });
+    await prisma.auditCaptureRequest.updateMany({
+      where: { id: captureId, status: "FINALIZING" },
       data: { status: "ACCEPTED" },
     });
-    if (accepted.count !== 1) throw new Error("audit_capture_not_pending");
+    if (
+      applied.inventoryUpdated &&
+      isSimulatedWorkflowCapture(captureId) &&
+      capture.binAudit.expectedPartId
+    ) {
+      scheduleSimulationRevert({
+        partId: capture.binAudit.expectedPartId,
+        binId: capture.binAudit.binId,
+        previousQuantity: capture.expectedQuantity,
+        source: "audit",
+      });
+    }
     return;
   }
 

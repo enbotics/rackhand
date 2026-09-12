@@ -45,6 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -129,5 +130,47 @@ describe("AuditCaptureProvider", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
+  });
+
+  it("returns the bin without accepting quantity after five seconds", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, status: "AUTO_RETURNED" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <CameraHealthProvider>
+        <AuditCaptureProvider>
+          <div>Warehouse</div>
+        </AuditCaptureProvider>
+      </CameraHealthProvider>,
+    );
+    const captures = FakeEventSource.instances.find((source) =>
+      source.url.includes("/api/warehouse/captures/events"),
+    );
+
+    act(() => emitReadyComparison(captures!));
+    expect(
+      screen.getByText(/Returning bin unchanged in 5s/),
+    ).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    fireEvent.animationEnd(container.querySelector("[role='presentation']")!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/warehouse/putaway/captures/capture-1/decision",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ decision: "AUTO_RETURN" }),
+      }),
+    );
   });
 });

@@ -29,6 +29,7 @@ type Phase =
   | "RETURNING"
   | "SAVING"
   | "COMPLETED"
+  | "AUTO_RETURNED"
   | "CANCELLED"
   | "FAILED";
 
@@ -454,7 +455,13 @@ export function GuidedPutawayDialog({
           onWarehouseChanged();
           return;
         }
-        setPhase(placed ? "COMPLETED" : "CANCELLED");
+        setPhase(
+          committed.stage === "COMPLETED"
+            ? "COMPLETED"
+            : placed
+              ? "AUTO_RETURNED"
+              : "CANCELLED",
+        );
         onWarehouseChanged();
       } catch {
         applyFailure({
@@ -827,9 +834,23 @@ export function GuidedPutawayDialog({
           </div>
         )}
 
+        {phase === "AUTO_RETURNED" && operation && (
+          <div className="rounded-xl border border-line bg-bg-elevated p-4 text-ink-muted">
+            <p className="font-semibold">Bin returned unchanged</p>
+            <p className="mt-1 text-xs leading-relaxed">
+              The five-second confirmation window elapsed, so bin{" "}
+              {operation.destinationBinCode} was returned without updating its
+              recorded quantity.
+            </p>
+          </div>
+        )}
+
         {phase === "FAILED" && error && <ErrorNote>{error}</ErrorNote>}
 
-        {(phase === "COMPLETED" || phase === "CANCELLED" || phase === "FAILED") && (
+        {(phase === "COMPLETED" ||
+          phase === "AUTO_RETURNED" ||
+          phase === "CANCELLED" ||
+          phase === "FAILED") && (
           <div className="flex justify-end">
             <button type="button" onClick={() => setOpen(false)} className={BUTTON_VARIANTS.secondary}>
               Close
