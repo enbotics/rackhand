@@ -14,6 +14,7 @@ import requests
 from .camera import WarehouseCamera
 from .client import WarehouseServerClient
 from .config import load_settings
+from .health import DeviceHealthReporter
 from .scale import ScaleReadError, UsbScale
 
 
@@ -118,6 +119,7 @@ def capture_job(
     camera: WarehouseCamera,
     scale: Optional[UsbScale],
     client: WarehouseServerClient,
+    health: DeviceHealthReporter,
     settings,
 ) -> None:
     job_id = safe_job_id(job["jobId"])
@@ -137,6 +139,12 @@ def capture_job(
         daemon=True,
     )
     heartbeat_thread.start()
+    health.update(
+        "CAPTURING",
+        camera_ready=True,
+        preview_ready=True,
+        active_job_id=job_id,
+    )
     try:
         if image_path.exists():
             meta_path = metadata_path(image_path)
@@ -186,9 +194,28 @@ def capture_job(
             }
             save_spool_metadata(image_path, metadata)
 
+        health.update(
+            "UPLOADING",
+            camera_ready=True,
+            preview_ready=True,
+            active_job_id=job_id,
+        )
         upload_spooled_image(client, image_path, metadata)
         delete_spool_files(image_path)
         logger.info("Job %s uploaded successfully", job_id)
+        health.update(
+            "READY",
+            camera_ready=True,
+            preview_ready=True,
+        )
+    except Exception as error:
+        health.update(
+            "DEGRADED",
+            camera_ready=True,
+            preview_ready=True,
+            last_error=str(error),
+        )
+        raise
     finally:
         stop_heartbeat.set()
         heartbeat_thread.join(timeout=1)
@@ -198,6 +225,7 @@ def drain_jobs(
     client: WarehouseServerClient,
     camera: WarehouseCamera,
     scale: Optional[UsbScale],
+    health: DeviceHealthReporter,
     settings,
 ) -> None:
     """Catch up durable jobs after one Realtime wake-up, then return to SSE."""
@@ -207,7 +235,7 @@ def drain_jobs(
         if job is None:
             return
         try:
-            capture_job(job, camera, scale, client, settings)
+            capture_job(job, camera, scale, client, health, settings)
         except Exception as error:
             job_id = job.get("jobId")
             logger.exception("Capture job failed: %s", job_id)
@@ -238,9 +266,16 @@ def run() -> None:
             settings.scale_fallback_weight_grams,
         )
     client = WarehouseServerClient(settings)
-    camera.start()
+    health = DeviceHealthReporter(client, settings.device_heartbeat_seconds)
+    health.start()
     backoff_seconds = settings.reconnect_delay_seconds
     try:
+        camera.start()
+        health.update(
+            "READY",
+            camera_ready=True,
+            preview_ready=True,
+        )
         process_existing_spool(client, settings)
         while running:
             try:
@@ -250,22 +285,40 @@ def run() -> None:
                         break
                     if not should_drain:
                         continue
+                    health.update(
+                        "READY",
+                        camera_ready=True,
+                        preview_ready=True,
+                    )
                     backoff_seconds = settings.reconnect_delay_seconds
                     logger.info("Realtime wake received; checking durable queue")
-                    drain_jobs(client, camera, scale, settings)
+                    drain_jobs(client, camera, scale, health, settings)
                 if running:
                     raise requests.ConnectionError("Camera Realtime stream ended")
             except requests.RequestException as error:
                 if not running:
                     break
+                health.update(
+                    "DEGRADED",
+                    camera_ready=True,
+                    preview_ready=True,
+                    last_error=str(error),
+                )
                 logger.warning("Camera Realtime connection failed: %s", error)
                 logger.info("Reconnecting in %.1f seconds", backoff_seconds)
                 time.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 30)
-            except Exception:
+            except Exception as error:
+                health.update(
+                    "DEGRADED",
+                    camera_ready=camera.started,
+                    preview_ready=camera.started,
+                    last_error=str(error),
+                )
                 logger.exception("Unexpected worker error")
                 time.sleep(settings.reconnect_delay_seconds)
     finally:
+        health.stop()
         camera.close()
         logger.info("Warehouse live camera stopped")
 

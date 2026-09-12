@@ -93,6 +93,20 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
           analysis?: CaptureAnalysis | null;
           cameraJob?: CameraCaptureJobView | null;
         };
+        if (!data.captureId) {
+          // CAPTURING is briefly absent from the pending query while the
+          // browser's own request is still following its job stream. Ignore
+          // that transient gap, but otherwise let durable server state close
+          // a comparison that expired or was completed elsewhere.
+          if (inFlight.current) return;
+          handledId.current = null;
+          setPending(null);
+          setAnalysis(null);
+          setResult(null);
+          setCameraJob(null);
+          setError(null);
+          return;
+        }
         if (data.captureId && data.purpose) {
           if (data.cameraJob) setCameraJob(data.cameraJob);
           // An analyzed result is authoritative even while a retry is still
@@ -276,6 +290,17 @@ export function AuditCaptureProvider({ children }: { children: ReactNode }) {
         error?: { message?: string };
       };
       if (!response.ok) {
+        if (response.status === 409) {
+          // The server is authoritative: an expired/already-decided capture
+          // is no longer actionable. Do not reopen a stale comparison after
+          // its exit animation merely to repeat the same terminal error.
+          handledId.current = null;
+          setResult(null);
+          setAnalysis(null);
+          setPending(null);
+          setCameraJob(null);
+          return;
+        }
         throw new Error(
           body.error?.message ??
             "The verification decision could not be applied.",

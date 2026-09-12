@@ -81,6 +81,17 @@ class WarehouseServerClient:
         )
         response.raise_for_status()
 
+    def report_device_health(self, payload: dict[str, Any]) -> None:
+        # Health reporting runs on its own thread. Do not share the main
+        # requests.Session, which may be blocked reading the Realtime stream.
+        response = requests.post(
+            f"{self.settings.server_base_url}/api/camera/device/heartbeat",
+            headers=self.device_headers,
+            json=payload,
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+
     def upload_image(
         self,
         job_id: str,

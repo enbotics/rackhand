@@ -22,6 +22,10 @@ attempt is rejected safely.
 Install `warehouse-camera.service` as `/etc/systemd/system/warehouse-camera.service`
 and keep the real `camera.env` only on the Pi.
 
+The worker reports authenticated device health independently of capture jobs.
+Keep `DEVICE_HEARTBEAT_SECONDS=15` so the UI remains online; the server marks a
+device degraded after 30 seconds without a report and offline after 90 seconds.
+
 ## USB scale
 
 The worker expects a scale that appears as a serial device and continuously

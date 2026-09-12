@@ -70,6 +70,7 @@ class Settings:
     request_timeout_seconds: float
     reconnect_delay_seconds: float
     lease_heartbeat_seconds: float
+    device_heartbeat_seconds: float
     camera_width: int
     camera_height: int
     preview_width: int
@@ -99,6 +100,7 @@ def load_settings() -> Settings:
         request_timeout_seconds=get_float("REQUEST_TIMEOUT_SECONDS", 15.0),
         reconnect_delay_seconds=get_float("REALTIME_RECONNECT_DELAY_SECONDS", 2.0),
         lease_heartbeat_seconds=get_float("LEASE_HEARTBEAT_SECONDS", 30.0),
+        device_heartbeat_seconds=get_float("DEVICE_HEARTBEAT_SECONDS", 15.0),
         camera_width=get_int("CAMERA_WIDTH", 4608),
         camera_height=get_int("CAMERA_HEIGHT", 2592),
         preview_width=get_int("PREVIEW_WIDTH", 1280),
