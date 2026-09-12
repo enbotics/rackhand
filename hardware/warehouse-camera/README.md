@@ -29,14 +29,26 @@ prints a numeric weight such as `234.5 g` or `0.234 kg`. Configure its device
 path and serial format in `camera.env`:
 
 ```env
-SCALE_SERIAL_PORT=/dev/ttyUSB0
-SCALE_BAUD_RATE=9600
+SCALE_ENABLED=true
+SCALE_SERIAL_PORT=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG011UWY-if00-port0
+SCALE_BAUD_RATE=19200
 SCALE_UNIT=g
 SCALE_READ_TIMEOUT_SECONDS=10
 SCALE_STABLE_SAMPLES=3
 SCALE_STABILITY_TOLERANCE_GRAMS=1
 SCALE_FALLBACK_WEIGHT_GRAMS=150
 ```
+
+The device path starts with `/dev`, not `/pi`. On the camera-only Raspberry Pi,
+disable serial access explicitly:
+
+```env
+SCALE_ENABLED=false
+SCALE_FALLBACK_WEIGHT_GRAMS=150
+```
+
+With `SCALE_ENABLED=false`, the worker does not attempt to open a serial port;
+the photo workflow continues normally and uploads the configured fallback total.
 
 Install dependencies and grant the service user serial-port access:
 

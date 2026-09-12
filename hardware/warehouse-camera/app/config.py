@@ -50,6 +50,18 @@ def get_float(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number") from exc
 
 
+def get_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")
+
+
 @dataclass(frozen=True)
 class Settings:
     server_base_url: str
@@ -66,6 +78,7 @@ class Settings:
     preview_port: int
     autofocus_timeout_seconds: float
     camera_settle_seconds: float
+    scale_enabled: bool
     scale_serial_port: str
     scale_baud_rate: int
     scale_unit: str
@@ -94,8 +107,9 @@ def load_settings() -> Settings:
         preview_port=get_int("PREVIEW_PORT", 8000),
         autofocus_timeout_seconds=get_float("AUTOFOCUS_TIMEOUT_SECONDS", 8.0),
         camera_settle_seconds=get_float("CAMERA_SETTLE_SECONDS", 2.0),
+        scale_enabled=get_bool("SCALE_ENABLED", True),
         scale_serial_port=os.getenv("SCALE_SERIAL_PORT", "/dev/ttyUSB0").strip(),
-        scale_baud_rate=get_int("SCALE_BAUD_RATE", 9600),
+        scale_baud_rate=get_int("SCALE_BAUD_RATE", 19200),
         scale_unit=os.getenv("SCALE_UNIT", "g").strip().lower(),
         scale_read_timeout_seconds=get_float("SCALE_READ_TIMEOUT_SECONDS", 10.0),
         scale_stable_samples=get_int("SCALE_STABLE_SAMPLES", 3),

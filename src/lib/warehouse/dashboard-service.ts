@@ -25,6 +25,10 @@ import type {
 import { isSimulationEvidenceUrl } from "./simulation-evidence";
 import { confidencePercent } from "./audit-types";
 import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
+import {
+  calculatePutawayWeight,
+  configuredFallbackTotalWeightGrams,
+} from "./putaway-weight";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -187,20 +191,29 @@ async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
     ) {
       continue;
     }
+    const measuredQuantity = row.newQuantity ?? row.quantity;
+    const legacyFallback = row.totalWeightGrams === null && measuredQuantity > 0
+      ? calculatePutawayWeight(
+          configuredFallbackTotalWeightGrams(),
+          measuredQuantity,
+        )
+      : null;
     byBin.set(row.destinationBinId, {
       imageUrl: row.verificationImageUrl,
       capturedAt: row.verificationCapturedAt.getTime(),
       source: "PUTAWAY",
       recordId: row.id,
       status: row.status,
-      measuredQuantity: row.newQuantity ?? row.quantity,
-      totalWeightGrams: row.totalWeightGrams,
-      tareWeightGrams: row.tareWeightGrams,
-      netWeightGrams: row.netWeightGrams,
-      unitWeightGrams: row.unitWeightGrams,
+      measuredQuantity,
+      totalWeightGrams: row.totalWeightGrams ?? legacyFallback?.totalWeightGrams ?? null,
+      tareWeightGrams: row.tareWeightGrams ?? legacyFallback?.tareWeightGrams ?? null,
+      netWeightGrams: row.netWeightGrams ?? legacyFallback?.netWeightGrams ?? null,
+      unitWeightGrams: row.unitWeightGrams ?? legacyFallback?.unitWeightGrams ?? null,
       weightSource: row.weightSource === "SCALE" || row.weightSource === "FALLBACK"
         ? row.weightSource
-        : null,
+        : legacyFallback
+          ? "FALLBACK"
+          : null,
     });
   }
   for (const row of auditRows) {

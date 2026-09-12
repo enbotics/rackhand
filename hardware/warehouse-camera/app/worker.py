@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 import re
@@ -6,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -53,6 +55,33 @@ def delete_spool_files(image_path: Path) -> None:
     metadata_path(image_path).unlink(missing_ok=True)
 
 
+def upload_spooled_image(
+    client: WarehouseServerClient,
+    image_path: Path,
+    metadata: dict,
+) -> None:
+    """Upload through both current and pre-weight camera clients safely."""
+    upload_parameters = inspect.signature(client.upload_image).parameters
+    upload_kwargs = {
+        "job_id": metadata["jobId"],
+        "image_path": image_path,
+        "captured_at": metadata["capturedAt"],
+        "width": metadata["width"],
+        "height": metadata["height"],
+    }
+    if "weight_source" in upload_parameters:
+        upload_kwargs["total_weight_grams"] = metadata.get("totalWeightGrams")
+        upload_kwargs["weight_source"] = metadata.get("weightSource")
+    elif metadata.get("totalWeightGrams") is not None:
+        # A rolling deployment may briefly pair the new worker with an older
+        # client.py. Omit both weight fields so the server applies and labels
+        # its own fallback instead of blocking the durable photo upload.
+        logger.warning(
+            "Camera client does not support weight metadata; uploading the photo without it so the server can apply fallback weight"
+        )
+    client.upload_image(**upload_kwargs)
+
+
 def process_existing_spool(client: WarehouseServerClient, settings) -> None:
     """Retry captured evidence after a disconnect without taking a new photo."""
     for image_path in sorted(settings.spool_dir.glob("*.jpg")):
@@ -74,15 +103,7 @@ def process_existing_spool(client: WarehouseServerClient, settings) -> None:
                     "Spool frame has no scale reading; using configured %.3f g fallback",
                     settings.scale_fallback_weight_grams,
                 )
-            client.upload_image(
-                job_id=metadata["jobId"],
-                image_path=image_path,
-                captured_at=metadata["capturedAt"],
-                width=metadata["width"],
-                height=metadata["height"],
-                total_weight_grams=metadata.get("totalWeightGrams"),
-                weight_source=metadata.get("weightSource"),
-            )
+            upload_spooled_image(client, image_path, metadata)
             delete_spool_files(image_path)
         except requests.HTTPError as error:
             if error.response is not None and error.response.status_code in (409, 410):
@@ -95,7 +116,7 @@ def process_existing_spool(client: WarehouseServerClient, settings) -> None:
 def capture_job(
     job: dict,
     camera: WarehouseCamera,
-    scale: UsbScale,
+    scale: Optional[UsbScale],
     client: WarehouseServerClient,
     settings,
 ) -> None:
@@ -134,17 +155,25 @@ def capture_job(
                 # Read immediately before the evidence frame while the bin is
                 # stationary on the scale. Both values are then spooled as one
                 # durable physical observation.
-                try:
-                    total_weight_grams = scale.read_stable_grams()
-                    weight_source = "SCALE"
-                except ScaleReadError as error:
+                if scale is None:
                     total_weight_grams = settings.scale_fallback_weight_grams
                     weight_source = "FALLBACK"
-                    logger.warning(
-                        "USB scale unavailable (%s); using configured %.3f g fallback",
-                        error,
+                    logger.info(
+                        "USB scale disabled; using configured %.3f g fallback",
                         total_weight_grams,
                     )
+                else:
+                    try:
+                        total_weight_grams = scale.read_stable_grams()
+                        weight_source = "SCALE"
+                    except ScaleReadError as error:
+                        total_weight_grams = settings.scale_fallback_weight_grams
+                        weight_source = "FALLBACK"
+                        logger.warning(
+                            "USB scale unavailable (%s); capture will continue with configured %.3f g fallback",
+                            error,
+                            total_weight_grams,
+                        )
             camera.capture(image_path)
             metadata = {
                 "jobId": job_id,
@@ -157,15 +186,7 @@ def capture_job(
             }
             save_spool_metadata(image_path, metadata)
 
-        client.upload_image(
-            job_id=job_id,
-            image_path=image_path,
-            captured_at=metadata["capturedAt"],
-            width=metadata["width"],
-            height=metadata["height"],
-            total_weight_grams=metadata.get("totalWeightGrams"),
-            weight_source=metadata.get("weightSource"),
-        )
+        upload_spooled_image(client, image_path, metadata)
         delete_spool_files(image_path)
         logger.info("Job %s uploaded successfully", job_id)
     finally:
@@ -176,7 +197,7 @@ def capture_job(
 def drain_jobs(
     client: WarehouseServerClient,
     camera: WarehouseCamera,
-    scale: UsbScale,
+    scale: Optional[UsbScale],
     settings,
 ) -> None:
     """Catch up durable jobs after one Realtime wake-up, then return to SSE."""
@@ -210,7 +231,12 @@ def run() -> None:
     logger.info("Warehouse live camera starting device=%s", settings.device_id)
     logger.info("Server: %s", settings.server_base_url)
     camera = WarehouseCamera(settings)
-    scale = UsbScale(settings)
+    scale = UsbScale(settings) if settings.scale_enabled else None
+    if scale is None:
+        logger.info(
+            "USB scale support is disabled; putaway jobs will use the configured %.3f g fallback",
+            settings.scale_fallback_weight_grams,
+        )
     client = WarehouseServerClient(settings)
     camera.start()
     backoff_seconds = settings.reconnect_delay_seconds

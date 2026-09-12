@@ -39,7 +39,10 @@ import {
   type PutawayCaptureView,
 } from "./putaway-capture-types";
 import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
-import { calculatePutawayWeight } from "./putaway-weight";
+import {
+  calculatePutawayWeight,
+  configuredFallbackTotalWeightGrams,
+} from "./putaway-weight";
 
 export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN"];
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
@@ -94,6 +97,16 @@ function captureView(input: {
   notes: string | null;
   movement: { destinationBin: { code: string } | null };
 }, outcome: PutawayCaptureOutcome, captureMode: "PROD" | "SIMULATION"): PutawayCaptureView {
+  const legacyFallback =
+    captureMode === "PROD" &&
+    input.totalWeightGrams === null &&
+    input.observedQuantity !== null &&
+    input.observedQuantity > 0
+      ? calculatePutawayWeight(
+          configuredFallbackTotalWeightGrams(),
+          input.observedQuantity,
+        )
+      : null;
   return {
     captureMode,
     captureId: input.id,
@@ -103,13 +116,15 @@ function captureView(input: {
     expectedQuantity: input.expectedQuantity,
     observedQuantity: input.observedQuantity,
     confidencePercent: input.countConfidence === null ? null : confidencePercent(input.countConfidence),
-    totalWeightGrams: input.totalWeightGrams,
-    tareWeightGrams: input.tareWeightGrams,
-    netWeightGrams: input.netWeightGrams,
-    unitWeightGrams: input.unitWeightGrams,
+    totalWeightGrams: input.totalWeightGrams ?? legacyFallback?.totalWeightGrams ?? null,
+    tareWeightGrams: input.tareWeightGrams ?? legacyFallback?.tareWeightGrams ?? null,
+    netWeightGrams: input.netWeightGrams ?? legacyFallback?.netWeightGrams ?? null,
+    unitWeightGrams: input.unitWeightGrams ?? legacyFallback?.unitWeightGrams ?? null,
     weightSource: input.weightSource === "SCALE" || input.weightSource === "FALLBACK"
       ? input.weightSource
-      : null,
+      : legacyFallback
+        ? "FALLBACK"
+        : null,
     previousImageUrl: input.previousImageUrl,
     currentImageUrl: input.evidenceUrl,
     foreignObjects: parseInspectionForeignObjects(input.foreignObjectsJson),

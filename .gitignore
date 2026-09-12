@@ -34,6 +34,7 @@ yarn-error.log*
 # document variable names for a fresh clone.
 .env*
 !.env.example
+scale.env
 
 # vercel
 .vercel
