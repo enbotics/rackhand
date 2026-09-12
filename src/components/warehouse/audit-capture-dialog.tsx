@@ -697,8 +697,8 @@ export function AuditCaptureDialog() {
           </p>
           <p className="text-sm text-ink-muted">
             {audit.result === "failure"
-              ? "Audit capture failed. Follow the safe return and review outcome in the Warehouse Agent conversation."
-              : "Photo verification finished. Follow the audit result in the Warehouse Agent conversation."}
+              ? "Audit capture failed. Follow the safe return and review outcome in the RackHand Agent conversation."
+              : "Photo verification finished. Follow the audit result in the RackHand Agent conversation."}
           </p>
           <button
             type="button"

@@ -29,7 +29,7 @@ export function OperateView() {
   return (
     <PageShell
       title="Stationary Scan"
-      intent="Capture and identify a part before asking the Warehouse Agent to act on it."
+      intent="Capture and identify a part before asking the RackHand Agent to act on it."
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
         {/* Primary physical camera */}

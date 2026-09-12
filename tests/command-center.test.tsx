@@ -287,7 +287,7 @@ describe("command centre — initial state", () => {
     for (const title of [
       "Live camera",
       "Current scan",
-      "Warehouse agent",
+      "RackHand Agent",
       "Digital warehouse",
       "Inventory",
       "Gantry",
@@ -301,7 +301,7 @@ describe("command centre — initial state", () => {
     // Every section of the menu is reachable from every page. Scoped to the
     // nav landmark: the brand link also contains the word "Warehouse".
     const menu = screen.getByRole("navigation", { name: "Command centre sections" });
-    for (const label of ["Operate", "Warehouse", "History", "Activity"]) {
+    for (const label of ["Operate", "Workspace", "History", "Activity"]) {
       expect(within(menu).getByRole("link", { name: new RegExp(label) })).toBeTruthy();
     }
 
@@ -568,7 +568,7 @@ describe("command centre — degraded services", () => {
     await renderDashboard();
     await askAgent("Where is BRG-6204?");
 
-    await waitFor(() => expect(screen.getByText(/Warehouse agent unavailable/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/RackHand Agent unavailable/)).toBeTruthy());
     // Everything that does not depend on the model still works.
     expect(within(panel("Inventory")).getByText("BRG-6204")).toBeTruthy();
     expect(within(panel("Digital warehouse")).getByText("OCCUPIED")).toBeTruthy();
@@ -586,7 +586,7 @@ describe("command centre — degraded services", () => {
     await waitFor(() => expect(screen.getByText("Camera unavailable")).toBeTruthy());
     expect(within(panel("Inventory")).getByText("BRG-6204")).toBeTruthy();
     expect(within(panel("Digital warehouse")).getByText("OCCUPIED")).toBeTruthy();
-    expect(within(panel("Warehouse agent")).getByRole("button", { name: "Send" })).toBeTruthy();
+    expect(within(panel("RackHand Agent")).getByRole("button", { name: "Send" })).toBeTruthy();
   });
 
   it("keeps the last known warehouse state on screen when a refresh fails", async () => {
@@ -829,8 +829,8 @@ describe("command centre — agent activity trace", () => {
     expect(view.getByText("Gantry RETRIEVAL B2-01 → OUTPUT completed.")).toBeTruthy();
     expect(view.getByText("Inventory BRG-6204 in B2-01: -1, 1 remaining.")).toBeTruthy();
 
-    // Categories are words, not only colours.
-    for (const label of ["AGENT", "TOOL", "HUMAN", "GANTRY", "WAREHOUSE"]) {
+    // Activity stages are words, not only colours.
+    for (const label of ["OBSERVE", "DECIDE", "ACT"]) {
       expect(view.getAllByText(label).length).toBeGreaterThan(0);
     }
     expect(view.getByText("84 ms")).toBeTruthy();

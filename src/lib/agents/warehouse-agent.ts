@@ -260,7 +260,7 @@ export function createWarehouseAgent(
   const materialsPlannerTool = materialsPlanner.asTool({
     name: MATERIALS_PLANNER_TOOL_NAME,
     description:
-      "Ask the specialist Materials Planner to turn a described build into a grounded requirements list (SKU, purpose, category, quantity) — every SKU is a real, currently-stocked catalog item, never invented. Read-only: it never moves anything. Call verify_materials_availability with its exact requirements immediately afterward.",
+      "Ask the specialist Materials Planner to check the engineer's matching day-by-day Google Sheet plan, then turn the described build into a grounded requirements list (SKU, purpose, category, quantity). Every SKU is a real, currently-stocked catalog item, never invented. Read-only: it never moves anything. Call verify_materials_availability with its exact requirements immediately afterward.",
     preserveContext: false,
   });
   const orchestratorTools =

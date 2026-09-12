@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     template: "%s — RackHand",
   },
   description:
-    "RackHand warehouse control: scan a part, identify it against the catalog, and run approved putaway and retrieval through the warehouse agent.",
+    "RackHand workspace control: scan a part, identify it against the catalog, and run approved putaway and retrieval through the RackHand Agent.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

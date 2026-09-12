@@ -21,7 +21,7 @@ export function ActivityView() {
   return (
     <PageShell
       title="Activity"
-      intent="Agent traces: which tools ran, what the graph did, and how long a person took to decide."
+      intent="A short OBSERVE → DECIDE → ACT → RESULT trail for each agent run."
       footer="Traces are observational and never authoritative. They hold no credentials, no image data and no model reasoning, and there is no way to re-run an action from this page."
     >
       <AgentActivityPanel

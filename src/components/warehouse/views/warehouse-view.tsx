@@ -7,26 +7,28 @@ import { WarehouseRack } from "../warehouse-rack";
 import { ManageBinsModal } from "../admin/manage-bins-modal";
 import { BinDetailModal } from "../bin-detail-modal";
 import { AgentPanel } from "../agent-panel";
+import { AgentActivityPanel } from "../agent-activity";
 import { useWarehouseSession } from "../session";
 import { PageShell } from "./shell";
 
 /**
- * WAREHOUSE — a viewport-sized rack beside a tabbed agent/inventory sidebar.
+ * WORKSPACE — a viewport-sized rack beside agent, inventory and activity tabs.
  *
  * Identification choices,
  * HITL approval, workflow/gantry progress and audit results are not separate
  * panels here — they are trailing cards inside AgentPanel's own scrollable
  * transcript (see that file). There is deliberately no standalone "Human
  * decisions", "Approval", "Workflow", "Inventory audit" or "Gantry status"
- * panel on this page: those are states within the conversation, not
- * dashboard widgets beside it.
+ * control panel on this page: those are states within the conversation. The
+ * Activity tab is read-only and shows the short observable execution trail.
  */
 export function WarehouseView() {
   const session = useWarehouseSession();
-  const [tab, setTab] = useState<"agent" | "inventory">("agent");
+  const [tab, setTab] = useState<"agent" | "inventory" | "activity">("agent");
   const tabId = useId();
   const agentTab = useRef<HTMLButtonElement>(null);
   const inventoryTab = useRef<HTMLButtonElement>(null);
+  const activityTab = useRef<HTMLButtonElement>(null);
   const waiting = (session.approval ? 1 : 0) + (session.identification ? 1 : 0);
   const [managingBins, setManagingBins] = useState(false);
   const [selectedBinId, setSelectedBinId] = useState<string | null>(null);
@@ -52,8 +54,8 @@ export function WarehouseView() {
     <PageShell
       viewport
       showHeader={false}
-      title="Warehouse"
-      intent="Watch the gantry, capture a part, and work with your Warehouse Agent."
+      title="Workspace"
+      intent="Watch the gantry, capture a part, and work with your RackHand Agent."
     >
       <div className="warehouse-workspace-grid grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
         <div className="flex min-h-0 min-w-0 flex-col lg:col-span-7">
@@ -77,19 +79,25 @@ export function WarehouseView() {
         </div>
 
         <div className="warehouse-sidebar flex min-h-0 min-w-0 flex-col gap-3 lg:col-span-5">
-          <div role="tablist" aria-label="Warehouse workspace" className="relative grid shrink-0 grid-cols-2 rounded-xl border border-line bg-bg-elevated p-1"
+          <div role="tablist" aria-label="Workspace panels" className="relative grid shrink-0 grid-cols-3 rounded-xl border border-line bg-bg-elevated p-1"
             onKeyDown={(event) => {
               if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
               event.preventDefault();
-              const next = event.key === "Home" ? "agent" : event.key === "End" ? "inventory" : tab === "agent" ? "inventory" : "agent";
+              const tabs = ["agent", "inventory", "activity"] as const;
+              const current = tabs.indexOf(tab);
+              const next = event.key === "Home"
+                ? "agent"
+                : event.key === "End"
+                  ? "activity"
+                  : tabs[(current + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
               setTab(next);
-              (next === "agent" ? agentTab : inventoryTab).current?.focus();
+              (next === "agent" ? agentTab : next === "inventory" ? inventoryTab : activityTab).current?.focus();
             }}>
-            <span aria-hidden="true" className="workspace-tab-indicator" style={{ transform: `translateX(${tab === "agent" ? "0" : "100%"})` }} />
+            <span aria-hidden="true" className="workspace-tab-indicator" style={{ transform: `translateX(${tab === "agent" ? "0" : tab === "inventory" ? "100%" : "200%"})` }} />
             <button ref={agentTab} type="button" role="tab" id={`${tabId}-agent-tab`} aria-controls={`${tabId}-agent-panel`}
               aria-selected={tab === "agent"} tabIndex={tab === "agent" ? 0 : -1} onClick={() => setTab("agent")}
               className="relative z-10 flex items-center justify-center gap-2 rounded-lg px-3 py-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-accent">
-              Warehouse agent
+              RackHand Agent
               {waiting > 0 && <span className="rounded-full bg-warn px-1.5 text-[10px] text-bg" aria-label={`${waiting} decisions waiting`}>{waiting}</span>}
               {session.agentBusy && <span className="h-1.5 w-1.5 rounded-full bg-accent animate-glow-pulse" aria-label="Agent working" />}
             </button>
@@ -97,6 +105,11 @@ export function WarehouseView() {
               aria-selected={tab === "inventory"} tabIndex={tab === "inventory" ? 0 : -1} onClick={() => setTab("inventory")}
               className="relative z-10 rounded-lg px-3 py-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-accent">
               Inventory <span className="ml-1 text-ink-faint">{session.inventory.length}</span>
+            </button>
+            <button ref={activityTab} type="button" role="tab" id={`${tabId}-activity-tab`} aria-controls={`${tabId}-activity-panel`}
+              aria-selected={tab === "activity"} tabIndex={tab === "activity" ? 0 : -1} onClick={() => setTab("activity")}
+              className="relative z-10 rounded-lg px-3 py-3 text-sm font-semibold text-ink focus-visible:outline-2 focus-visible:outline-accent">
+              Activity
             </button>
           </div>
           <div className="workspace-tab-panel min-h-0 flex-1" role="tabpanel" id={`${tabId}-agent-panel`} aria-labelledby={`${tabId}-agent-tab`} hidden={tab !== "agent"}>
@@ -138,6 +151,14 @@ export function WarehouseView() {
           <div className="workspace-tab-panel min-h-0 flex-1" role="tabpanel" id={`${tabId}-inventory-panel`} aria-labelledby={`${tabId}-inventory-tab`} hidden={tab !== "inventory"}>
             <InventoryPanel inventory={session.inventory} loading={session.loading}
               error={session.overviewError} onRetry={session.refresh} contained />
+          </div>
+          <div className="workspace-tab-panel min-h-0 flex-1" role="tabpanel" id={`${tabId}-activity-panel`} aria-labelledby={`${tabId}-activity-tab`} hidden={tab !== "activity"}>
+            <AgentActivityPanel
+              trace={session.trace}
+              error={session.traceError}
+              recent={session.recentTraces}
+              onSelectTrace={session.selectTrace}
+            />
           </div>
         </div>
       </div>

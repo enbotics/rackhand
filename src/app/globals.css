@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-.workspace-tab-indicator { position: absolute; inset: 4px auto 4px 4px; width: calc((100% - 8px) / 2); border-radius: 8px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 2px 10px #0002; transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
+.workspace-tab-indicator { position: absolute; inset: 4px auto 4px 4px; width: calc((100% - 8px) / 3); border-radius: 8px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 2px 10px #0002; transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
 .workspace-tab-panel[hidden] { display: none; }
 .workspace-tab-panel:not([hidden]) { animation: workspace-tab-reveal 260ms ease-out both; }
 @keyframes workspace-tab-reveal { from { opacity: 0; } to { opacity: 1; } }

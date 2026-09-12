@@ -881,7 +881,7 @@ export function WarehouseSessionProvider({
             setAgentUnavailable(true);
           } else {
             setAgentError(
-              failure.message ?? "The warehouse agent could not answer that.",
+              failure.message ?? "The RackHand Agent could not answer that.",
             );
           }
           return;
@@ -889,7 +889,7 @@ export function WarehouseSessionProvider({
 
         applyAgentReply(data);
       } catch {
-        setAgentError("The warehouse agent could not be reached.");
+        setAgentError("The RackHand Agent could not be reached.");
       } finally {
         setAgentBusy(false);
         // Read-only turns change nothing, but a turn that ended in an executed

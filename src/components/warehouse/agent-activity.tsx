@@ -3,13 +3,47 @@
 import { useState } from "react";
 import type { TraceEventView, TraceSummaryView, TraceView } from "@/lib/observability/types";
 import {
-  TRACE_CATEGORY_PRESENTATION,
   TRACE_EVENT_STATUS_PRESENTATION,
   TRACE_STATUS_PRESENTATION,
   formatClockSeconds,
   formatDuration,
 } from "@/lib/warehouse/dashboard-presentation";
 import { EmptyState, ErrorNote, Panel, StatusChip, toneText } from "./ui";
+
+const ACTIVITY_STAGES = {
+  OBSERVE: { label: "OBSERVE", tone: "accent" as const, symbol: "◇" },
+  DECIDE: { label: "DECIDE", tone: "warn" as const, symbol: "◆" },
+  ACT: { label: "ACT", tone: "neutral" as const, symbol: "▸" },
+  RESULT: { label: "RESULT", tone: "ok" as const, symbol: "✓" },
+};
+
+type ActivityStage = keyof typeof ACTIVITY_STAGES;
+
+function activityStage(event: TraceEventView): ActivityStage {
+  if (
+    event.type.startsWith("APPROVAL_") ||
+    event.type.startsWith("CATALOG_RESOLUTION_")
+  ) {
+    return "DECIDE";
+  }
+  if (
+    event.type === "AGENT_COMPLETED" ||
+    event.type === "AGENT_FAILED" ||
+    event.type === "GRAPH_COMPLETED" ||
+    event.type === "GRAPH_BLOCKED" ||
+    event.type === "GRAPH_FAILED"
+  ) {
+    return "RESULT";
+  }
+  if (event.category === "GANTRY" || event.category === "WAREHOUSE") return "ACT";
+  if (event.category === "GRAPH") return event.type === "GRAPH_STARTED" ? "DECIDE" : "ACT";
+  if (event.category === "TOOL") {
+    return event.name?.startsWith("execute_") || event.name?.startsWith("run_")
+      ? "ACT"
+      : "OBSERVE";
+  }
+  return event.status === "FAILED" ? "RESULT" : "OBSERVE";
+}
 
 /**
  * The agent activity timeline (Milestone 12).
@@ -27,7 +61,7 @@ import { EmptyState, ErrorNote, Panel, StatusChip, toneText } from "./ui";
  */
 function TraceRow({ event }: { event: TraceEventView }) {
   const [open, setOpen] = useState(false);
-  const category = TRACE_CATEGORY_PRESENTATION[event.category];
+  const stage = ACTIVITY_STAGES[activityStage(event)];
   const status = TRACE_EVENT_STATUS_PRESENTATION[event.status];
   const duration = formatDuration(event.durationMs);
   const clock = event.completedAt ?? event.startedAt;
@@ -41,12 +75,12 @@ function TraceRow({ event }: { event: TraceEventView }) {
         </span>
 
         <span
-          className={`w-[86px] shrink-0 font-mono text-[10px] tracking-[0.1em] ${toneText(category.tone)}`}
+          className={`w-[86px] shrink-0 font-mono text-[10px] tracking-[0.1em] ${toneText(stage.tone)}`}
         >
           <span aria-hidden="true" className="mr-1">
-            {category.symbol}
+            {stage.symbol}
           </span>
-          {category.label}
+          {stage.label}
         </span>
 
         <div className="min-w-0 flex-1">
@@ -169,7 +203,7 @@ export function AgentActivityPanel({
         <EmptyState>
           No agent activity yet.
           <br />
-          Ask the warehouse something and every step appears here as it happens.
+          Ask RackHand something and every step appears here as it happens.
         </EmptyState>
       ) : (
         <>

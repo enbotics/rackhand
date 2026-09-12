@@ -281,7 +281,7 @@ function ConversationTurn({
             operator ? "text-ink-faint" : "text-accent"
           }`}
         >
-          {operator ? "You" : "Warehouse agent"}
+          {operator ? "You" : "RackHand Agent"}
         </p>
         <div
           className={`mt-1.5 rounded-2xl border px-4 py-3 ${
@@ -331,7 +331,7 @@ function AgentWorking({ liveToolName }: { liveToolName: string | null }) {
   const label = liveToolName
     ? `Running: ${TOOL_LABELS[liveToolName] ?? liveToolName.replaceAll("_", " ")}`
     : elapsed < 1_500
-      ? "Contacting warehouse agent"
+      ? "Contacting RackHand Agent"
       : "Waiting for verified response";
 
   return (
@@ -348,7 +348,7 @@ function AgentWorking({ liveToolName }: { liveToolName: string | null }) {
       </div>
       <div className="rounded-2xl rounded-tl-sm border border-accent-soft/40 bg-accent-tint px-4 py-3">
         <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
-          Warehouse agent
+          RackHand Agent
         </p>
         <div className="mt-1.5 flex items-center gap-2">
             <span className="text-sm text-ink-muted">{label}</span>
@@ -578,7 +578,7 @@ export function AgentPanel({
 
   return (
     <Panel
-      title="Warehouse agent"
+      title="RackHand Agent"
       className="agent-panel h-full min-h-0 overflow-hidden"
       bodyClassName="agent-panel-body flex min-h-0 flex-col"
       showHeader={false}
@@ -586,7 +586,7 @@ export function AgentPanel({
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         {unavailable ? (
           <ErrorNote onRetry={onRetry} retryLabel="Try again">
-            Warehouse agent unavailable — the language model could not be reached. Everything else
+            RackHand Agent unavailable — the language model could not be reached. Everything else
             on this screen still works, and no warehouse state was changed.
           </ErrorNote>
         ) : (
@@ -596,7 +596,7 @@ export function AgentPanel({
         <div
           ref={transcriptRef}
           tabIndex={0}
-          aria-label="Warehouse agent conversation"
+          aria-label="RackHand Agent conversation"
           // The scroll position itself is the only source of truth for
           // "is the operator following along." A wheel/touch/key event says
           // nothing on its own — the trackpad's own inertial scrolling keeps
@@ -791,8 +791,8 @@ export function AgentPanel({
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder="Ask the warehouse…"
-            aria-label="Message the warehouse agent"
+            placeholder="Ask RackHand…"
+            aria-label="Message the RackHand Agent"
             disabled={busy}
             className="min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted disabled:opacity-50"
           />

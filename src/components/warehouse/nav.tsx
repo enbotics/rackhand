@@ -49,8 +49,8 @@ const stroke = {
 const TABS: Tab[] = [
   {
     href: "/",
-    label: "Warehouse",
-    hint: "Bins, inventory, gantry and Warehouse Agent",
+    label: "Workspace",
+    hint: "Bins, inventory, gantry and RackHand Agent",
     icon: (
       <svg viewBox="0 0 20 20" className="size-4" aria-hidden="true">
         <path d="M2.5 5.5h15v11h-15z" {...stroke} />
