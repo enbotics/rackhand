@@ -615,7 +615,11 @@ export async function returnGuidedPutawayBin(
   const placed = decision.placed;
 
   let verification:
-    | { verificationImageUrl: string; verificationCapturedAt: Date }
+    | {
+        verificationImageUrl: string;
+        verificationCapturedAt: Date;
+        inventoryUpdateApproved: boolean;
+      }
     | undefined;
   if (placed) {
     try {
@@ -623,6 +627,7 @@ export async function returnGuidedPutawayBin(
       verification = {
         verificationImageUrl: verified.imageUrl,
         verificationCapturedAt: verified.capturedAt,
+        inventoryUpdateApproved: verified.inventoryUpdateApproved,
       };
     } catch (error) {
       console.error("[guided-putaway] Raspberry Pi verification failed", error);
@@ -638,9 +643,17 @@ export async function returnGuidedPutawayBin(
     }
   }
 
+  const verificationEvidence = verification
+    ? {
+        verificationImageUrl: verification.verificationImageUrl,
+        verificationCapturedAt: verification.verificationCapturedAt,
+      }
+    : undefined;
+  const inventoryUpdateApproved =
+    placed && verification?.inventoryUpdateApproved === true;
   const claimed = await prisma.movement.updateMany({
     where: { id: loaded.id, status: "AWAITING_PLACEMENT" },
-    data: { status: "RETURNING", ...verification },
+    data: { status: "RETURNING", ...verificationEvidence },
   });
   if (claimed.count !== 1) {
     return failure(
@@ -714,7 +727,7 @@ export async function returnGuidedPutawayBin(
     await prisma.movement.update({
       where: { id: loaded.id },
       data: {
-        status: placed ? "READY_TO_COMMIT" : "READY_TO_CANCEL",
+        status: inventoryUpdateApproved ? "READY_TO_COMMIT" : "READY_TO_CANCEL",
         gantryOperationId: operation.operationId,
       },
     });

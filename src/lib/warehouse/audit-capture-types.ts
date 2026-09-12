@@ -4,7 +4,7 @@ export const AUDIT_CAPTURE_CONFIDENCE_THRESHOLD = 0.8;
 export type AuditCaptureOutcome =
   /** Observed matches recorded. No inventory write; just closes the audit out. */
   | "VERIFIED"
-  /** Observed is higher. Safe, no human decision needed — inventory updates automatically. */
+  /** Observed is higher. A manual confirmation may reconcile inventory to this count. */
   | "AUTO_RECONCILED"
   /** Observed is lower. Safe otherwise, but a human must explicitly confirm before it writes. */
   | "REVIEW_DECREASE"
@@ -28,4 +28,8 @@ export interface AuditCaptureView {
   notes: string | null;
 }
 
-export type AuditCaptureDecision = "ACCEPT" | "RETRY" | "DISMISS";
+export type AuditCaptureDecision =
+  | "ACCEPT"
+  | "AUTO_RETURN"
+  | "RETRY"
+  | "DISMISS";

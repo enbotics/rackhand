@@ -17,8 +17,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: { message: "Body is not valid JSON." } }, { status: 400 });
   }
   const decision = (body as { decision?: unknown } | null)?.decision;
-  if (decision !== "ACCEPT" && decision !== "RETRY" && decision !== "CANCEL") {
-    return NextResponse.json({ error: { message: "Decision must be ACCEPT, RETRY or CANCEL." } }, { status: 422 });
+  if (
+    decision !== "ACCEPT" &&
+    decision !== "AUTO_RETURN" &&
+    decision !== "RETRY" &&
+    decision !== "CANCEL"
+  ) {
+    return NextResponse.json(
+      { error: { message: "Decision must be ACCEPT, AUTO_RETURN, RETRY or CANCEL." } },
+      { status: 422 },
+    );
   }
   try {
     return NextResponse.json(await decidePutawayCapture(id, decision as PutawayCaptureDecision, sessionId));

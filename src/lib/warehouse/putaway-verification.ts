@@ -283,7 +283,13 @@ export async function requestPutawayCameraCapture(
 export async function requirePutawayVerification(
   movementId: string,
   isReturn = false,
-): Promise<{ imageUrl: string; capturedAt: Date; quantity: number; simulated: boolean }> {
+): Promise<{
+  imageUrl: string;
+  capturedAt: Date;
+  quantity: number;
+  simulated: boolean;
+  inventoryUpdateApproved: boolean;
+}> {
   const movement = await prisma.movement.findUniqueOrThrow({
     where: { id: movementId },
     include: { destinationBin: true, part: true },
@@ -342,13 +348,18 @@ export async function requirePutawayVerification(
       clearSimulatedWorkflowCapture(request.id);
       throw new Error("Putaway verification failed.");
     }
-    if (current.status === "ACCEPTED" && current.evidenceUrl && current.capturedAt && current.observedQuantity !== null) {
+    if (
+      (current.status === "ACCEPTED" || current.status === "AUTO_RETURNED") &&
+      current.evidenceUrl &&
+      current.capturedAt
+    ) {
       clearSimulatedWorkflowCapture(request.id);
       return {
         imageUrl: current.evidenceUrl,
         capturedAt: current.capturedAt,
-        quantity: current.observedQuantity,
+        quantity: current.observedQuantity ?? current.expectedQuantity,
         simulated,
+        inventoryUpdateApproved: current.status === "ACCEPTED",
       };
     }
 
@@ -694,6 +705,26 @@ export async function decidePutawayCapture(
       });
     });
     return { ok: true, status: "WAITING_FOR_CAMERA" as const };
+  }
+
+  if (decision === "AUTO_RETURN") {
+    // The five-second UI timeout is intentionally not an approval. It merely
+    // releases the physical workflow so the bin can go back to its shelf.
+    // Keeping a distinct terminal status lets every putaway caller preserve
+    // the recorded quantity while still retaining the captured evidence.
+    const returned = await prisma.putawayCaptureRequest.updateMany({
+      where: {
+        id,
+        status: { in: RETRYABLE_CAPTURE_STATUSES },
+        evidenceUrl: { not: null },
+        capturedAt: { not: null },
+      },
+      data: { status: "AUTO_RETURNED" },
+    });
+    if (returned.count !== 1) {
+      throw new Error("This verification can no longer be returned automatically.");
+    }
+    return { ok: true, status: "AUTO_RETURNED" as const };
   }
 
   const capture = await prisma.putawayCaptureRequest.findUnique({ where: { id } });

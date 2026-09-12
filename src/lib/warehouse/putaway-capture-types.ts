@@ -30,4 +30,8 @@ export interface PutawayCaptureView {
   notes: string | null;
 }
 
-export type PutawayCaptureDecision = "ACCEPT" | "RETRY" | "CANCEL";
+export type PutawayCaptureDecision =
+  | "ACCEPT"
+  | "AUTO_RETURN"
+  | "RETRY"
+  | "CANCEL";
