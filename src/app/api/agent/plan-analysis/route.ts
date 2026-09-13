@@ -56,7 +56,7 @@ export async function POST(request: Request) {
       {
         error: {
           code: "today_plan_analysis_failed",
-          message: "RackHand could not start today's plan analysis.",
+          message: "RackHand could not start tomorrow’s plan analysis.",
         },
       },
       { status: 500 },

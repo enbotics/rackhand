@@ -21,6 +21,8 @@ headers for backward compatibility.
 6. The workflow pauses for operator approval. Nothing has moved at this point.
 7. After approval, RackHand revalidates stock, selects enough occupied bins to
    cover every quantity, and retrieves the first selected bin to `OUTPUT`.
+   Existing trusted verification can avoid a separate audit, but never removes
+   a requested bin from this preparation queue.
 8. The engineer removes the requested items, approves the return, and completes
    the existing fresh-photo comparison. Only after that bin is safely returned
    does RackHand offer the next selected bin.

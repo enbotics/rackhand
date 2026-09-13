@@ -55,6 +55,19 @@ export interface TodayPlanAnalysisResultView {
   shortages: Array<{ sku: string; required: number; available: number }>;
   auditedBinCodes: string[];
   verificationAuditRunIds: string[];
+  auditIssues: Array<{
+    binCode: string;
+    expectedQuantity: number;
+    observedQuantity: number | null;
+    confidencePercent: number | null;
+    reason: string;
+  }>;
+  scanSkips: Array<{
+    sku: string;
+    binCode: string;
+    lastVerifiedAt: string | null;
+    reason: string;
+  }>;
 }
 
 export interface TodayPlanAnalysisRunView {

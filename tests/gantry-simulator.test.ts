@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/warehouse/db";
 import { GantryError } from "@/lib/gantry/errors";
 import { getGantryController, getGantryMode, resetGantryController } from "@/lib/gantry/factory";
@@ -207,6 +207,26 @@ describe("guided bin transfer", () => {
       "invalid_location",
     );
   });
+
+  it("retrieves an audited bin to SCAN_STATION and puts it back in the same shelf slot", async () => {
+    const presented = await gantry.presentBinForAudit({ binCode: "B4-01" });
+    expect(presented).toMatchObject({
+      type: "AUDIT_PRESENTATION",
+      source: "B4-01",
+      destination: "SCAN_STATION",
+      status: "COMPLETED",
+    });
+    expect((await gantry.getStatus()).currentLocation).toBe("SCAN_STATION");
+
+    const returned = await gantry.returnBinFromAudit({ binCode: "B4-01" });
+    expect(returned).toMatchObject({
+      type: "AUDIT_RETURN",
+      source: "SCAN_STATION",
+      destination: "B4-01",
+      status: "COMPLETED",
+    });
+    expect((await gantry.getStatus()).currentLocation).toBe("B4-01");
+  });
 });
 
 describe("concurrency", () => {
@@ -386,6 +406,16 @@ describe("controller factory", () => {
     const first = getGantryController();
     expect(first).toBeInstanceOf(SimulatedGantryController);
     expect(getGantryController()).toBe(first);
+  });
+
+  it("keeps the active controller when the factory module is loaded again", async () => {
+    resetGantryController();
+    const first = getGantryController();
+
+    vi.resetModules();
+    const reloadedFactory = await import("@/lib/gantry/factory");
+
+    expect(reloadedFactory.getGantryController()).toBe(first);
   });
 
   it("reads GANTRY_MODE case-insensitively and falls back to SIMULATION", () => {

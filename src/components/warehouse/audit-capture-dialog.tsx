@@ -509,16 +509,17 @@ export function AuditCaptureDialog() {
       ["READY", "INCREASED", "REVIEW_DECREASE"].includes(result.outcome);
     const warning =
       result?.outcome === "ANALYSIS_FAILED"
-        ? result.notes || "The saved frame could not be analyzed. Retry analysis without taking another photo."
+        ? result.notes ||
+          "The saved frame could not be analyzed. Retry analysis without taking another photo."
         : result?.outcome === "FOREIGN_OBJECTS"
-        ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
-        : result?.outcome === "LOW_CONFIDENCE"
-          ? "The count is not confident enough to change inventory. Improve the view and retry."
-          : result?.outcome === "CAPACITY_EXCEEDED"
-            ? "The observed quantity exceeds this bin’s capacity. Correct the contents or choose another bin."
-            : audit.result === "failure"
-              ? `The image could not be analyzed. ${simulation ? "Run the next simulated capture." : "Take a fresh photo and retry."}`
-              : null;
+          ? `Remove ${result.foreignObjects.length ? result.foreignObjects.join(", ") : "the unexpected object"}, then ${retryCapture}.`
+          : result?.outcome === "LOW_CONFIDENCE"
+            ? "The count is not confident enough to change inventory. Improve the view and retry."
+            : result?.outcome === "CAPACITY_EXCEEDED"
+              ? "The observed quantity exceeds this bin’s capacity. Correct the contents or choose another bin."
+              : audit.result === "failure"
+                ? `The image could not be analyzed. ${simulation ? "Run the next simulated capture." : "Take a fresh photo and retry."}`
+                : null;
     return (
       <Modal
         title={`Putaway comparison · ${audit.pending.binCode}`}
@@ -560,7 +561,8 @@ export function AuditCaptureDialog() {
             <div>
               {result.weightSource === "FALLBACK" && (
                 <p className="mb-2 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-xs text-warn">
-                  Scale unavailable · using the configured {result.totalWeightGrams} g fallback total.
+                  Scale unavailable · using the configured{" "}
+                  {result.totalWeightGrams} g fallback total.
                 </p>
               )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -730,7 +732,8 @@ export function AuditCaptureDialog() {
           )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
-            {(result.outcome === "REVIEW_DECREASE" || copy.primary.decision === "RETRY") && (
+            {(result.outcome === "REVIEW_DECREASE" ||
+              copy.primary.decision === "RETRY") && (
               <button
                 type="button"
                 disabled={audit.deciding || closing}
@@ -814,14 +817,14 @@ export function AuditCaptureDialog() {
     const headline = audit.reanalyzing
       ? "Reanalyzing the saved photo"
       : status === "PROCESSING" || status === "UPLOADED"
-      ? "Analyzing captured frame"
-      : status === "CLAIMED" || position === 0
-        ? "Pi camera is capturing now"
-        : typeof position === "number" && position > 1
-          ? `Waiting for Pi camera · position ${position}`
-          : typeof position === "number"
-            ? "Next in the Pi camera queue"
-            : "Joining the Pi camera queue";
+        ? "Analyzing captured frame"
+        : status === "CLAIMED" || position === 0
+          ? "Camera is capturing now"
+          : typeof position === "number" && position > 1
+            ? `Waiting for Camera · position ${position}`
+            : typeof position === "number"
+              ? "Next in the Camera queue"
+              : "Joining the Camera queue";
     return (
       <Modal
         title={`${audit.reanalyzing ? "Saved photo" : "Camera queue"} · ${audit.pending.binCode}`}
@@ -863,20 +866,22 @@ export function AuditCaptureDialog() {
     audit.pending.captureMode === "SIMULATION"
       ? "Running the simulated capture"
       : cameraStatus === "PROCESSING"
-      ? "Gemini is analyzing the captured frame"
-      : cameraStatus === "UPLOADED"
-        ? "Frame uploaded securely"
-        : cameraStatus === "CLAIMED"
-          ? "Pi camera is capturing now"
-          : cameraStatus === "FAILED" || cameraStatus === "CANCELLED" || cameraStatus === "EXPIRED"
-            ? "Pi capture needs attention"
-            : health?.connection === "OFFLINE"
-              ? "Raspberry Pi is offline"
-              : typeof queuePosition === "number" && queuePosition > 1
-                ? `Waiting for Pi camera · position ${queuePosition}`
-                : cameraStatus === "PENDING"
-                  ? "Next in the Pi camera queue"
-                  : "Joining the Pi camera queue";
+        ? "Gemini is analyzing the captured frame"
+        : cameraStatus === "UPLOADED"
+          ? "Frame uploaded securely"
+          : cameraStatus === "CLAIMED"
+            ? "Camera is capturing now"
+            : cameraStatus === "FAILED" ||
+                cameraStatus === "CANCELLED" ||
+                cameraStatus === "EXPIRED"
+              ? "Pi capture needs attention"
+              : health?.connection === "OFFLINE"
+                ? "Camera is offline"
+                : typeof queuePosition === "number" && queuePosition > 1
+                  ? `Waiting for camera · position ${queuePosition}`
+                  : cameraStatus === "PENDING"
+                    ? "Next in the camera queue"
+                    : "Joining the camera queue";
   // A spinner over a dead attempt would claim progress that is not happening,
   // so the ring stops on exactly the states the headline calls out as stuck.
   const waitingStalled =
@@ -904,12 +909,18 @@ export function AuditCaptureDialog() {
           The photo is captured and analyzed automatically. If the Pi cannot
           complete this attempt, retry it or abort the workflow safely.
         </p>
-        {audit.error && <p className="mt-2 text-xs text-danger">{audit.error}</p>}
+        {audit.error && (
+          <p className="mt-2 text-xs text-danger">{audit.error}</p>
+        )}
         {audit.cameraJob?.error && (
-          <p className="mt-2 text-xs text-danger">{audit.cameraJob.error.message}</p>
+          <p className="mt-2 text-xs text-danger">
+            {audit.cameraJob.error.message}
+          </p>
         )}
         <CameraProgress status={cameraStatus} />
-        {audit.pending.captureMode === "PROD" && <CameraHealthLine health={health} />}
+        {audit.pending.captureMode === "PROD" && (
+          <CameraHealthLine health={health} />
+        )}
         <div className="mt-5 flex flex-wrap justify-center gap-2">
           <button
             type="button"
@@ -942,7 +953,8 @@ function AutoReturnNotice({ seconds }: { seconds: number }) {
       role="status"
       aria-live="polite"
     >
-      Returning bin unchanged in {seconds}s · inventory quantity will not be updated
+      Returning bin unchanged in {seconds}s · inventory quantity will not be
+      updated
     </p>
   );
 }
@@ -969,16 +981,22 @@ function CaptureSpinner({ stalled = false }: { stalled?: boolean }) {
   );
 }
 
-function CameraProgress({ status }: { status?: CameraCaptureJobView["status"] }) {
+function CameraProgress({
+  status,
+}: {
+  status?: CameraCaptureJobView["status"];
+}) {
   const stages = ["Queued", "Pi capture", "Uploaded", "Gemini"];
-  const current = status === "CLAIMED"
-    ? 1
-    : status === "UPLOADED"
-      ? 2
-      : status === "PROCESSING" || status === "COMPLETED"
-        ? 3
-        : 0;
-  const failed = status === "FAILED" || status === "CANCELLED" || status === "EXPIRED";
+  const current =
+    status === "CLAIMED"
+      ? 1
+      : status === "UPLOADED"
+        ? 2
+        : status === "PROCESSING" || status === "COMPLETED"
+          ? 3
+          : 0;
+  const failed =
+    status === "FAILED" || status === "CANCELLED" || status === "EXPIRED";
   return (
     <div
       className="mt-5 grid grid-cols-4 gap-1"
@@ -997,9 +1015,11 @@ function CameraProgress({ status }: { status?: CameraCaptureJobView["status"] })
                     : "bg-line"
             }`}
           />
-          <p className={`mt-1 truncate font-mono text-[8px] uppercase tracking-wide ${
-            index <= current ? "text-ink-muted" : "text-ink-faint"
-          }`}>
+          <p
+            className={`mt-1 truncate font-mono text-[8px] uppercase tracking-wide ${
+              index <= current ? "text-ink-muted" : "text-ink-faint"
+            }`}
+          >
             {stage}
           </p>
         </div>
@@ -1014,18 +1034,21 @@ function CameraHealthLine({
   health: ReturnType<typeof useCameraHealth>["health"];
 }) {
   const connection = health?.connection ?? "OFFLINE";
-  const tone = connection === "ONLINE"
-    ? "bg-success"
-    : connection === "DEGRADED"
-      ? "bg-warn"
-      : "bg-danger";
+  const tone =
+    connection === "ONLINE"
+      ? "bg-success"
+      : connection === "DEGRADED"
+        ? "bg-warn"
+        : "bg-danger";
   return (
     <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 font-mono text-[9px] uppercase tracking-[0.12em] text-ink-muted">
       <span className="flex items-center gap-1.5">
         <span className={`h-1.5 w-1.5 rounded-full ${tone}`} />
         Pi {connection.toLowerCase()}
       </span>
-      {health?.cpuTemperatureC != null && <span>{health.cpuTemperatureC.toFixed(1)}°C</span>}
+      {health?.cpuTemperatureC != null && (
+        <span>{health.cpuTemperatureC.toFixed(1)}°C</span>
+      )}
       {health?.workerState && health.workerState !== "UNKNOWN" && (
         <span>{health.workerState.replaceAll("_", " ")}</span>
       )}

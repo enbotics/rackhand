@@ -20,9 +20,9 @@ export function TodayPlanTrigger() {
     <Panel title="Manual RackHand trigger" className="w-full max-w-xl">
       <div className="space-y-5">
         <div>
-          <h2 className="text-lg font-semibold text-ink">Analyze today’s Google Sheet plan</h2>
+          <h2 className="text-lg font-semibold text-ink">Analyze tomorrow’s Google Sheet plan</h2>
           <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-            RackHand will read today’s enabled rows, resolve catalog materials, reuse trustworthy
+            RackHand will read tomorrow’s enabled rows, resolve catalog materials, reuse trustworthy
             inventory evidence, and audit only bins whose evidence needs refreshing.
           </p>
         </div>
@@ -53,7 +53,7 @@ export function TodayPlanTrigger() {
               ? "Starting RackHand…"
               : running
                 ? "Analysis already running"
-                : "Analyze today’s plan"}
+                : "Analyze tomorrow’s plan"}
           </button>
           <Link href="/" className={BUTTON_VARIANTS.secondary}>
             View RackHand progress

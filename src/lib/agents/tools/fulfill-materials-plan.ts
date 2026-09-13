@@ -9,14 +9,9 @@
 import { tool } from "@strands-agents/sdk";
 import { z } from "zod";
 import { runRetrievalGraph } from "@/lib/warehouse/graphs/retrieval-graph";
-import { runInventoryAudit } from "@/lib/warehouse/inventory-audit-service";
-import {
-  MAX_MATERIALS_FULFILLMENT_BINS,
-  prepareMaterialsFulfillment,
-} from "@/lib/warehouse/materials-fulfillment-service";
+import { prepareMaterialsFulfillment } from "@/lib/warehouse/materials-fulfillment-service";
 import {
   getContextRequestId,
-  getContextWorkflowSessionId,
   recordContextWorkflow,
 } from "../request-context";
 import { logTool, toolFailure } from "./tool-logging";
@@ -40,60 +35,18 @@ export const fulfillMaterialsPlanInputSchema = z.object({
 export const fulfillMaterialsPlanTool = tool({
   name: FULFILL_MATERIALS_PLAN_TOOL_NAME,
   description:
-    "Prepare and start physical fulfillment of the exact requirements returned by materials_planner. THIS TOOL REQUIRES OPERATOR APPROVAL. After approval it trusts bins whose latest accepted audit or verified putaway is newer than every inventory-changing event. It physically audits only the minimum relevant uncertain bins needed to establish the requested stock, then selects enough verified OCCUPIED bins and retrieves the first to OUTPUT. It never audits unrelated bins. The server then offers a fresh-photo return for that exact bin and continues the remaining selected bins one by one; never call execute_retrieval separately for these requirements.",
+    "Prepare and start physical fulfillment of every exact requirement returned by materials_planner. THIS TOOL REQUIRES OPERATOR APPROVAL. After approval it revalidates recorded shelf stock, selects enough OCCUPIED bins for all requirements, and retrieves the first to OUTPUT even when a bin already has trusted verification evidence. The server then requires a fresh-photo return for that exact bin before continuing the remaining selected bins one by one; never call execute_retrieval separately for these requirements.",
   inputSchema: fulfillMaterialsPlanInputSchema,
   callback: async ({ requirements }) => {
     try {
-      const attemptedVerificationBins = new Set<string>();
-      const verificationAuditRunIds: string[] = [];
-      let plan = await prepareMaterialsFulfillment(requirements);
-
-      // Re-evaluate after every physical observation. A lower reconciled
-      // count can make one more relevant bin necessary; a higher count can
-      // make every remaining candidate unnecessary. This is deliberately
-      // one bin at a time so the workflow stops at the minimum useful work.
-      while (!plan.ok && plan.reason === "materials_verification_required") {
-        const next = plan.verificationTargets?.find(
-          (target) => !attemptedVerificationBins.has(target.binCode),
-        );
-        if (!next) {
-          plan = await prepareMaterialsFulfillment(requirements, {
-            excludeVerificationBinCodes: [...attemptedVerificationBins],
-          });
-          break;
-        }
-        if (attemptedVerificationBins.size >= MAX_MATERIALS_FULFILLMENT_BINS) {
-          return {
-            ok: false as const,
-            reason: "materials_plan_invalid" as const,
-            message: `The plan requires more than ${MAX_MATERIALS_FULFILLMENT_BINS} physical verification trips. No fulfillment bin was retrieved.`,
-            shortages: [],
-            verificationAuditRunIds,
-          };
-        }
-
-        attemptedVerificationBins.add(next.binCode);
-        const audit = await runInventoryAudit({
-          binCode: next.binCode,
-          trigger: "CLIENT",
-          ownerSessionId: getContextWorkflowSessionId(),
-        });
-        verificationAuditRunIds.push(audit.auditRunId);
-
-        if (audit.results.some((result) => result.reason === "audit_return_failed")) {
-          return {
-            ok: false as const,
-            reason: "materials_verification_incomplete" as const,
-            message: `Verification stopped because bin ${next.binCode} could not be returned safely. No fulfillment bin was retrieved.`,
-            shortages: [],
-            verificationAuditRunIds,
-          };
-        }
-
-        plan = await prepareMaterialsFulfillment(requirements, {
-          excludeVerificationBinCodes: [...attemptedVerificationBins],
-        });
-      }
+      // PREP means retrieve every requested stocked bin. Verification evidence
+      // is deliberately not a selection gate here: the mandatory photo return
+      // observes and reconciles each bin after the engineer removes material.
+      // The separate engineering-plan audit path keeps the stricter evidence
+      // policy and may skip bins whose verification is already current.
+      const plan = await prepareMaterialsFulfillment(requirements, {
+        requireTrustedEvidence: false,
+      });
 
       if (!plan.ok) {
         logTool(
@@ -133,8 +86,8 @@ export const fulfillMaterialsPlanTool = tool({
         fulfillmentWorkflow: true,
         selectedBins: plan.selectedBins,
         fulfillmentTotal: plan.selectedBins.length,
-        verificationAuditRunIds,
-        verifiedForPlanBinCodes: [...attemptedVerificationBins],
+        verificationAuditRunIds: [],
+        verifiedForPlanBinCodes: [],
         remainingBinCodes: result.ok
           ? remaining.map((selection) => selection.binCode)
           : [],

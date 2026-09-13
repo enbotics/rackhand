@@ -181,7 +181,7 @@ export interface WarehouseSession {
   send: (message: string) => void;
   retryLast: () => void;
 
-  /* ---- durable, no-HITL analysis of today's engineering plan ---- */
+  /* ---- durable, no-HITL analysis of tomorrow's engineering plan ---- */
   todayPlanAnalysis: TodayPlanAnalysisRunView | null;
   todayPlanAnalysisTriggering: boolean;
   todayPlanAnalysisError: string | null;
@@ -282,18 +282,22 @@ export function WarehouseSessionProvider({
 
   // Authoritative warehouse state.
   const [actionInFlight, setActionInFlight] = useState(false);
-  const { overview, loading, error: overviewError, refresh } =
-    useWarehouseOverview(actionInFlight || agentBusy);
-  const { trace, error: traceError } = useAgentTrace(traceId);
-  const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
-  const { materialsPlanCheck } = usePendingMaterialsPlan();
-  const { liveToolName } = useLiveToolStatus(agentBusy);
   const {
     run: todayPlanAnalysis,
     triggering: todayPlanAnalysisTriggering,
     error: todayPlanAnalysisError,
     trigger: triggerTodayPlanAnalysis,
   } = useTodayPlanAnalysis();
+  const planAnalysisInFlight =
+    todayPlanAnalysisTriggering ||
+    todayPlanAnalysis?.status === "QUEUED" ||
+    todayPlanAnalysis?.status === "RUNNING";
+  const { overview, loading, error: overviewError, refresh } =
+    useWarehouseOverview(actionInFlight || agentBusy || planAnalysisInFlight);
+  const { trace, error: traceError } = useAgentTrace(traceId);
+  const { traces: recentTraces, refresh: refreshTraces } = useRecentTraces();
+  const { materialsPlanCheck } = usePendingMaterialsPlan();
+  const { liveToolName } = useLiveToolStatus(agentBusy);
   // Read by `send` and by the dismiss action, neither of which should be
   // rebuilt every second just because a poll returned. A ref keeps them
   // stable while still seeing the latest check.
@@ -335,7 +339,11 @@ export function WarehouseSessionProvider({
     if (current) setDismissedMaterialsCheckId(current.id);
   }, []);
   const { status: gantry, error: gantryError } = useGantryStatus(
-    actionInFlight || agentBusy || overview?.latestAudit?.status === "RUNNING",
+    actionInFlight ||
+      agentBusy ||
+      planAnalysisInFlight ||
+      overview?.latestAudit?.status === "PENDING" ||
+      overview?.latestAudit?.status === "RUNNING",
   );
 
   useEffect(() => {

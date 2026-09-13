@@ -273,6 +273,15 @@ export function currentEngineeringPlanWorkDate(): string {
   }
 }
 
+/** Return the next calendar work date after an ISO date, including month/year rollover. */
+export function tomorrowEngineeringPlanWorkDate(
+  workDate = currentEngineeringPlanWorkDate(),
+): string {
+  const [year, month, day] = workDate.split("-").map(Number);
+  const tomorrow = new Date(Date.UTC(year, month - 1, day + 1));
+  return tomorrow.toISOString().slice(0, 10);
+}
+
 async function authorizationHeader(): Promise<string | null> {
   const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL?.trim();
   const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
@@ -371,6 +380,33 @@ export async function getTodayEngineeringPlanContext(): Promise<EngineeringPlanC
     configured: true,
     query,
     currentWorkDate: sheet.currentWorkDate,
+    matchCount: matches.length,
+    rows: matches,
+    ...(matches.length === 0 ? { reason: "no_match" as const } : {}),
+  };
+}
+
+/** Read all enabled rows for one exact, caller-selected warehouse work date. */
+export async function getEngineeringPlanContextForWorkDate(
+  workDate: string,
+): Promise<EngineeringPlanContext> {
+  const query = `enabled engineering plan for ${workDate}`;
+  const sheet = await readEngineeringPlanRows();
+  if (sheet.reason) {
+    return {
+      configured: sheet.configured,
+      query,
+      currentWorkDate: workDate,
+      matchCount: 0,
+      rows: [],
+      reason: sheet.reason,
+    };
+  }
+  const matches = findTodayEngineeringPlanRows(sheet.rows, workDate);
+  return {
+    configured: true,
+    query,
+    currentWorkDate: workDate,
     matchCount: matches.length,
     rows: matches,
     ...(matches.length === 0 ? { reason: "no_match" as const } : {}),

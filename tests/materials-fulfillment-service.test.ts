@@ -78,6 +78,7 @@ describe("materials fulfillment preparation", () => {
       "B4-02",
       "B1-01",
     ]);
+    expect(plan.selectedBins.every((bin) => bin.verification?.trusted)).toBe(true);
   });
 
   it("reports a shortage without discarding bins ready for other materials", async () => {
@@ -182,5 +183,36 @@ describe("materials fulfillment preparation", () => {
       reason: "materials_verification_incomplete",
       shortages: [{ sku: "SKU-1", required: 8, available: 2 }],
     });
+  });
+
+  it("includes trusted and untrusted stocked bins in an approved preparation job", async () => {
+    inventoryBySku.set("MOUNTING-KIT", [
+      { binCode: "B4-01", binStatus: "OCCUPIED", quantity: 10 },
+    ]);
+    inventoryBySku.set("MOTOR-DRIVER", [
+      { binCode: "B3-03", binStatus: "OCCUPIED", quantity: 4 },
+    ]);
+    inventoryBySku.set("SPACER", [
+      { binCode: "B6-03", binStatus: "OCCUPIED", quantity: 38 },
+    ]);
+    untrustedBins.add("B4-01");
+    untrustedBins.add("B6-03");
+
+    const plan = await prepareMaterialsFulfillment(
+      [
+        requirement("MOUNTING-KIT", 1),
+        requirement("MOTOR-DRIVER", 1),
+        requirement("SPACER", 4),
+      ],
+      { requireTrustedEvidence: false },
+    );
+
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.selectedBins.map((bin) => bin.binCode)).toEqual([
+      "B4-01",
+      "B3-03",
+      "B6-03",
+    ]);
   });
 });

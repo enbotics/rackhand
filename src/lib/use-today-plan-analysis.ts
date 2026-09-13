@@ -20,7 +20,7 @@ function errorMessage(payload: unknown, fallback: string): string {
   return typeof message === "string" && message.trim() ? message : fallback;
 }
 
-/** Durable, browser-session-scoped view of today's RackHand plan analysis. */
+/** Durable, browser-session-scoped view of tomorrow's RackHand plan analysis. */
 export function useTodayPlanAnalysis() {
   const [run, setRun] = useState<TodayPlanAnalysisRunView | null>(null);
   const [triggering, setTriggering] = useState(false);
@@ -66,7 +66,7 @@ export function useTodayPlanAnalysis() {
       };
       if (!response.ok) {
         if (mounted.current) {
-          setError(errorMessage(payload, "RackHand could not start today's plan analysis."));
+          setError(errorMessage(payload, "RackHand could not start tomorrow’s plan analysis."));
         }
         return false;
       }

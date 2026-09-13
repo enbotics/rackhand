@@ -51,7 +51,21 @@ function readSimulatorOptions(): SimulatorOptions {
   };
 }
 
-const globalForGantry = globalThis as unknown as { gantryController?: GantryController };
+/**
+ * Route handlers may bundle this module independently. `instanceof` is not a
+ * safe cache check in that situation: two copies of SimulatedGantryController
+ * have different constructor identities even though they implement the same
+ * controller. The status route could therefore replace the exact instance an
+ * audit was moving, making the rack observe a fresh IDLE simulator forever.
+ *
+ * A small explicit version preserves one controller across route bundles and
+ * still gives implementation changes a deliberate cache-busting mechanism.
+ */
+const GANTRY_CONTROLLER_CACHE_VERSION = 2;
+const globalForGantry = globalThis as unknown as {
+  gantryController?: GantryController;
+  gantryControllerVersion?: number;
+};
 
 export function getGantryController(): GantryController {
   const mode = getGantryMode();
@@ -63,11 +77,12 @@ export function getGantryController(): GantryController {
     );
   }
 
-  // Fast Refresh replaces the simulator class module but intentionally keeps
-  // globalThis. Do not keep an instance whose old prototype predates a motion
-  // change (for example, the final putaway homing phase).
-  if (!(globalForGantry.gantryController instanceof SimulatedGantryController)) {
+  if (
+    !globalForGantry.gantryController ||
+    globalForGantry.gantryControllerVersion !== GANTRY_CONTROLLER_CACHE_VERSION
+  ) {
     globalForGantry.gantryController = new SimulatedGantryController(readSimulatorOptions());
+    globalForGantry.gantryControllerVersion = GANTRY_CONTROLLER_CACHE_VERSION;
   }
   return globalForGantry.gantryController;
 }
@@ -75,4 +90,5 @@ export function getGantryController(): GantryController {
 /** Test/dev helper: drop the cached instance so the next call builds a fresh machine. */
 export function resetGantryController(): void {
   globalForGantry.gantryController = undefined;
+  globalForGantry.gantryControllerVersion = undefined;
 }

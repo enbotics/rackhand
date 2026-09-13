@@ -9,6 +9,7 @@ import {
   InventoryAuditAlreadyRunningError,
   recoverStaleInventoryAudit,
 } from "./audit-recovery-service";
+import { confirmBinAuditObservation } from "./audit-bin-service";
 
 export type InventoryAuditTrigger = "CLIENT" | "TRUSTED_INTERNAL";
 
@@ -21,6 +22,8 @@ export async function runInventoryAudit(input: {
   trigger: InventoryAuditTrigger;
   /** Owner of interactive capture decisions for client-visible workflows. */
   ownerSessionId?: string | null;
+  /** Preserve inventory and settle discrepancies without a later confirmation card. */
+  reviewPolicy?: "INTERACTIVE" | "REPORT_ONLY";
 }): Promise<InventoryAuditRunResult> {
   const requestedBinCode = input.binCode?.trim().toUpperCase();
   // A process restart can interrupt the in-memory wait while leaving the
@@ -92,10 +95,14 @@ export async function runInventoryAudit(input: {
           status: "PENDING",
         },
       });
-      const result = await runInventoryAuditGraph({
+      let result = await runInventoryAuditGraph({
         binAuditId: binAudit.id,
         ownerSessionId: input.ownerSessionId,
       });
+      if (input.reviewPolicy === "REPORT_ONLY" && result.status === "REVIEW_REQUIRED") {
+        await confirmBinAuditObservation(result.binAuditId, "DISMISS");
+        result = { ...result, status: "DISMISSED" };
+      }
       results.push(result);
 
       const verifiedBins = results.filter((item) => item.status === "VERIFIED").length;

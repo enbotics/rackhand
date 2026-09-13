@@ -28,8 +28,7 @@ function getStatusText(capture: CameraCaptureJobView | null) {
           capture.queuePosition && capture.queuePosition > 1
             ? `Waiting for camera · position ${capture.queuePosition}`
             : "Next in camera queue",
-        detail:
-          "The Raspberry Pi processes one operator capture at a time.",
+        detail: "The Raspberry Pi processes one operator capture at a time.",
       };
 
     case "CLAIMED":
@@ -83,7 +82,11 @@ function statusTone(
   scanning: boolean,
   connection: "ONLINE" | "DEGRADED" | "OFFLINE",
 ) {
-  if (capture?.status === "FAILED" || capture?.status === "CANCELLED" || capture?.status === "EXPIRED") {
+  if (
+    capture?.status === "FAILED" ||
+    capture?.status === "CANCELLED" ||
+    capture?.status === "EXPIRED"
+  ) {
     return "bg-danger";
   }
   if (connection === "OFFLINE") return "bg-danger";
@@ -103,19 +106,24 @@ export function PiCameraPanel({
 }: PiCameraPanelProps) {
   const { health } = useCameraHealth();
   const connection = health?.connection ?? "OFFLINE";
-  const status = !capture && connection !== "ONLINE"
-    ? {
-        title: connection === "OFFLINE" ? "Camera offline" : "Camera health degraded",
-        detail: health?.lastError
-          ?? "The Pi heartbeat is missing or the camera worker is not ready.",
-      }
-    : getStatusText(capture);
+  const status =
+    !capture && connection !== "ONLINE"
+      ? {
+          title:
+            connection === "OFFLINE"
+              ? "Camera offline"
+              : "Camera health degraded",
+          detail:
+            health?.lastError ??
+            "The Pi heartbeat is missing or the camera worker is not ready.",
+        }
+      : getStatusText(capture);
 
   return (
     <div className="overflow-hidden rounded-lg border border-line bg-bg-elevated">
       <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-3">
         <div>
-          <p className="text-sm font-semibold text-ink">Raspberry Pi 5 Camera</p>
+          <p className="text-sm font-semibold text-ink">Camera</p>
 
           <p className="mt-0.5 font-mono text-[10px] text-ink-faint">
             warehouse-camera-01
@@ -135,7 +143,7 @@ export function PiCameraPanel({
         <div className="relative aspect-video w-full overflow-hidden bg-black/40">
           <Image
             src={capture.evidenceUrl}
-            alt="Raspberry Pi camera capture"
+            alt="Camera capture"
             fill
             unoptimized
             className="object-contain"

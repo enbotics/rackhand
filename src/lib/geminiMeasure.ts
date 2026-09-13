@@ -109,11 +109,20 @@ export interface GeminiUsage {
 
 export type GeminiOutcome =
   | { ok: true; measurement: GeminiMeasurement; usage: GeminiUsage }
-  | { ok: false; reason: "no_object_detected" | "multiple_objects"; usage: GeminiUsage };
+  | {
+      ok: false;
+      reason: "no_object_detected" | "multiple_objects";
+      usage: GeminiUsage;
+    };
 
 async function prepareImage(jpeg: Buffer): Promise<Buffer> {
   return sharp(jpeg)
-    .resize({ width: MAX_IMAGE_DIMENSION_PX, height: MAX_IMAGE_DIMENSION_PX, fit: "inside", withoutEnlargement: true })
+    .resize({
+      width: MAX_IMAGE_DIMENSION_PX,
+      height: MAX_IMAGE_DIMENSION_PX,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
     .jpeg({ quality: 85 })
     .toBuffer();
 }
@@ -127,16 +136,27 @@ function asString(value: unknown): string {
 }
 
 /** Clamps to Gemini's native [0, 1000] coordinate space, then normalizes to a 0-1 fraction. */
-function asCorners(value: unknown): [GeminiCorner, GeminiCorner, GeminiCorner, GeminiCorner] {
+function asCorners(
+  value: unknown,
+): [GeminiCorner, GeminiCorner, GeminiCorner, GeminiCorner] {
   const fallback: GeminiCorner = { x: 0, y: 0 };
-  if (!Array.isArray(value) || value.length !== 4) return [fallback, fallback, fallback, fallback];
+  if (!Array.isArray(value) || value.length !== 4)
+    return [fallback, fallback, fallback, fallback];
   const parsed = value.map((c) => {
     const obj = c as { x?: unknown; y?: unknown };
     const x = asFiniteNumber(obj?.x);
     const y = asFiniteNumber(obj?.y);
     return {
-      x: x != null ? Math.min(Math.max(x, 0), COORDINATE_SPACE_MAX) / COORDINATE_SPACE_MAX : 0,
-      y: y != null ? Math.min(Math.max(y, 0), COORDINATE_SPACE_MAX) / COORDINATE_SPACE_MAX : 0,
+      x:
+        x != null
+          ? Math.min(Math.max(x, 0), COORDINATE_SPACE_MAX) /
+            COORDINATE_SPACE_MAX
+          : 0,
+      y:
+        y != null
+          ? Math.min(Math.max(y, 0), COORDINATE_SPACE_MAX) /
+            COORDINATE_SPACE_MAX
+          : 0,
     };
   });
   return [parsed[0], parsed[1], parsed[2], parsed[3]];
@@ -148,7 +168,9 @@ function asCorners(value: unknown): [GeminiCorner, GeminiCorner, GeminiCorner, G
  * project. Only returns `ok: false` for a legitimate semantic answer from
  * Gemini itself (no object, more than one object).
  */
-export async function measureWithGemini(imageJPEG: Buffer): Promise<GeminiOutcome> {
+export async function measureWithGemini(
+  imageJPEG: Buffer,
+): Promise<GeminiOutcome> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set (see .env.local)");
 
@@ -162,7 +184,12 @@ export async function measureWithGemini(imageJPEG: Buffer): Promise<GeminiOutcom
         {
           parts: [
             { text: PROMPT },
-            { inline_data: { mime_type: "image/jpeg", data: prepared.toString("base64") } },
+            {
+              inline_data: {
+                mime_type: "image/jpeg",
+                data: prepared.toString("base64"),
+              },
+            },
           ],
         },
       ],
@@ -188,25 +215,37 @@ export async function measureWithGemini(imageJPEG: Buffer): Promise<GeminiOutcom
     totalTokens: body?.usageMetadata?.totalTokenCount ?? 0,
   };
 
-  const text: string | undefined = body?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text: string | undefined =
+    body?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini response had no text part");
 
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error(`Gemini response was not valid JSON: ${text.slice(0, 200)}`);
+    throw new Error(
+      `Gemini response was not valid JSON: ${text.slice(0, 200)}`,
+    );
   }
 
-  if (parsed.multipleObjects === true) return { ok: false, reason: "multiple_objects", usage };
-  if (parsed.objectDetected === false) return { ok: false, reason: "no_object_detected", usage };
+  if (parsed.multipleObjects === true)
+    return { ok: false, reason: "multiple_objects", usage };
+  if (parsed.objectDetected === false)
+    return { ok: false, reason: "no_object_detected", usage };
 
   const heightMMRaw = asFiniteNumber(parsed.heightMM);
   const heightConfidence = asFiniteNumber(parsed.heightConfidence) ?? 0;
-  const heightMM = heightMMRaw != null && heightMMRaw > 0 && heightConfidence >= MIN_HEIGHT_CONFIDENCE ? heightMMRaw : null;
+  const heightMM =
+    heightMMRaw != null &&
+    heightMMRaw > 0 &&
+    heightConfidence >= MIN_HEIGHT_CONFIDENCE
+      ? heightMMRaw
+      : null;
   const observedQuantityRaw = asFiniteNumber(parsed.observedQuantity);
   const observedQuantity =
-    observedQuantityRaw !== null && Number.isInteger(observedQuantityRaw) && observedQuantityRaw > 0
+    observedQuantityRaw !== null &&
+    Number.isInteger(observedQuantityRaw) &&
+    observedQuantityRaw > 0
       ? observedQuantityRaw
       : 1;
 
@@ -218,8 +257,14 @@ export async function measureWithGemini(imageJPEG: Buffer): Promise<GeminiOutcom
       corners: asCorners(parsed.corners),
       heightMM,
       observedQuantity,
-      quantityConfidence: Math.min(Math.max(asFiniteNumber(parsed.quantityConfidence) ?? 0, 0), 1),
-      dimensionConfidence: Math.min(Math.max(asFiniteNumber(parsed.dimensionConfidence) ?? 0.5, 0), 1),
+      quantityConfidence: Math.min(
+        Math.max(asFiniteNumber(parsed.quantityConfidence) ?? 0, 0),
+        1,
+      ),
+      dimensionConfidence: Math.min(
+        Math.max(asFiniteNumber(parsed.dimensionConfidence) ?? 0.5, 0),
+        1,
+      ),
     },
     usage,
   };

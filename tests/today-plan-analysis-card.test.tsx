@@ -28,6 +28,23 @@ function partialRun(): TodayPlanAnalysisRunView {
       shortages: [{ sku: "SKU-SHORT", required: 4, available: 0 }],
       auditedBinCodes: [],
       verificationAuditRunIds: [],
+      auditIssues: [
+        {
+          binCode: "B4-01",
+          expectedQuantity: 10,
+          observedQuantity: 5,
+          confidencePercent: 100,
+          reason: "audit_pending_confirmation",
+        },
+      ],
+      scanSkips: [
+        {
+          sku: "SKU-READY",
+          binCode: "B5-03",
+          lastVerifiedAt: "2026-09-12T00:00:00.000Z",
+          reason: "latest trusted verification is current",
+        },
+      ],
     },
     errorMessage: null,
     startedAt: 1,
@@ -38,12 +55,20 @@ function partialRun(): TodayPlanAnalysisRunView {
   };
 }
 
-describe("today plan analysis report", () => {
+describe("tomorrow plan analysis report", () => {
   it("separates ready bins from materials that will not be used", () => {
     render(<TodayPlanAnalysisCard run={partialRun()} />);
 
+    expect(screen.getByText("Tomorrow’s build-plan analysis")).toBeTruthy();
     expect(screen.getByText("REPORT READY")).toBeTruthy();
     expect(screen.getByText("PARTIALLY READY")).toBeTruthy();
+    expect(screen.getByText("Audit issues · 1")).toBeTruthy();
+    expect(screen.getByText(/B4-01 · 10 recorded → 5 observed/)).toBeTruthy();
+    expect(screen.getByText(/inventory left unchanged/)).toBeTruthy();
+    expect(screen.getByText(/Audit-selected bins move shelf → checkout scan → same shelf slot/)).toBeTruthy();
+    expect(screen.getByText("Smart skips · 1 scan saved")).toBeTruthy();
+    expect(screen.getAllByText("B5-03 · SKU-READY")).toHaveLength(2);
+    expect(screen.getByText(/trusted verification reused; no inventory change since/)).toBeTruthy();
 
     const ready = screen.getByText(/Ready for operation/).parentElement;
     expect(ready).not.toBeNull();

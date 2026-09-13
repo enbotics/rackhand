@@ -1,10 +1,13 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import type { MovementRowView } from "@/lib/warehouse/dashboard-types";
 import type { GantryStatus } from "@/lib/gantry/types";
 import { MOVEMENT_STATUS_PRESENTATION } from "@/lib/warehouse/dashboard-presentation";
 import type { ApprovalOutcome, PendingApprovalView } from "./state";
 import { BUTTON_VARIANTS, Field, Panel, StatusChip } from "./ui";
+
+const AUTO_APPROVAL_DELAY_MS = 5_000;
 
 /**
  * The Milestone 9 approval gate, in the operator's line of sight.
@@ -42,6 +45,53 @@ export function ApprovalCard({
   gantry?: GantryStatus | null;
   onDecide: (decision: "APPROVE" | "DENY") => void;
 }) {
+  const onDecideRef = useRef(onDecide);
+  const busyRef = useRef(busy);
+  const submittedApprovalRef = useRef<string | null>(null);
+  const autoApprovalId =
+    approval &&
+    (approval.summary.autoSuggested || approval.summary.action === "RETRIEVAL")
+      ? approval.approvalId
+      : null;
+  const [countdown, setCountdown] = useState<{
+    approvalId: string;
+    seconds: number;
+  } | null>(null);
+
+  useEffect(() => {
+    onDecideRef.current = onDecide;
+  }, [onDecide]);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
+    if (!autoApprovalId) return;
+    submittedApprovalRef.current = null;
+    const deadline = Date.now() + AUTO_APPROVAL_DELAY_MS;
+    const timer = window.setInterval(() => {
+      const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1_000));
+      setCountdown({ approvalId: autoApprovalId, seconds });
+      if (
+        seconds === 0 &&
+        !busyRef.current &&
+        submittedApprovalRef.current !== autoApprovalId
+      ) {
+        submittedApprovalRef.current = autoApprovalId;
+        window.clearInterval(timer);
+        onDecideRef.current("APPROVE");
+      }
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [autoApprovalId]);
+
+  const submitDecision = (decision: "APPROVE" | "DENY") => {
+    if (!approval || submittedApprovalRef.current === approval.approvalId) return;
+    submittedApprovalRef.current = approval.approvalId;
+    onDecideRef.current(decision);
+  };
+
   if (approval) {
     const { summary } = approval;
 
@@ -51,16 +101,22 @@ export function ApprovalCard({
     // differs, since nothing here needed a scope/capacity/route preview the
     // operator hasn't already just seen play out for the retrieval itself.
     if (summary.autoSuggested) {
+      const seconds = countdown?.approvalId === approval.approvalId
+        ? countdown.seconds
+        : AUTO_APPROVAL_DELAY_MS / 1_000;
       return (
         <Panel title="Put it back?" tone="attention">
           <p className="text-sm text-ink">
             Bin <span className="font-mono text-accent">{summary.destination ?? "?"}</span> was
             just retrieved. Put it back now?
           </p>
+          <p aria-live="polite" className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-warn">
+            Returning automatically in {seconds}s
+          </p>
           <div className="mt-4 flex gap-2">
             <button
               type="button"
-              onClick={() => onDecide("DENY")}
+              onClick={() => submitDecision("DENY")}
               disabled={busy}
               className={BUTTON_VARIANTS.secondary}
             >
@@ -68,16 +124,21 @@ export function ApprovalCard({
             </button>
             <button
               type="button"
-              onClick={() => onDecide("APPROVE")}
+              onClick={() => submitDecision("APPROVE")}
               disabled={busy}
               className={BUTTON_VARIANTS.approve}
             >
-              Put it back
+              Put it back · {seconds}s
             </button>
           </div>
         </Panel>
       );
     }
+
+    const isAutoRetrieval = summary.action === "RETRIEVAL";
+    const retrievalSeconds = countdown?.approvalId === approval.approvalId
+      ? countdown.seconds
+      : AUTO_APPROVAL_DELAY_MS / 1_000;
 
     if (summary.action === "MATERIALS_FULFILLMENT") {
       const materialTypeCount = summary.quantity ?? 0;
@@ -120,8 +181,13 @@ export function ApprovalCard({
 
     return (
       <Panel title="Approval required" tone="attention">
-        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
-          ! Waiting for a human decision
+        <p
+          aria-live={isAutoRetrieval ? "polite" : undefined}
+          className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn"
+        >
+          {isAutoRetrieval
+            ? `Retrieving automatically in ${retrievalSeconds}s`
+            : "! Waiting for a human decision"}
         </p>
 
         <p className="mt-2 font-mono text-sm font-semibold tracking-wide text-ink">
@@ -181,7 +247,7 @@ export function ApprovalCard({
         <div className="mt-4 flex gap-2">
           <button
             type="button"
-            onClick={() => onDecide("DENY")}
+            onClick={() => submitDecision("DENY")}
             disabled={busy}
             className={BUTTON_VARIANTS.danger}
           >
@@ -189,11 +255,11 @@ export function ApprovalCard({
           </button>
           <button
             type="button"
-            onClick={() => onDecide("APPROVE")}
+            onClick={() => submitDecision("APPROVE")}
             disabled={busy}
             className={BUTTON_VARIANTS.approve}
           >
-            Approve
+            {isAutoRetrieval ? `Approve · ${retrievalSeconds}s` : "Approve"}
           </button>
         </div>
       </Panel>

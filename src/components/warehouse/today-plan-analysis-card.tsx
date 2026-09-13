@@ -9,10 +9,10 @@ import { StatusChip } from "./ui";
 
 const STAGE_LABELS: Record<TodayPlanAnalysisStage, string> = {
   QUEUED: "Queued",
-  READING_SHEET: "Reading today’s Sheet",
+  READING_SHEET: "Reading tomorrow’s Sheet",
   PLANNING_MATERIALS: "Resolving materials",
   CHECKING_EVIDENCE: "Checking inventory evidence",
-  AUDITING_BIN: "Verifying a bin",
+  AUDITING_BIN: "Moving bin to checkout scan",
   COMPLETE: "Analysis complete",
 };
 
@@ -36,19 +36,47 @@ function readinessPresentation(readiness: NonNullable<TodayPlanAnalysisRunView["
   return { label: "REVIEW REQUIRED", symbol: "!", tone: "warn" };
 }
 
+function auditIssueReason(reason: string): string {
+  switch (reason) {
+    case "audit_pending_confirmation":
+      return "Confident lower count";
+    case "audit_observation_unsafe":
+      return "Count was not reliable";
+    case "foreign_object_suspected":
+      return "Unexpected object detected";
+    case "audit_capacity_exceeded":
+      return "Observed count exceeded capacity";
+    default:
+      return reason.replaceAll("_", " ");
+  }
+}
+
 /** Persistent transcript card for the manually triggered, no-HITL plan diagnosis. */
 export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }) {
   const running = run.status === "QUEUED" || run.status === "RUNNING";
   const latestEvents = run.events.slice(-6);
   const selectedBins = run.result?.selectedBins ?? [];
   const shortages = run.result?.shortages ?? [];
+  const auditIssues = run.result?.auditIssues ?? [];
+  // Older completed reports predate persisted skip reasons. In analysis mode,
+  // a selected bin that was not audited could only have been selected from
+  // trusted evidence, so preserve that useful explanation after deployment.
+  const auditedBins = new Set(run.result?.auditedBinCodes ?? []);
+  const scanSkips = run.result?.scanSkips ?? selectedBins
+    .filter((bin) => !auditedBins.has(bin.binCode))
+    .map((bin) => ({
+      sku: bin.sku,
+      binCode: bin.binCode,
+      lastVerifiedAt: null,
+      reason: "trusted verification was reused",
+    }));
 
   return (
     <section className="animate-fade-up overflow-hidden rounded-xl border border-accent-soft/50 bg-accent-tint/30">
       <header className="flex items-center justify-between gap-3 border-b border-line-soft px-4 py-3">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-accent">
-            Today’s build-plan analysis
+            Tomorrow’s build-plan analysis
           </p>
           <p className="mt-1 text-xs text-ink-muted">Google Sheet · {run.workDate}</p>
         </div>
@@ -67,7 +95,7 @@ export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }
         {run.rows.length > 0 && (
           <div>
             <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-ink-faint">
-              Today’s work · {run.rowsFound} row{run.rowsFound === 1 ? "" : "s"}
+              Tomorrow’s work · {run.rowsFound} row{run.rowsFound === 1 ? "" : "s"}
             </p>
             <div className="mt-2 space-y-1.5">
               {run.rows.slice(0, 4).map((row) => (
@@ -117,6 +145,48 @@ export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }
             </div>
             <p className="text-xs leading-relaxed text-ink-muted">{run.result.message}</p>
 
+            {auditIssues.length > 0 && (
+              <div className="rounded-lg border border-warn/40 bg-warn-soft p-3">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
+                  Audit issues · {auditIssues.length}
+                </p>
+                <div className="mt-2 space-y-2">
+                  {auditIssues.map((issue) => (
+                    <div key={`${issue.binCode}-${issue.reason}`}>
+                      <p className="font-mono text-[10px] text-ink">
+                        {issue.binCode} · {issue.expectedQuantity} recorded → {issue.observedQuantity ?? "unknown"} observed
+                        {issue.confidencePercent === null ? "" : ` · ${issue.confidencePercent}%`}
+                      </p>
+                      <p className="mt-0.5 text-[10px] text-ink-muted">
+                        {auditIssueReason(issue.reason)} · inventory left unchanged
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {scanSkips.length > 0 && (
+              <div className="rounded-lg border border-accent-soft/50 bg-accent-tint/40 p-3">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
+                  Smart skips · {scanSkips.length} scan{scanSkips.length === 1 ? "" : "s"} saved
+                </p>
+                <div className="mt-2 space-y-2">
+                  {scanSkips.map((skip) => (
+                    <div key={`${skip.sku}-${skip.binCode}`}>
+                      <p className="font-mono text-[10px] text-ink">
+                        {skip.binCode} · {skip.sku}
+                      </p>
+                      <p className="mt-0.5 text-[10px] text-ink-muted">
+                        Scan skipped — trusted verification
+                        {skip.lastVerifiedAt ? ` from ${skip.lastVerifiedAt.slice(0, 10)}` : ""} reused; no inventory change since.
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {selectedBins.length > 0 && (
               <div>
                 <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-success">
@@ -164,7 +234,7 @@ export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }
             )}
             {run.result.auditedBinCodes.length > 0 && (
               <p className="font-mono text-[9px] text-ink-faint">
-                REFRESHED DURING THIS RUN · {run.result.auditedBinCodes.join(", ")}
+                SCANNED AND RETURNED · {run.result.auditedBinCodes.join(", ")}
               </p>
             )}
           </div>
@@ -177,7 +247,7 @@ export function TodayPlanAnalysisCard({ run }: { run: TodayPlanAnalysisRunView }
         )}
 
         <p className="font-mono text-[9px] leading-relaxed text-ink-faint">
-          Analysis and targeted verification only · no material is retrieved · no operator approval is requested
+          Audit-selected bins move shelf → checkout scan → same shelf slot · no operator approval
         </p>
       </div>
     </section>

@@ -4,9 +4,10 @@
  * The planner supplies catalog-grounded requirements, but it never chooses a
  * physical bin. This service re-reads current inventory and selects enough
  * OCCUPIED bins to cover every requested quantity before the first retrieval
- * is attempted. If any SKU is short, the whole plan is rejected without
- * moving a bin; partially starting a build kit would be surprising and hard
- * to recover from safely.
+ * is attempted. Callers choose whether selection requires current verification
+ * evidence: plan audits do, while an explicitly approved preparation job does
+ * not because each checked-out bin is verified by its required photo return.
+ * If any SKU is short, the whole plan is rejected without moving a bin.
  */
 import { compareBinsInShelfOrder } from "./bin-layout";
 import {
@@ -21,6 +22,8 @@ export interface MaterialsFulfillmentBin {
   binCode: string;
   recordedQuantity: number;
   requiredQuantity: number;
+  /** Present in analysis mode when this bin was selected from trusted evidence. */
+  verification?: BinVerificationEvidence;
 }
 
 export interface MaterialsFulfillmentShortage {
@@ -85,6 +88,12 @@ export async function prepareMaterialsFulfillment(
     excludeVerificationBinCodes?: readonly string[];
     /** Analysis mode: finish assessing other SKUs after one known shortage. */
     continueAfterKnownShortage?: boolean;
+    /**
+     * Audit/report mode requires current evidence. A physical preparation job
+     * sets this false: recorded shelf stock selects every requested bin, and
+     * the existing fresh-photo return reconciles it after the engineer uses it.
+     */
+    requireTrustedEvidence?: boolean;
   } = {},
 ): Promise<MaterialsFulfillmentPlan> {
   const normalized = aggregateRequirements(requirements);
@@ -155,6 +164,21 @@ export async function prepareMaterialsFulfillment(
       continue;
     }
 
+    if (options.requireTrustedEvidence === false) {
+      let covered = 0;
+      for (const location of stocked) {
+        if (covered >= requirement.quantity) break;
+        selectedBins.push({
+          sku: requirement.sku,
+          binCode: location.binCode,
+          recordedQuantity: location.quantity,
+          requiredQuantity: requirement.quantity,
+        });
+        covered += location.quantity;
+      }
+      continue;
+    }
+
     const trusted = stocked.filter(
       (location) => evidenceByBin.get(location.binCode)?.trusted === true,
     );
@@ -206,11 +230,13 @@ export async function prepareMaterialsFulfillment(
     let covered = 0;
     for (const location of trusted) {
       if (covered >= requirement.quantity) break;
+      const verification = evidenceByBin.get(location.binCode);
       selectedBins.push({
         sku: requirement.sku,
         binCode: location.binCode,
         recordedQuantity: location.quantity,
         requiredQuantity: requirement.quantity,
+        ...(verification ? { verification } : {}),
       });
       covered += location.quantity;
     }

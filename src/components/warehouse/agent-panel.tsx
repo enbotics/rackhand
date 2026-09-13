@@ -705,6 +705,9 @@ export function AgentPanel({
                 }
                 check={materialsPlanCheck}
                 inventory={inventory}
+                approval={approval}
+                outcome={outcome}
+                workflow={workflow}
               />
             </SettlingCard>
           )}

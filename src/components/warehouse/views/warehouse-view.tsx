@@ -101,7 +101,7 @@ export function WarehouseView() {
               {waiting > 0 && <span className="rounded-full bg-warn px-1.5 text-[10px] text-bg" aria-label={`${waiting} decisions waiting`}>{waiting}</span>}
               {session.agentBusy && <span className="h-1.5 w-1.5 rounded-full bg-accent animate-glow-pulse" aria-label="Agent working" />}
               {(session.todayPlanAnalysis?.status === "QUEUED" || session.todayPlanAnalysis?.status === "RUNNING") && (
-                <span className="h-1.5 w-1.5 rounded-full bg-success animate-glow-pulse" aria-label="Today’s plan analysis running" />
+                <span className="h-1.5 w-1.5 rounded-full bg-success animate-glow-pulse" aria-label="Tomorrow’s plan analysis running" />
               )}
             </button>
             <button ref={inventoryTab} type="button" role="tab" id={`${tabId}-inventory-tab`} aria-controls={`${tabId}-inventory-panel`}

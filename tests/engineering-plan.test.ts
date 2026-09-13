@@ -5,6 +5,7 @@ import {
   findEngineeringPlanRows,
   findTodayEngineeringPlanRows,
   parseEngineeringPlanValues,
+  tomorrowEngineeringPlanWorkDate,
 } from "@/lib/engineering-plan/google-sheets";
 
 describe("engineering plan Google Sheet", () => {
@@ -92,6 +93,11 @@ describe("engineering plan Google Sheet", () => {
       "2026-09-09",
     );
     expect(matches.map((row) => row.planId)).toEqual(["PLAN-201"]);
+  });
+
+  it("selects tomorrow across month and year boundaries", () => {
+    expect(tomorrowEngineeringPlanWorkDate("2026-09-13")).toBe("2026-09-14");
+    expect(tomorrowEngineeringPlanWorkDate("2026-12-31")).toBe("2027-01-01");
   });
 
   it("parses every released PREPARE row from the operational plan layout", () => {
