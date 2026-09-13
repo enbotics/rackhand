@@ -35,7 +35,23 @@ describe("camera and scale quantity checks", () => {
   });
 
   it("does not trust a visual count when measured weight disagrees", () => {
-    expect(verifyPhysicalWeight({ ...reading, quantity: 11 }).verified).toBe(false);
+    expect(verifyPhysicalWeight({ ...reading, quantity: 11, totalWeightGrams: 287 }).verified).toBe(false);
+  });
+
+  it("accepts the B4-01 reading within 5 g per kit", () => {
+    const result = verifyPhysicalWeight({ ...reading, quantity: 10, expectedQuantity: 10,
+      totalWeightGrams: 303.15, referenceUnitWeightGrams: 16.251 });
+    expect(result.verified).toBe(true);
+    expect(result.measurement?.unitWeightGrams).toBe(18.615);
+  });
+
+  it.each([
+    [297, true], // Exactly 5 g heavier per item.
+    [177, true], // Exactly 5 g lighter per item.
+    [297.012, false], // More than 5 g heavier per item.
+    [176.988, false], // More than 5 g lighter per item.
+  ])("checks the inclusive 5 g per-item boundary for a %s g reading", (totalWeightGrams, verified) => {
+    expect(verifyPhysicalWeight({ ...reading, totalWeightGrams }).verified).toBe(verified);
   });
 
   it("does not treat a missing scale or synthetic fallback as measured evidence", () => {

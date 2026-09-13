@@ -1,5 +1,6 @@
 const DEFAULT_CONTAINER_TARE_GRAMS = 117;
 const DEFAULT_FALLBACK_TOTAL_WEIGHT_GRAMS = 150;
+const PER_ITEM_WEIGHT_TOLERANCE_GRAMS = 5;
 
 export interface PutawayWeightMeasurement {
   totalWeightGrams: number;
@@ -82,7 +83,8 @@ export function calculatePutawayWeight(
 
 /** A physical scale reading corroborates vision against a prior item weight.
  * First-time readings establish that reference; fallback weights are not evidence.
- * Allow half an item's weight (or 2 g of scale noise), not an arbitrary stock count.
+ * Allow up to 5 g of average weight variation per camera-counted item.
+ * Empty bins retain their separate residual-weight check.
  */
 export function verifyPhysicalWeight(input: {
   totalWeightGrams: number | null | undefined;
@@ -107,7 +109,9 @@ export function verifyPhysicalWeight(input: {
     ? { totalWeightGrams: total, tareWeightGrams: total === 0 ? 0 : tare,
         netWeightGrams: Math.max(0, total - tare), unitWeightGrams: 0 }
     : total > 0 ? calculatePutawayWeight(total, input.quantity, tare) : null;
-  const tolerance = Math.max(2, (reference ?? 0) * 0.5);
+  const tolerance = input.quantity === 0
+    ? Math.max(2, (reference ?? 0) * 0.5)
+    : Math.max(2, PER_ITEM_WEIGHT_TOLERANCE_GRAMS * input.quantity);
   const verified = measurement !== null && (input.quantity === 0
     ? measurement.netWeightGrams <= tolerance
     : measurement.netWeightGrams > 0 && (reference === null

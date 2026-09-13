@@ -70,6 +70,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   fixture.movement.status = "AWAITING_VERIFICATION";
   fixture.movement.newQuantity = null;
+  fixture.movement.previousQuantity = 12;
   fixture.movement.destinationLocation = "OUTPUT";
   for (const key of Object.keys(fixture.capture)) delete fixture.capture[key];
   fixture.inspect.mockResolvedValue({ countable: true, observedCount: 10, countConfidence: 0.8,
@@ -91,6 +92,14 @@ function processFrame(totalWeightGrams = 217, workflowAttempt = 0) {
 }
 
 describe("physical verification state machine", () => {
+  it("automatically verifies B4-01's matching count with small per-kit weight variation", async () => {
+    fixture.movement.previousQuantity = 10;
+    const { completion } = await startCheck();
+    fixture.database.movement.findFirst.mockResolvedValueOnce({ unitWeightGrams: 16.251 });
+    expect((await processFrame(303.15)).outcome).toBe("READY");
+    await vi.advanceTimersByTimeAsync(5_500);
+    await expect(completion).resolves.toMatchObject({ quantity: 10, inventoryUpdateApproved: true });
+  });
   it("recovers a valid retrieval photo rejected by an older camera deployment", async () => {
     const { completion } = await startCheck();
     const now = new Date();
@@ -211,7 +220,7 @@ describe("physical verification state machine", () => {
 
   it("keeps stock unapproved when camera and scale disagree", async () => {
     const { completion } = await startCheck();
-    expect((await processFrame(257)).outcome).toBe("LOW_CONFIDENCE");
+    expect((await processFrame(277)).outcome).toBe("LOW_CONFIDENCE");
     await vi.advanceTimersByTimeAsync(6_000);
     expect(fixture.movement.newQuantity).toBeNull();
     await decidePutawayCapture("capture-1", "CANCEL", "session-1");
