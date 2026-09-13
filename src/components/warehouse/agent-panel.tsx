@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { GantryStatus } from "@/lib/gantry/types";
 import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
 import type {
+  InventoryRowView,
   InventoryAuditView,
   MaterialRequirementView,
   MaterialsPlanCheckView,
@@ -56,7 +57,7 @@ const TOOL_LABELS: Record<string, string> = {
   execute_retrieval: "Retrieval workflow",
   inventory_auditor: "Inventory auditor agent",
   execute_inventory_audit: "Physical inventory audit",
-  materials_planner: "Materials planner agent",
+  materials_planner: "Plan materials",
 };
 
 /**
@@ -391,6 +392,7 @@ export function AgentPanel({
   workflow,
   materialsPlan,
   materialsPlanCheck,
+  inventory = [],
   onDismissMaterialsPlan,
   todayPlanAnalysis = null,
   latestAudit,
@@ -427,6 +429,7 @@ export function AgentPanel({
   workflow: WarehouseGraphResult | null;
   materialsPlan: { requirements: MaterialRequirementView[] } | null;
   materialsPlanCheck: MaterialsPlanCheckView | null;
+  inventory?: InventoryRowView[];
   /** Retires the build-plan pipeline card for good — see the card's own comment below. */
   onDismissMaterialsPlan: () => void;
   /** Durable manual/event-triggered analysis; intentionally survives page refreshes. */
@@ -687,6 +690,25 @@ export function AgentPanel({
             </div>
           )}
 
+          {(materialsPlan || materialsPlanCheck) && (
+            <SettlingCard
+              cardKey={`materials-pipeline:${
+                materialsPlanCheck?.id ?? `planning:${materialsPlan?.requirements.length ?? 0}`
+              }`}
+              settled={false}
+              dismissible={materialsPipelineDismissible}
+              onDismissed={dismissMaterialsPipeline}
+            >
+              <MaterialsPlanPipelineCard
+                requirements={
+                  materialsPlan?.requirements ?? materialsPlanCheck?.requirements ?? []
+                }
+                check={materialsPlanCheck}
+                inventory={inventory}
+              />
+            </SettlingCard>
+          )}
+
           {(approval || outcome) && (
             <SettlingCard
               cardKey={
@@ -732,39 +754,6 @@ export function AgentPanel({
               onDismissed={scrollToLatest}
             >
               <WorkflowPanel workflow={workflow} />
-            </SettlingCard>
-          )}
-
-          {(materialsPlan || materialsPlanCheck) && (
-            <SettlingCard
-              // Keyed on the check, not on its status: a card the operator is
-              // reading must not restart its own life because the sweep moved
-              // from RUNNING to COMPLETED underneath them.
-              cardKey={`materials-pipeline:${
-                materialsPlanCheck?.id ?? `planning:${materialsPlan?.requirements.length ?? 0}`
-              }`}
-              // NEVER auto-fades, in ANY of its states. Same rule the approval
-              // and workflow cards apply to a FAILED outcome: this is the
-              // answer to a question the operator actually asked ("what do I
-              // need, and have we got it?"), and an all-SHORTAGE report is
-              // precisely the case where they need time to read it and decide
-              // what to source. It vanishing after eight seconds is the exact
-              // behaviour that was reported as confusing, so it gets a manual
-              // Dismiss instead — offered only once nothing is still running,
-              // since a live sweep must never be closable mid-flight.
-              settled={false}
-              dismissible={materialsPipelineDismissible}
-              onDismissed={dismissMaterialsPipeline}
-            >
-              <MaterialsPlanPipelineCard
-                // The polled check carries its own requirements copy, so the
-                // list survives later turns (which clear the per-turn
-                // materialsPlan) and a page reload.
-                requirements={
-                  materialsPlan?.requirements ?? materialsPlanCheck?.requirements ?? []
-                }
-                check={materialsPlanCheck}
-              />
             </SettlingCard>
           )}
 

@@ -17,6 +17,25 @@ export const ENGINEERING_PLAN_HEADERS = [
   "Last Updated",
 ] as const;
 
+/** Row-per-part operational plan exported by the team's current Sheet table. */
+export const OPERATIONAL_PLAN_HEADERS = [
+  "work_order_id",
+  "work_date",
+  "agent_mode",
+  "sequence",
+  "assembly_task",
+  "part_name",
+  "bin_id",
+  "required_qty",
+  "unit",
+  "software_on_hand_qty",
+  "criticality",
+  "substitute_allowed",
+  "partial_build_allowed",
+  "approval_required",
+  "plan_status",
+] as const;
+
 export interface EngineeringPlanRow {
   planId: string;
   workDate: string;
@@ -68,12 +87,16 @@ function text(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value).trim().slice(0, 500) : "";
 }
 
-/** Convert the bounded Sheets values response into trusted field names. */
-export function parseEngineeringPlanValues(values: unknown[][]): EngineeringPlanRow[] {
-  const [rawHeaders, ...rawRows] = values;
-  if (!rawHeaders) return [];
+function headerPositions(rawHeaders: unknown[]): Map<string, number> {
   const positions = new Map<string, number>();
   rawHeaders.forEach((header, index) => positions.set(text(header), index));
+  return positions;
+}
+
+function parseLegacyPlanRows(
+  positions: Map<string, number>,
+  rawRows: unknown[][],
+): EngineeringPlanRow[] {
   if (!ENGINEERING_PLAN_HEADERS.every((header) => positions.has(header))) return [];
 
   return rawRows.flatMap((row) => {
@@ -99,6 +122,63 @@ export function parseEngineeringPlanValues(values: unknown[][]): EngineeringPlan
       lastUpdated: record.lastUpdated,
     }];
   });
+}
+
+function parseOperationalPlanRows(
+  positions: Map<string, number>,
+  rawRows: unknown[][],
+): EngineeringPlanRow[] {
+  if (!OPERATIONAL_PLAN_HEADERS.every((header) => positions.has(header))) return [];
+  const value = (row: unknown[], header: (typeof OPERATIONAL_PLAN_HEADERS)[number]) =>
+    text(row[positions.get(header)!]);
+
+  return rawRows.flatMap((row) => {
+    const workOrderId = value(row, "work_order_id");
+    const workDate = value(row, "work_date");
+    const mode = value(row, "agent_mode").toUpperCase();
+    const sequence = value(row, "sequence");
+    const assemblyTask = value(row, "assembly_task");
+    const partName = value(row, "part_name");
+    const requiredQuantity = value(row, "required_qty");
+    const unit = value(row, "unit");
+    const criticality = value(row, "criticality");
+    const planStatus = value(row, "plan_status").toUpperCase();
+
+    if (mode !== "PREPARE" || planStatus !== "RELEASED") return [];
+    if (!workOrderId || !workDate || !assemblyTask || !partName || !requiredQuantity) return [];
+
+    const constraints = [
+      `Substitute allowed: ${value(row, "substitute_allowed") || "unspecified"}`,
+      `Partial build allowed: ${value(row, "partial_build_allowed") || "unspecified"}`,
+      `Approval required: ${value(row, "approval_required") || "unspecified"}`,
+    ].join("; ");
+
+    return [{
+      planId: sequence ? `${workOrderId}-${sequence}` : workOrderId,
+      workDate,
+      engineer: "",
+      project: assemblyTask,
+      buildTask: assemblyTask,
+      dayObjective: `Prepare ${assemblyTask}`,
+      plannedWork: `Prepare ${partName}`,
+      materialHints: partName,
+      quantityScale: `${requiredQuantity}${unit ? ` ${unit}` : ""}`,
+      constraints,
+      status: planStatus,
+      priority: criticality,
+      lastUpdated: "",
+    }];
+  });
+}
+
+/** Convert either supported Sheet layout into the planner's stable row shape. */
+export function parseEngineeringPlanValues(values: unknown[][]): EngineeringPlanRow[] {
+  const [rawHeaders, ...rawRows] = values;
+  if (!rawHeaders) return [];
+  const positions = headerPositions(rawHeaders);
+  return parseLegacyPlanRows(positions, rawRows).concat(
+    parseOperationalPlanRows(positions, rawRows),
+  );
 }
 
 function tokens(value: string): string[] {
@@ -172,7 +252,7 @@ export function findTodayEngineeringPlanRows(
 
 function sheetsConfig() {
   const spreadsheetId = process.env.ENGINEERING_PLAN_SPREADSHEET_ID?.trim();
-  const range = process.env.ENGINEERING_PLAN_SHEET_RANGE?.trim() || "'Daily Plan'!A1:N250";
+  const range = process.env.ENGINEERING_PLAN_SHEET_RANGE?.trim() || "UpdatedPlan!A1:O250";
   return spreadsheetId ? { spreadsheetId, range } : null;
 }
 

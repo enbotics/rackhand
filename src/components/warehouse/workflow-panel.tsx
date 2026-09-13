@@ -97,7 +97,7 @@ export function WorkflowPanel({ workflow }: { workflow: WarehouseGraphResult | n
       )}
 
       <p className="mt-3 font-mono text-[11px] text-ink-muted">
-        Strands Graph · deterministic nodes · warehouse services stay authoritative
+        RackHand follows each verified step in order.
       </p>
     </Panel>
   );

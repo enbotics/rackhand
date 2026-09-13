@@ -79,6 +79,45 @@ export function ApprovalCard({
       );
     }
 
+    if (summary.action === "MATERIALS_FULFILLMENT") {
+      const materialTypeCount = summary.quantity ?? 0;
+      return (
+        <Panel title="Ready to start" tone="attention">
+          <div className="space-y-4">
+            <div>
+              <p className="font-mono text-3xl font-semibold tabular-nums text-ink">
+                {materialTypeCount}
+              </p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-ink-muted">
+                material type{materialTypeCount === 1 ? "" : "s"}
+              </p>
+            </div>
+            <p className="text-sm leading-6 text-ink-muted">
+              RackHand will bring each selected container to OUTPUT one at a time.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => onDecide("DENY")}
+                disabled={busy}
+                className={BUTTON_VARIANTS.secondary}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => onDecide("APPROVE")}
+                disabled={busy}
+                className={BUTTON_VARIANTS.approve}
+              >
+                {busy ? "Starting…" : "Start job"}
+              </button>
+            </div>
+          </div>
+        </Panel>
+      );
+    }
+
     return (
       <Panel title="Approval required" tone="attention">
         <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-warn">
@@ -93,11 +132,6 @@ export function ApprovalCard({
             One camera frame per bin; confidence must be strictly above 80% for an automatic
             inventory update.
           </p>
-        ) : summary.action === "MATERIALS_FULFILLMENT" ? (
-          <p className="mt-1 text-sm text-ink-muted">
-            RackHand will reuse trustworthy bin evidence, verify only the minimum relevant
-            uncertain bins, and then process the selected stock one bin at a time.
-          </p>
         ) : (
           <p className="mt-1 text-sm">
             <span className="font-mono text-accent">{summary.sku ?? "part not yet identified"}</span>
@@ -108,10 +142,10 @@ export function ApprovalCard({
         )}
 
         <div className="mt-3 border-t border-line-soft pt-2">
-          <Field label="Route">
+          <Field label="Movement">
             {summary.source ?? "?"} → {summary.destination ?? "?"}
           </Field>
-          <Field label="Scope">
+          <Field label="Amount">
             {summary.scope === "AUDIT_BINS"
               ? summary.source === "all auditable shelf bins"
                 ? "All auditable shelf bins, sequentially"
@@ -139,17 +173,9 @@ export function ApprovalCard({
           quantity and confidence; decreases need confirmation while safe increases update automatically.
         </p>}
 
-        {summary.action === "MATERIALS_FULFILLMENT" && (
-          <p className="mt-3 rounded-lg border border-accent-soft/40 bg-accent-tint p-3 text-xs text-ink-muted">
-            Each selected bin moves to OUTPUT. Remove the requested items, then approve its return
-            and complete the fresh-photo comparison before RackHand retrieves the next bin.
-          </p>
-        )}
-
         <p className="mt-3 text-xs leading-relaxed text-ink-muted">
           Nothing has moved yet. No bin is reserved and no stock has changed. Approving authorises
-          the attempt; the warehouse service still validates it before executing. Counts at or
-          below 80% confidence remain unchanged for review.
+          the attempt. Counts at or below 80% confidence remain unchanged for review.
         </p>
 
         <div className="mt-4 flex gap-2">
@@ -183,7 +209,7 @@ export function ApprovalCard({
           <div className="flex items-center gap-3">
             <div className="animate-spin-slow h-4 w-4 shrink-0 rounded-full border-2 border-line border-t-accent" />
             <p className="text-xs text-ink-muted">
-              Executing… the warehouse service is validating the request. Camera verification may require your confirmation before the gantry runs.
+              Starting… RackHand is checking the request. Camera verification may require your confirmation before the gantry runs.
             </p>
           </div>
           {/*
@@ -195,7 +221,7 @@ export function ApprovalCard({
            */}
           <div className="rounded-lg border border-line bg-bg-elevated px-3 py-2">
             <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-faint">
-              Route
+              Movement
             </p>
             <p className="mt-1 font-mono text-[11px] text-ink-muted">
               {outcome.summary?.action === "INVENTORY_AUDIT"
@@ -208,7 +234,7 @@ export function ApprovalCard({
             <span>{gantry?.currentLocation ?? "HOME"}</span>
           </div>
           <p className="text-[11px] text-ink-faint">
-            The arm&apos;s live position is shown on the digital warehouse rack.
+            The arm&apos;s live position is shown on the rack.
           </p>
         </div>
       )}

@@ -1,13 +1,12 @@
 "use client";
 
-import type { ReactNode } from "react";
 import type { StatusPresentation } from "@/lib/warehouse/dashboard-presentation";
 import type {
+  InventoryRowView,
   MaterialRequirementView,
   MaterialsPlanCheckView,
 } from "@/lib/warehouse/dashboard-types";
 import { Panel, StatusChip, toneText } from "./ui";
-import { MaterialsPlanStage } from "./materials-plan-card";
 import {
   MaterialsCheckStage,
   materialsCheckRunning,
@@ -18,81 +17,45 @@ import {
  * The build-plan answer, as ONE staged process.
  *
  * WHY THIS EXISTS. "What do I need to build a chair?" is answered by two
- * different pieces of machinery — a read-only Materials Planner specialist
- * that produces the requirements list, and approval-gated fulfillment that
- * checks persisted evidence before it moves anything. Historical rows from
- * the retired all-bin stock check can still render as Step 2, but new plans
- * verify only the minimum relevant uncertain bins inside fulfillment.
+ * different pieces of machinery — planning and approval-gated fulfillment.
+ * The operator sees one compact job card and four plain-language stages.
  *
  * WHAT IT NEVER CLAIMS. There is no live streaming of tool calls from the
  * server today, so nothing here asserts what the model is "currently doing".
- * Step 1's status is derived from a list that has actually arrived; Step 2's
- * progress is a real database row the sweep updates as it finishes each bin.
- * Every state shown is something that has demonstrably happened.
+ * Every state shown is derived from data that has demonstrably arrived.
  */
 
-const PLANNER_DONE: StatusPresentation = { label: "DONE", tone: "ok", symbol: "✓" };
 const FULFILLMENT_READY: StatusPresentation = { label: "APPROVAL", tone: "warn", symbol: "!" };
 const CHECK_RUNNING: StatusPresentation = { label: "RUNNING", tone: "accent", symbol: "●" };
 const CHECK_FAILED: StatusPresentation = { label: "NO REPORT", tone: "danger", symbol: "✕" };
 const CHECK_SKIPPED: StatusPresentation = { label: "NOT NEEDED", tone: "muted", symbol: "–" };
 
-/**
- * One numbered stage: who does it, what state it is in, and its own body.
- * The connector line is what makes two stages read as one process rather than
- * two stacked cards, so it is drawn for every stage except the last.
- */
-function PipelineStage({
-  index,
-  title,
-  actor,
-  status,
-  last = false,
-  children,
-}: {
-  index: number;
-  title: string;
-  /** The thing doing the work — named so the operator knows which agent is involved. */
-  actor: string;
-  status: StatusPresentation;
-  last?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <li className="relative pl-8">
-      {!last && (
-        <span
-          aria-hidden="true"
-          className="absolute bottom-0 left-[11px] top-7 w-px bg-line"
-        />
-      )}
-      <span
-        aria-hidden="true"
-        className={`absolute left-0 top-0.5 flex h-[23px] w-[23px] items-center justify-center rounded-full border border-line bg-bg-elevated font-mono text-[10px] ${toneText(
-          status.tone,
-        )}`}
-      >
-        {index}
-      </span>
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-[11px] uppercase tracking-[0.14em] text-ink">
-            Step {index} · {title}
-          </p>
-          <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.08em] text-ink-faint">
-            {actor}
-          </p>
-        </div>
-        <StatusChip status={status} className="shrink-0" />
-      </div>
-      <div className="mt-2">{children}</div>
-    </li>
+function materialName(requirement: MaterialRequirementView): string {
+  const sku = requirement.sku.toUpperCase();
+  if (sku.includes("TMC") || sku.includes("MOTOR") || sku.includes("DRIVER")) return "Motor driver";
+  if (sku.includes("V-GROOVE") || sku.includes("WHEEL-KIT")) return "Mounting kit";
+  if (sku.includes("SPACER")) return "Spacers";
+  return requirement.category || requirement.sku.replaceAll("-", " ");
+}
+
+function materialBinPositions(
+  requirement: MaterialRequirementView,
+  inventory: InventoryRowView[],
+): string[] {
+  const row = inventory.find(
+    (candidate) => candidate.sku.toUpperCase() === requirement.sku.toUpperCase(),
   );
+  return [...new Set(
+    (row?.locations ?? [])
+      .filter((location) => location.quantity > 0)
+      .map((location) => location.binCode),
+  )].sort((left, right) => left.localeCompare(right));
 }
 
 export function MaterialsPlanPipelineCard({
   requirements,
   check,
+  inventory = [],
 }: {
   /**
    * The planner's list. Comes from the chat reply for the turn that produced
@@ -102,12 +65,10 @@ export function MaterialsPlanPipelineCard({
   requirements: MaterialRequirementView[];
   /** Historical stock-check row; new plans leave this null. */
   check: MaterialsPlanCheckView | null;
+  /** Current database-backed locations; the Sheet never decides bin position. */
+  inventory?: InventoryRowView[];
 }) {
-  // Step 1 is always DONE by the time this card exists at all — it only ever
-  // renders once materialsPlan (the chat reply's own {requirements}, however
-  // short) or the polled check is present, and both only exist once the
-  // planner call has already completed. An empty list is a real, finished
-  // answer ("nothing in the catalog is relevant"), not a still-running one.
+  // An empty list is a real, finished answer, not a still-running one.
   const running = check !== null && materialsCheckRunning(check);
   const verdict = check ? materialsCheckVerdict(check) : null;
   // Historical sessions may still have a completed stock-check row from the
@@ -123,57 +84,60 @@ export function MaterialsPlanPipelineCard({
         : running
           ? CHECK_RUNNING
           : CHECK_FAILED;
+  const jobTitle = requirements.some((requirement) => {
+    const sku = requirement.sku.toUpperCase();
+    return sku.includes("TMC") || sku.includes("MOTOR") || sku.includes("DRIVER");
+  }) ? "Control module" : "Materials job";
 
-  // The header chip is the whole pipeline's state — the SAME chip step 2
-  // carries, so the header can never disagree with the verdict banner below
-  // it. Until a report exists it says which stage is still in flight.
+  // The header chip summarizes the latest confirmed stage.
   return (
     <Panel
       title="Build plan"
       tone={verdict?.tone === "danger" || verdict?.tone === "warn" ? "attention" : undefined}
       meta={<StatusChip status={checkStatus} />}
     >
-      <ol className="space-y-4">
-        <PipelineStage
-          index={1}
-          title="Materials planner"
-          actor="Materials planner agent · read-only, catalog-grounded"
-          status={PLANNER_DONE}
-        >
-          <MaterialsPlanStage requirements={requirements} />
-        </PipelineStage>
+      {requirements.length > 0 ? (
+        <div className="rounded-lg border border-accent-soft/40 bg-bg-elevated p-3">
+          <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ink-muted">
+            {jobTitle} · 1/{requirements.length}
+          </p>
+          <ol className="mt-2 space-y-1.5">
+            {requirements.map((requirement, index) => {
+              const positions = materialBinPositions(requirement, inventory);
+              return <li key={`${requirement.sku}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-sm">
+                <span className={index === 0 && !check ? "font-medium text-ink" : "text-ink-muted"}>
+                  {materialName(requirement)}
+                </span>
+                <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-accent">
+                  Bin {positions.length > 0 ? positions.join(" + ") : "—"}
+                </span>
+                <span className={`shrink-0 font-mono text-xs ${toneText(check ? "ok" : index === 0 ? "warn" : "muted")}`}>
+                  {requirement.quantity}× {check ? "✓" : index === 0 ? "→" : "○"}
+                </span>
+              </li>;
+            })}
+          </ol>
+        </div>
+      ) : null}
 
-        <PipelineStage
-          index={2}
-          title={check ? "Stock check" : "Fulfillment"}
-          actor={
-            check
-              ? "Recorded physical stock verification"
-              : "RackHand Agent · operator approval required"
-          }
-          status={checkStatus}
-          last
-        >
-          {check ? (
-            <MaterialsCheckStage check={check} />
-          ) : nothingToCheck ? (
-            <p className="text-xs leading-relaxed text-ink-muted">
-              Skipped — the materials planner found nothing in the catalog relevant to this build,
-              so there is nothing on the shelf to check.
-            </p>
-          ) : (
-            <p className="text-xs leading-relaxed text-ink-muted">
-              Ready for evidence-aware fulfillment. After approval, RackHand skips unchanged,
-              previously verified bins; if needed, it checks only the minimum relevant uncertain
-              bins before retrieving one bin to OUTPUT at a time.
-            </p>
-          )}
-        </PipelineStage>
-      </ol>
+      <div className="mt-3 grid grid-cols-4 gap-2 border-y border-line-soft py-3 font-mono text-[9px] uppercase tracking-[0.12em]">
+        <span className={toneText("ok")}>✓ Plan</span>
+        <span className={toneText(check ? "ok" : "warn")}>{check ? "✓" : "→"} Fulfill</span>
+        <span className={toneText(check ? "accent" : "muted")}>{check ? "→" : "○"} Verify</span>
+        <span className={toneText(verdict ? verdict.chip.tone : "muted")}>{verdict ? verdict.chip.symbol : "○"} Result</span>
+      </div>
 
-      <p className="mt-3 font-mono text-[10px] text-ink-faint">
-        Planner output is read-only · every fulfillment starts behind operator approval
-      </p>
+      <div className="mt-3">
+        {check ? (
+          <MaterialsCheckStage check={check} />
+        ) : nothingToCheck ? (
+          <p className="text-xs text-ink-muted">No stocked materials matched this build.</p>
+        ) : (
+          <p className="text-xs text-ink-muted">
+            {requirements.length} material type{requirements.length === 1 ? " is" : "s are"} ready for checkout.
+          </p>
+        )}
+      </div>
     </Panel>
   );
 }

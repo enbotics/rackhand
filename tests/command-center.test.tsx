@@ -239,7 +239,9 @@ afterEach(() => {
 function panel(title: string): HTMLElement {
   // getAllBy rather than getBy so a panel that later appears on two pages does
   // not break every test that reaches into it.
-  const heading = screen.getAllByRole("heading", { name: title })[0];
+  const heading = screen.getAllByRole("heading", { name: title }).find((candidate) =>
+    candidate.closest("section"),
+  );
   if (!heading) throw new Error(`No panel found for "${title}"`);
   const section = heading.closest("section");
   if (!section) throw new Error(`No panel found for "${title}"`);
@@ -292,7 +294,7 @@ describe("command centre — initial state", () => {
       "Inventory",
       "Gantry",
       "Recent movements",
-      "Agent activity",
+      "Activity",
       "Recent scans",
     ]) {
       expect(screen.getAllByRole("heading", { name: title }).length).toBeGreaterThan(0);
@@ -320,7 +322,7 @@ describe("command centre — initial state", () => {
     expect(within(panel("Recent movements")).getByText(/No warehouse movements yet/)).toBeTruthy();
     expect(within(panel("Human decisions")).getByText(/Nothing is waiting on you/)).toBeTruthy();
     expect(within(panel("Workflow")).getByText(/No warehouse workflow has run yet/)).toBeTruthy();
-    expect(within(panel("Agent activity")).getByText(/No agent activity yet/)).toBeTruthy();
+    expect(within(panel("Activity")).getByText(/No activity yet/)).toBeTruthy();
     expect(within(panel("Digital warehouse")).getAllByText("Empty")).toHaveLength(6);
   });
 });
@@ -815,45 +817,40 @@ describe("command centre — agent activity trace", () => {
     };
   });
 
-  it("renders the timeline in order with categories, summaries and durations", async () => {
+  it("renders one concise operator event for each activity stage", async () => {
     await renderDashboard();
     await askAgent("Bring me BRG-6204.");
 
     await waitFor(() =>
-      expect(within(panel("Agent activity")).getByText(/Warehouse request received/)).toBeTruthy(),
+      expect(within(panel("Activity")).getByText("Inventory updated")).toBeTruthy(),
     );
-    const view = within(panel("Agent activity"));
+    const view = within(panel("Activity"));
 
-    expect(view.getByText("BRG-6204 — 2 in stock, B2-01 (2)")).toBeTruthy();
-    expect(view.getByText("Operator approved the action.")).toBeTruthy();
-    expect(view.getByText("Gantry RETRIEVAL B2-01 → OUTPUT completed.")).toBeTruthy();
-    expect(view.getByText("Inventory BRG-6204 in B2-01: -1, 1 remaining.")).toBeTruthy();
+    expect(view.getByText("Inventory checked")).toBeTruthy();
+    expect(view.getByText("Continue job")).toBeTruthy();
+    expect(view.getByText("Bin moved")).toBeTruthy();
+    expect(view.getByText("Inventory updated")).toBeTruthy();
 
     // Activity stages are words, not only colours.
-    for (const label of ["OBSERVE", "DECIDE", "ACT"]) {
+    for (const label of ["OBSERVE", "DECIDE", "ACT", "RESULT"]) {
       expect(view.getAllByText(label).length).toBeGreaterThan(0);
     }
-    expect(view.getByText("84 ms")).toBeTruthy();
-    expect(view.getByText("643 ms")).toBeTruthy();
-
-    // Metrics stay in a small technical footer, not in the operator flow.
-    expect(view.getByText(/Model calls 2/)).toBeTruthy();
+    expect(view.queryByText("84 ms")).toBeNull();
+    expect(view.queryByText(/Model calls/)).toBeNull();
   });
 
-  it("keeps detail collapsed and shows no model internals", async () => {
+  it("hides event metadata and model internals", async () => {
     await renderDashboard();
     await askAgent("Bring me BRG-6204.");
     await waitFor(() =>
-      expect(within(panel("Agent activity")).getByText(/Warehouse request received/)).toBeTruthy(),
+      expect(within(panel("Activity")).getByText("Inventory updated")).toBeTruthy(),
     );
-    const view = within(panel("Agent activity"));
+    const view = within(panel("Activity"));
 
-    // Not a JSON dump: detail is behind a click.
     expect(view.queryByText("tool-1")).toBeNull();
-    fireEvent.click(view.getAllByRole("button", { name: "detail" })[0]);
-    expect(view.getByText("tool-1")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "detail" })).toBeNull();
 
-    const panelText = panel("Agent activity").textContent ?? "";
+    const panelText = panel("Activity").textContent ?? "";
     for (const forbidden of ["systemPrompt", "thinking", "reasoning", "messages"]) {
       expect(panelText).not.toContain(forbidden);
     }
@@ -873,11 +870,11 @@ describe("command centre — agent activity trace", () => {
     ];
     await renderDashboard();
     await waitFor(() =>
-      expect(within(panel("Agent activity")).getByRole("button", { name: "Recent runs" })).toBeTruthy(),
+      expect(within(panel("Activity")).getByRole("button", { name: "Recent runs" })).toBeTruthy(),
     );
 
-    fireEvent.click(within(panel("Agent activity")).getByRole("button", { name: "Recent runs" }));
-    const view = within(panel("Agent activity"));
+    fireEvent.click(within(panel("Activity")).getByRole("button", { name: "Recent runs" }));
+    const view = within(panel("Activity"));
     expect(view.getByText("Bring me BOLT-M8-50")).toBeTruthy();
     expect(view.getByText(/DENIED/)).toBeTruthy();
 

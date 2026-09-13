@@ -1,13 +1,17 @@
 # Engineering plan integration
 
-The Materials Planner reads project context from the `Daily Plan` tab in the
+The Materials Planner reads project context from the `UpdatedPlan` tab in the
 RackHand Engineering Build Plan Google Sheet. It uses that context only to
 understand the engineer's current work, scale, material hints, and constraints.
 Catalog identity and inventory remain authoritative inside RackHand.
 
+`UpdatedPlan` stores one released material per row using the operational
+snake_case headers. The integration also accepts the original `Daily Plan`
+headers for backward compatibility.
+
 ## Flow
 
-1. An engineer adds one enabled row per work day and project.
+1. An engineer adds one `PREPARE`/`RELEASED` row per required material.
 2. The engineer asks RackHand something like: `I am building the mobile assembly workbench. What do I need today?`
 3. The Materials Planner calls `get_engineering_plan_context` once using the
    distinctive project/build terms.
@@ -22,8 +26,9 @@ Catalog identity and inventory remain authoritative inside RackHand.
    does RackHand offer the next selected bin.
 
 The Sheet never authorizes a movement, supplies trusted SKUs, or changes stock.
-Rows beginning with `EXAMPLE-` and rows whose `Include for Agent` value is not
-`Yes` are ignored deterministically before content reaches the planner.
+In `UpdatedPlan`, only `PREPARE` rows with `plan_status` set to `RELEASED` are
+included. In the legacy layout, rows beginning with `EXAMPLE-` and rows whose
+`Include for Agent` value is not `Yes` are ignored.
 
 ## Runtime setup
 

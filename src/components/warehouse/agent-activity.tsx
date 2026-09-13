@@ -3,10 +3,8 @@
 import { useState } from "react";
 import type { TraceEventView, TraceSummaryView, TraceView } from "@/lib/observability/types";
 import {
-  TRACE_EVENT_STATUS_PRESENTATION,
   TRACE_STATUS_PRESENTATION,
   formatClockSeconds,
-  formatDuration,
 } from "@/lib/warehouse/dashboard-presentation";
 import { EmptyState, ErrorNote, Panel, StatusChip, toneText } from "./ui";
 
@@ -20,6 +18,9 @@ const ACTIVITY_STAGES = {
 type ActivityStage = keyof typeof ACTIVITY_STAGES;
 
 function activityStage(event: TraceEventView): ActivityStage {
+  if (event.type === "INVENTORY_UPDATED" || event.type === "BIN_STATUS_UPDATED") {
+    return "RESULT";
+  }
   if (
     event.type.startsWith("APPROVAL_") ||
     event.type.startsWith("CATALOG_RESOLUTION_")
@@ -45,6 +46,43 @@ function activityStage(event: TraceEventView): ActivityStage {
   return event.status === "FAILED" ? "RESULT" : "OBSERVE";
 }
 
+const STAGE_ORDER: ActivityStage[] = ["OBSERVE", "DECIDE", "ACT", "RESULT"];
+
+function eventPriority(event: TraceEventView): number {
+  if (event.type === "INVENTORY_UPDATED") return 100;
+  if (event.type === "BIN_STATUS_UPDATED") return 95;
+  if (event.type.startsWith("APPROVAL_")) return 90;
+  if (event.category === "GANTRY" || event.type.startsWith("MOVEMENT_")) return 85;
+  if (event.category === "TOOL") return 75;
+  return 20;
+}
+
+function activityEvents(events: TraceEventView[]): TraceEventView[] {
+  const selected = new Map<ActivityStage, TraceEventView>();
+  for (const event of events) {
+    const stage = activityStage(event);
+    const current = selected.get(stage);
+    if (!current || eventPriority(event) >= eventPriority(current)) selected.set(stage, event);
+  }
+  return STAGE_ORDER.flatMap((stage) => {
+    const event = selected.get(stage);
+    return event ? [event] : [];
+  });
+}
+
+function conciseSummary(event: TraceEventView): string {
+  if (event.type === "INVENTORY_UPDATED") return "Inventory updated";
+  if (event.type === "BIN_STATUS_UPDATED") return "Bin status updated";
+  if (event.type === "APPROVAL_APPROVED") return "Continue job";
+  if (event.type === "APPROVAL_REQUIRED") return "Operator approval needed";
+  if (event.type === "APPROVAL_DENIED") return "Job cancelled";
+  if (event.category === "GANTRY" || event.type.startsWith("MOVEMENT_")) return "Bin moved";
+  if (event.category === "TOOL") return "Inventory checked";
+  if (event.type.endsWith("FAILED") || event.type === "GRAPH_BLOCKED") return "Job needs attention";
+  if (event.type.endsWith("COMPLETED")) return "Job completed";
+  return event.summary.replace(/[.!]$/, "").slice(0, 72);
+}
+
 /**
  * The agent activity timeline (Milestone 12).
  *
@@ -54,81 +92,19 @@ function activityStage(event: TraceEventView): ActivityStage {
  * chain-of-thought, no scratchpad, no reasoning tokens and no system prompt is
  * stored, so none can be rendered.
  *
- * It is a timeline, not a log viewer: one readable line per event, with the
- * small sanitized detail tucked behind a click. Nothing on this panel can
- * cause a warehouse action — there is no re-run, no replay, and the API behind
- * it only answers GET.
+ * It is a status trail, not a log viewer: at most one concise event is shown
+ * for each operator stage. Nothing on this panel can cause a physical action.
  */
 function TraceRow({ event }: { event: TraceEventView }) {
-  const [open, setOpen] = useState(false);
   const stage = ACTIVITY_STAGES[activityStage(event)];
-  const status = TRACE_EVENT_STATUS_PRESENTATION[event.status];
-  const duration = formatDuration(event.durationMs);
-  const clock = event.completedAt ?? event.startedAt;
-  const hasDetail = event.metadata !== null && Object.keys(event.metadata).length > 0;
 
   return (
-    <li className="border-b border-line-soft last:border-b-0">
-      <div className="flex items-baseline gap-3 py-1.5">
-        <span className="w-[68px] shrink-0 font-mono text-[10px] text-ink-faint">
-          {clock ? formatClockSeconds(clock) : ""}
-        </span>
-
-        <span
-          className={`w-[86px] shrink-0 font-mono text-[10px] tracking-[0.1em] ${toneText(stage.tone)}`}
-        >
-          <span aria-hidden="true" className="mr-1">
-            {stage.symbol}
-          </span>
-          {stage.label}
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-3">
-            <p className="min-w-0 text-xs text-ink">
-              {event.name && (
-                <span className="font-mono text-[11px] text-ink-muted">{event.name} </span>
-              )}
-              {event.summary}
-            </p>
-            <span className="flex shrink-0 items-baseline gap-2">
-              {duration && (
-                <span className="font-mono text-[10px] text-ink-faint">{duration}</span>
-              )}
-              <span
-                aria-label={status.label}
-                className={`font-mono text-[11px] ${toneText(status.tone)}`}
-              >
-                {status.symbol}
-              </span>
-            </span>
-          </div>
-
-          {hasDetail && (
-            <button
-              type="button"
-              onClick={() => setOpen((value) => !value)}
-              aria-expanded={open}
-              className="mt-0.5 font-mono text-[10px] text-ink-faint transition-colors hover:text-accent"
-            >
-              {open ? "hide detail" : "detail"}
-            </button>
-          )}
-
-          {open && hasDetail && (
-            <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-md border border-line-soft bg-bg-elevated px-2.5 py-2">
-              {Object.entries(event.metadata ?? {}).map(([key, value]) => (
-                <div key={key} className="contents">
-                  <dt className="font-mono text-[10px] text-ink-faint">{key}</dt>
-                  <dd className="min-w-0 truncate font-mono text-[10px] text-ink-muted">
-                    {String(value)}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          )}
-        </div>
-      </div>
+    <li className="grid grid-cols-[92px_1fr] items-baseline gap-3 border-b border-line-soft py-2 last:border-b-0">
+      <span className={`font-mono text-[10px] tracking-[0.13em] ${toneText(stage.tone)}`}>
+        <span aria-hidden="true" className="mr-1">{stage.symbol}</span>
+        {stage.label}
+      </span>
+      <p className="min-w-0 truncate text-sm text-ink">{conciseSummary(event)}</p>
     </li>
   );
 }
@@ -149,7 +125,7 @@ export function AgentActivityPanel({
 
   return (
     <Panel
-      title="Agent activity"
+      title="Activity"
       meta={status ? <StatusChip status={status} /> : undefined}
       actions={
         recent.length > 0 ? (
@@ -201,27 +177,24 @@ export function AgentActivityPanel({
 
       {!trace ? (
         <EmptyState>
-          No agent activity yet.
+          No activity yet.
           <br />
           Ask RackHand something and every step appears here as it happens.
         </EmptyState>
       ) : (
         <>
-          <div className="mb-2 flex items-baseline justify-between gap-3 border-b border-line-soft pb-2">
+          <div className="mb-2 border-b border-line-soft pb-2">
             <p className="min-w-0 truncate text-xs text-ink">
               <span className="font-mono text-[10px] text-ink-faint">REQUEST </span>
               “{trace.requestSummary}”
             </p>
-            <span className="shrink-0 font-mono text-[10px] text-ink-faint">
-              {formatDuration(trace.durationMs) ?? "in progress"}
-            </span>
           </div>
 
           {trace.events.length === 0 ? (
             <EmptyState>Waiting for the first step…</EmptyState>
           ) : (
             <ul className="max-h-[420px] overflow-y-auto pr-1">
-              {trace.events.map((event) => (
+              {activityEvents(trace.events).map((event) => (
                 <TraceRow key={event.sequence} event={event} />
               ))}
             </ul>
@@ -234,21 +207,6 @@ export function AgentActivityPanel({
               </span>
               <br />
               {trace.error.message}
-            </p>
-          )}
-
-          {/*
-           * A small technical footer, kept away from the operational timeline:
-           * useful to a judge, irrelevant to someone running the warehouse.
-           * Absent entirely when the SDK reported no metrics.
-           */}
-          {trace.metrics.modelCalls !== null && (
-            <p className="mt-3 font-mono text-[10px] text-ink-faint">
-              Model calls {trace.metrics.modelCalls}
-              {trace.metrics.totalTokens !== null && ` · tokens ${trace.metrics.totalTokens}`}
-              {trace.metrics.modelLatencyMs !== null &&
-                ` · model latency ${formatDuration(trace.metrics.modelLatencyMs)}`}
-              {` · ${trace.traceId}`}
             </p>
           )}
         </>

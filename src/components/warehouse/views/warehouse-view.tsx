@@ -146,6 +146,7 @@ export function WarehouseView() {
             workflow={session.workflow}
             materialsPlan={session.materialsPlan}
             materialsPlanCheck={session.materialsPlanCheck}
+            inventory={session.inventory}
             onDismissMaterialsPlan={session.dismissMaterialsPlan}
             todayPlanAnalysis={session.todayPlanAnalysis}
             latestAudit={session.latestAudit}

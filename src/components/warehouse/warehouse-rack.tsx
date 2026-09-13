@@ -406,6 +406,11 @@ function StationBinCard({ bin, scanning, onSelect }: {
   const photo = item?.catalogImageUrl ?? item?.imageUrl ?? bin?.latestSnapshot?.imageUrl ?? null;
   const statusColor = bin ? STATION_STATUS_COLOR[bin.status] ?? "#90a6b6" : "#5c7787";
   const interactive = !!bin && !!onSelect;
+  const verifiedQuantity = bin?.latestSnapshot?.measuredQuantity ?? bin?.totalQuantity ?? 0;
+  const weightStable = bin?.latestSnapshot?.weightSource === "SCALE"
+    && bin.latestSnapshot.totalWeightGrams != null;
+  const hasEstimatedWeight = bin?.latestSnapshot?.weightSource === "FALLBACK";
+  const visionClear = (bin?.latestSnapshot?.confidencePercent ?? 0) > 80;
 
   return <g
     transform={`translate(${STATION_CARD.x} ${STATION_CARD.y}) scale(${CARD_SCALE})`}
@@ -432,7 +437,7 @@ function StationBinCard({ bin, scanning, onSelect }: {
     </text>
     {bin ? <g>
       <text x={w - 14} y="20" textAnchor="end" fill="#c8f3fa" fontSize="11" fontWeight="700">
-        {bin.totalQuantity.toLocaleString("en-US")}<tspan fontSize="8" fontWeight="500" fill="#8fb6c4"> PCS</tspan>
+        {bin.code}
       </text>
       <defs><clipPath id={clipId}><rect x="14" y="44" width="96" height="70" rx="6" /></clipPath></defs>
       <rect x="14" y="44" width="96" height="70" rx="6" fill="#0c202c" stroke="#3d6274" strokeOpacity=".8" />
@@ -443,13 +448,15 @@ function StationBinCard({ bin, scanning, onSelect }: {
             <path d="M44 92 L58 72 L70 88 L77 80 L88 92Z" />
             <circle cx="76" cy="63" r="5" />
           </g>}
-      <text x="124" y="66" fill="#e6f2f8" fontSize="19" fontWeight="700" letterSpacing="1">{bin.code}</text>
-      <text x="124" y="85" fill="#7e9aaf" fontSize="10">{item ? item.sku.slice(0, 20) : "No recorded contents"}</text>
-      <text x="124" y="105" fill={statusColor} fontSize="9" letterSpacing="1.2">
-        {bin.status.replaceAll("_", " ")}
+      <text x="124" y="70" fill="#e6f2f8" fontSize="27" fontWeight="700">
+        {verifiedQuantity.toLocaleString("en-US")}
+        <tspan dx="6" fontSize="10" fontWeight="600" fill="#9adff1" letterSpacing="1.2">VERIFIED</tspan>
       </text>
-      <text x="124" y="105" dx="0" dy="15" fill="#68849a" fontSize="8.5" letterSpacing=".8">
-        {`CAPACITY ${bin.capacity}`}
+      <text x="124" y="94" fill={weightStable ? "#7de2b8" : "#d6ab64"} fontSize="10" letterSpacing=".8">
+        {weightStable ? "WEIGHT STABLE ✓" : hasEstimatedWeight ? "WEIGHT ESTIMATED" : "WEIGHT PENDING"}
+      </text>
+      <text x="124" y="113" fill={visionClear ? "#7de2b8" : "#d6ab64"} fontSize="10" letterSpacing=".8">
+        {visionClear ? "VISION CLEAR ✓" : "VISION REVIEW"}
       </text>
       <path d={`M14 128 H${w - 14}`} stroke="#1d3543" />
       <text x="14" fill="#c2d8e4" fontSize="12.5">
@@ -557,11 +564,14 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
     ? activeBin ?? checkedOut.find((bin) => bin.code !== returned)
     : !gantry?.activeOperationId && !arm.carrying ? checkedOut.find((bin) => bin.code !== returned) : null;
   const presented = dockBin?.code ?? null;
+  const highlightedBinCode = arm.focusBin ?? dockBin?.code ?? null;
+  const rackFocusActive = highlightedBinCode !== null
+    && (!!gantry?.activeOperationId || dockBin !== null);
 
-  return <section className="machine-panel flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-line" aria-label="Warehouse machine visualization">
+  return <section className="machine-panel flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-line" aria-label="RackHand live rack">
     <div className="machine-toolbar flex shrink-0 flex-wrap items-center justify-between gap-3 px-5 py-4">
       <div>
-        <p className="font-mono text-[10px] tracking-[.22em] text-accent">WAREHOUSE / LIVE SCENE</p>
+        <p className="font-mono text-[10px] tracking-[.22em] text-accent">RACKHAND / LIVE RACK</p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <WarehouseActionsMenu onManageBins={onManageBins} />
@@ -569,7 +579,7 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
       </div>
     </div>
     {error && <div className="px-5 pb-3"><ErrorNote onRetry={onRetry}>{error}</ErrorNote></div>}
-    {loading && bins.length === 0 ? <div className="flex h-80 items-center justify-center text-sm text-ink-muted" role="status">Loading your warehouse…</div>
+    {loading && bins.length === 0 ? <div className="flex h-80 items-center justify-center text-sm text-ink-muted" role="status">Loading the rack…</div>
       : bins.length === 0 ? <div className="p-12 text-center text-sm text-ink-muted">No bins yet. Add bins to build your storage rack.</div>
       : <div className="machine-scene min-h-0 flex-1 overflow-hidden">
         <svg viewBox={`0 0 ${geometry.width} ${geometry.height}`}
@@ -582,6 +592,10 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
             <pattern id={`${id}-screw`} width="4" height="7" patternUnits="userSpaceOnUse"><rect width="4" height="7" fill="#6d8596" /><path d="M0 6 L4 2" stroke="#1c3344" strokeWidth="2" /></pattern>
             <pattern id={`${id}-floor`} width="48" height="24" patternUnits="userSpaceOnUse"><path d="M0 24 L24 0 L48 24 M0 0 H48" fill="none" stroke="#557e96" strokeOpacity=".1" /></pattern>
             <radialGradient id={`${id}-light`}><stop stopColor="#24718e" stopOpacity=".18" /><stop offset="1" stopColor="#112431" stopOpacity="0" /></radialGradient>
+            <filter id={`${id}-active-glow`} x="-40%" y="-40%" width="180%" height="180%">
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
           </defs>
           <rect width={geometry.width} height={geometry.height} fill={`url(#${id}-light)`} />
           <path d={`M25 ${geometry.height - 115} L${geometry.width - 120} ${geometry.height - 175} L${geometry.width} ${geometry.height} H0Z`} fill={`url(#${id}-floor)`} />
@@ -590,15 +604,21 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
           {geometry.rows.flatMap((row) => row.bins.map((bin) => {
             const point = geometry.points.get(bin.code)!;
             const approachingPickup = !!gantry?.activeOperationId && operation?.source === bin.code && !arm.carrying;
+            const highlighted = bin.code === highlightedBinCode;
             const absent = (!approachingPickup && bin.status === "CHECKED_OUT" && bin.code !== returned)
               || bin.code === presented || (arm.carrying && bin.code === arm.focusBin);
             return <g key={bin.binId} transform={`translate(${point.x} ${point.y})`}
               className="machine-bin cursor-pointer outline-none" role="button" tabIndex={onSelectBin ? 0 : undefined}
+              style={{ opacity: rackFocusActive && !highlighted ? 0.2 : 1, transition: "opacity 240ms ease" }}
               aria-label={`${bin.code}, ${bin.contents[0]?.canonicalName ?? "Empty bin"}, ${bin.status.replaceAll("_", " ").toLowerCase()}, ${bin.totalQuantity} on record. View bin.`}
               onClick={() => onSelectBin?.(bin)}
               onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectBin?.(bin); } }}>
               <title>{`${bin.code} · ${bin.status} · ${bin.contents[0]?.canonicalName ?? "No recorded contents"}`}</title>
-              <rect className="machine-bin-focus" x="-55" y="-103" width="119" height="155" rx="9" fill="transparent" stroke="transparent" />
+              <rect className="machine-bin-focus" x="-55" y="-103" width="119" height="155" rx="9"
+                fill={highlighted && rackFocusActive ? "#67e8f912" : "transparent"}
+                stroke={highlighted && rackFocusActive ? "#9aeeff" : "transparent"}
+                strokeWidth={highlighted && rackFocusActive ? 4 : 1}
+                filter={highlighted && rackFocusActive ? `url(#${id}-active-glow)` : undefined} />
               {absent ? <g>
                 <path d="M-44 -43 L40 -43 L35 1 H-38Z" fill="#142532" fillOpacity=".3" stroke="#607583" strokeDasharray="4 5" />
                 <text x="0" y="-19" textAnchor="middle" fill="#9fb3c2" fontSize="11">{bin.code}</text>
@@ -606,7 +626,7 @@ export function WarehouseRack({ bins, loading, error, onRetry, gantry: rawGantry
                 <BinItemLabel name={bin.contents[0]?.canonicalName ?? "Empty bin"} quantity={bin.totalQuantity} />
               </g> : <Tote code={bin.code} bin={bin}
                 tone={bin.status === "AVAILABLE" ? "empty" : bin.status === "OCCUPIED" ? "stock" : "reserved"}
-                active={bin.code === arm.focusBin && !!gantry?.activeOperationId} />}
+                active={highlighted && rackFocusActive} />}
             </g>;
           }))}
           <g className="machine-checkout" transform={`translate(${CHECKOUT_OFFSET.x} ${CHECKOUT_OFFSET.y}) scale(${CHECKOUT_SCALE})`}>
