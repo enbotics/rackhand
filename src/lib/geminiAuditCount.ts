@@ -73,7 +73,7 @@ function createGoogleModel(): GoogleModel {
     modelId: MODEL,
     params: {
       temperature: 0,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 8192,
       thinkingConfig: { thinkingLevel: "low" },
     },
   });
