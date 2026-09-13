@@ -19,7 +19,7 @@ describe("bin verification evidence", () => {
     });
 
     expect(evidence).toMatchObject({ state: "TRUSTED", trusted: true });
-    expect(evidence.lastVerifiedAt).toBe("2026-09-12T10:01:00.000Z");
+    expect(evidence.lastVerifiedAt).toBe("2026-09-12T10:00:30.000Z");
   });
 
   it("invalidates accepted evidence after a later inventory-changing event", () => {
@@ -47,7 +47,7 @@ describe("bin verification evidence", () => {
     });
   });
 
-  it("does not expire unchanged evidence just because time passed", () => {
+  it("expires unchanged evidence at seven days so plan analysis audits it", () => {
     const evidence = classifyBinVerificationEvidence({
       binCode: "B1-01",
       latestAudit: {
@@ -58,7 +58,28 @@ describe("bin verification evidence", () => {
       },
       latestDestinationMovement: null,
       latestSourceMovement: null,
+    }, at("2025-01-08T00:02:00.000Z"));
+
+    expect(evidence).toMatchObject({
+      state: "VERIFICATION_EXPIRED",
+      trusted: false,
+      lastVerifiedAt: "2025-01-01T00:02:00.000Z",
+      reason: "latest trusted verification from 2025-01-01 is 7 days old",
     });
+  });
+
+  it("keeps unchanged evidence trusted immediately before seven days", () => {
+    const evidence = classifyBinVerificationEvidence({
+      binCode: "B1-01",
+      latestAudit: {
+        status: "CONFIRMED",
+        createdAt: at("2025-01-01T00:00:00.000Z"),
+        capturedAt: at("2025-01-01T00:01:00.000Z"),
+        completedAt: at("2025-01-01T00:02:00.000Z"),
+      },
+      latestDestinationMovement: null,
+      latestSourceMovement: null,
+    }, at("2025-01-08T00:01:59.999Z"));
 
     expect(evidence).toMatchObject({ state: "TRUSTED", trusted: true });
   });

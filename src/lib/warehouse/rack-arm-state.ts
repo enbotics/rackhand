@@ -7,16 +7,16 @@
  *
  * TWO SOURCES, ONE PICTURE.
  *  - `GantryStatus` says what the MACHINE is doing (moving, picking, dropping)
- *    and where its head last ARRIVED. It does not know what the trip is for.
+ *    and where its head last ARRIVED. During an audit, the browser can rebuild
+ *    this visual-only status from the durable audit phase if simulator memory
+ *    lives in a different server worker.
  *  - The active `Movement` (or the running inventory audit) says what the trip
  *    IS: which two named points, and why.
  *
- * Neither alone is enough to draw the arm, and nothing here invents a position
- * the controller has not reported: while the head is between two points the
- * illustration animates towards the leg's end point, it does not pretend to
- * know how far along it is.
+ * Neither alone is enough to draw the arm. Live telemetry wins whenever it is
+ * available; the audit fallback follows the simulator's fixed phase timings.
  */
-import type { GantryStatus, GantryLocation } from "@/lib/gantry/types";
+import type { GantryStatus, GantryLocation, GantryState } from "@/lib/gantry/types";
 import { isGantryStation } from "@/lib/gantry/types";
 import type { InventoryAuditView, MovementRowView } from "./dashboard-types";
 
@@ -62,6 +62,148 @@ const TERMINAL_BIN_AUDIT_STATUSES = new Set([
 
 /** Audit-run statuses that mean the run is still on the machine. */
 const LIVE_AUDIT_RUN_STATUSES = new Set(["PENDING", "RUNNING"]);
+
+const AUDIT_TRANSFER_MS = 5_000;
+const AUDIT_HOME_MS = 400;
+const AUDIT_FIRST_MOVE_MS = Math.round(AUDIT_TRANSFER_MS * 0.35);
+const AUDIT_PICK_MS = Math.round(AUDIT_TRANSFER_MS * 0.15);
+const AUDIT_SECOND_MOVE_MS = Math.round(AUDIT_TRANSFER_MS * 0.35);
+
+/**
+ * Rebuilds visual-only simulator telemetry from the audit's durable phase.
+ *
+ * The simulator itself is process-local. An audit request and the browser's
+ * status request can therefore reach different Next.js workers even though
+ * the database correctly says that the bin is travelling. This fallback uses
+ * the simulator's deterministic five-second sequence so the browser still
+ * shows shelf -> checkout -> shelf. It never changes inventory or drives a
+ * controller.
+ */
+export function gantryStatusFromAuditMovement(
+  audit: InventoryAuditView | null | undefined,
+  now = Date.now(),
+): GantryStatus | null {
+  const movingAudit = audit?.bins.reduce<(InventoryAuditView["bins"][number]) | null>(
+    (newest, bin) => {
+      if (!bin.movementPhase || bin.movementPhaseStartedAt == null) return newest;
+      if (!newest || (newest.movementPhaseStartedAt ?? 0) < bin.movementPhaseStartedAt) {
+        return bin;
+      }
+      return newest;
+    },
+    null,
+  );
+  if (!audit || !movingAudit?.movementPhase || movingAudit.movementPhaseStartedAt == null) {
+    return null;
+  }
+
+  const phase = movingAudit.movementPhase;
+  const phaseStartedAt = movingAudit.movementPhaseStartedAt;
+  const age = Math.max(0, now - phaseStartedAt);
+  const binCode = movingAudit.binCode;
+  const goingToScan = phase !== "RETURNING";
+  const source: GantryLocation = goingToScan ? binCode : "SCAN_STATION";
+  const destination: GantryLocation = goingToScan ? "SCAN_STATION" : binCode;
+  const operationId = `audit:${audit.auditRunId}:${movingAudit.binAuditId}:${phase}`;
+
+  if (phase === "AT_SCAN") {
+    return {
+      mode: "SIMULATION",
+      state: "IDLE",
+      currentLocation: "SCAN_STATION",
+      homed: true,
+      activeOperationId: null,
+      lastError: null,
+      carrying: false,
+      operation: {
+        operationId,
+        type: "AUDIT_PRESENTATION",
+        source: binCode,
+        destination: "SCAN_STATION",
+        status: "COMPLETED",
+        startedAt: phaseStartedAt,
+        completedAt: phaseStartedAt,
+        error: null,
+      },
+      motion: null,
+    };
+  }
+
+  const operationType = goingToScan ? "AUDIT_PRESENTATION" : "AUDIT_RETURN";
+  let state: GantryState;
+  let currentLocation: GantryLocation | null;
+  let carrying: boolean;
+  let motion: GantryStatus["motion"] = null;
+
+  if (age < AUDIT_FIRST_MOVE_MS) {
+    state = "MOVING";
+    currentLocation = goingToScan ? null : source;
+    carrying = false;
+    motion = {
+      from: currentLocation,
+      to: source,
+      startedAt: phaseStartedAt,
+      durationMs: AUDIT_FIRST_MOVE_MS,
+      elapsedMs: age,
+    };
+  } else if (age < AUDIT_FIRST_MOVE_MS + AUDIT_PICK_MS) {
+    state = "PICKING";
+    currentLocation = source;
+    carrying = false;
+  } else if (age < AUDIT_FIRST_MOVE_MS + AUDIT_PICK_MS + AUDIT_SECOND_MOVE_MS) {
+    const segmentStartedAt = phaseStartedAt + AUDIT_FIRST_MOVE_MS + AUDIT_PICK_MS;
+    state = "MOVING";
+    currentLocation = source;
+    carrying = true;
+    motion = {
+      from: source,
+      to: destination,
+      startedAt: segmentStartedAt,
+      durationMs: AUDIT_SECOND_MOVE_MS,
+      elapsedMs: age - AUDIT_FIRST_MOVE_MS - AUDIT_PICK_MS,
+    };
+  } else if (age < AUDIT_TRANSFER_MS) {
+    state = "DROPPING";
+    currentLocation = destination;
+    carrying = true;
+  } else if (!goingToScan) {
+    state = "HOMING";
+    currentLocation = destination;
+    carrying = false;
+    motion = {
+      from: destination,
+      to: null,
+      startedAt: phaseStartedAt + AUDIT_TRANSFER_MS,
+      durationMs: AUDIT_HOME_MS,
+      elapsedMs: Math.min(AUDIT_HOME_MS, age - AUDIT_TRANSFER_MS),
+    };
+  } else {
+    state = "DROPPING";
+    currentLocation = destination;
+    carrying = true;
+  }
+
+  return {
+    mode: "SIMULATION",
+    state,
+    currentLocation,
+    homed: true,
+    activeOperationId: operationId,
+    lastError: null,
+    carrying,
+    operation: {
+      operationId,
+      type: operationType,
+      source,
+      destination,
+      status: "RUNNING",
+      startedAt: phaseStartedAt,
+      completedAt: null,
+      error: null,
+    },
+    motion,
+  };
+}
 
 /**
  * The bin the running audit is physically handling, or null when no audit is

@@ -52,10 +52,26 @@ export interface TodayPlanAnalysisResultView {
     recordedQuantity: number;
     requiredQuantity: number;
   }>;
-  shortages: Array<{ sku: string; required: number; available: number }>;
+  shortages: Array<{
+    sku: string; required: number; available: number;
+    /** Null means physical stock could not be established. */
+    physicallyAvailable?: number | null;
+  }>;
+  /** Every attempted physical check, including successful and unaccepted observations. */
+  physicalCounts?: Array<{
+    sku: string;
+    binCode: string;
+    recordedQuantity: number;
+    observedQuantity: number | null;
+    usable: boolean;
+    inventoryUpdated: boolean;
+    scale: import("@/lib/warehouse/audit-scale").AuditScaleCheck;
+  }>;
   auditedBinCodes: string[];
   verificationAuditRunIds: string[];
   auditIssues: Array<{
+    /** Optional for compatibility with reports saved before the issue carried its material. */
+    sku?: string;
     binCode: string;
     expectedQuantity: number;
     observedQuantity: number | null;

@@ -12,6 +12,7 @@ import { groupBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import { parseBinCode } from "@/lib/warehouse/types";
 import {
   deriveRackArmState,
+  gantryStatusFromAuditMovement,
   type RackArmState,
 } from "@/lib/warehouse/rack-arm-state";
 import { usePrefersReducedMotion } from "./use-reduced-motion";
@@ -1190,7 +1191,16 @@ export function WarehouseRack({
 }) {
   const id = useId().replace(/:/g, "");
   const geometry = useMemo(() => geometryFor(bins), [bins]);
-  const { gantry, point } = useGantryPlayback(rawGantry, geometry);
+  const auditGantry = gantryStatusFromAuditMovement(latestAudit);
+  const liveGantryIsAuthoritative =
+    rawGantry !== null &&
+    (rawGantry.activeOperationId !== null ||
+      ["MOVING", "PICKING", "DROPPING", "HOMING", "ERROR"].includes(rawGantry.state) ||
+      rawGantry.lastError !== null);
+  const visualGantry = liveGantryIsAuthoritative
+    ? rawGantry
+    : (auditGantry ?? rawGantry);
+  const { gantry, point } = useGantryPlayback(visualGantry, geometry);
   const arm = deriveRackArmState({ gantry, activeMovement, latestAudit });
   const audit = useAuditCapture();
   const session = useWarehouseSession();

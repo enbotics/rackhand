@@ -106,6 +106,10 @@ export interface BinAuditView {
   binCode: string;
   sku: string | null;
   status: string;
+  /** Durable fallback for the browser animation when simulator memory lives in another worker. */
+  movementPhase?: "TO_SCAN" | "AT_SCAN" | "RETURNING" | null;
+  /** Epoch ms when the current movement phase began. */
+  movementPhaseStartedAt?: number | null;
   expectedQuantity: number;
   observedQuantity: number | null;
   confidencePercent: number | null;

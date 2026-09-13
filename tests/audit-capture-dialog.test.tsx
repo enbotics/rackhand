@@ -50,6 +50,43 @@ afterEach(() => {
 });
 
 describe("AuditCaptureProvider", () => {
+  it("presents an automatic physical verification without infrastructure controls", async () => {
+    render(
+      <CameraHealthProvider>
+        <AuditCaptureProvider>
+          <div>Warehouse</div>
+        </AuditCaptureProvider>
+      </CameraHealthProvider>,
+    );
+    const captures = FakeEventSource.instances.find((source) =>
+      source.url.includes("/api/warehouse/captures/events"),
+    );
+
+    act(() =>
+      captures!.emit("pending", {
+        captureId: "capture-verification",
+        binCode: "B4-01",
+        partName: "Mounting Hardware",
+        purpose: "PUTAWAY",
+        captureMode: "PROD",
+        cameraJob: { status: "PENDING", queuePosition: 2 },
+        analysis: null,
+      }),
+    );
+
+    expect(await screen.findByText("Physical verification")).toBeTruthy();
+    expect(screen.getByText("Mounting Hardware")).toBeTruthy();
+    expect(screen.getByText("· Bin B4-01")).toBeTruthy();
+    expect(screen.getByText("Camera + scale checking contents…")).toBeTruthy();
+    expect(screen.getByText("Verifying physical inventory")).toBeTruthy();
+    expect(screen.getByText("Automatic check — no action needed")).toBeTruthy();
+    expect(screen.queryByText("Pi capture")).toBeNull();
+    expect(screen.queryByText("Uploaded")).toBeNull();
+    expect(screen.queryByText("Gemini")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Abort putaway" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry Pi capture" })).toBeNull();
+  });
+
   function emitReadyComparison(captures: FakeEventSource) {
     captures.emit("pending", {
       captureId: "capture-1",
@@ -77,6 +114,123 @@ describe("AuditCaptureProvider", () => {
       },
     });
   }
+
+  function emitAttentionComparison(captures: FakeEventSource) {
+    captures.emit("pending", {
+      captureId: "capture-attention",
+      binCode: "B6-03",
+      partName: "Aluminum Spacers",
+      purpose: "PUTAWAY",
+      captureMode: "PROD",
+      analysis: {
+        captureMode: "PROD",
+        captureId: "capture-attention",
+        binCode: "B6-03",
+        status: "RETRY_REQUIRED",
+        outcome: "FOREIGN_OBJECTS",
+        expectedQuantity: 38,
+        observedQuantity: 25,
+        confidencePercent: 100,
+        totalWeightGrams: 1,
+        tareWeightGrams: 0,
+        netWeightGrams: 1,
+        unitWeightGrams: 0.04,
+        weightSource: "SCALE",
+        previousImageUrl: null,
+        currentImageUrl: null,
+        foreignObjects: ["white plastic bracket"],
+        notes: "A white plastic bracket is mixed with the spacers.",
+      },
+    });
+  }
+
+  function emitAcceptedConfidenceDecrease(captures: FakeEventSource) {
+    captures.emit("pending", {
+      captureId: "capture-decrease",
+      binCode: "B6-03",
+      partName: "Aluminum Spacers",
+      purpose: "PUTAWAY",
+      captureMode: "PROD",
+      analysis: {
+        captureMode: "PROD",
+        captureId: "capture-decrease",
+        binCode: "B6-03",
+        status: "REVIEW_DECREASE",
+        outcome: "REVIEW_DECREASE",
+        expectedQuantity: 30,
+        observedQuantity: 27,
+        confidencePercent: 80,
+        totalWeightGrams: 288.87,
+        tareWeightGrams: 117,
+        netWeightGrams: 171.87,
+        unitWeightGrams: 6.366,
+        weightSource: "SCALE",
+        previousImageUrl: null,
+        currentImageUrl: null,
+        foreignObjects: [],
+        notes: "Twenty-seven expected parts are visible.",
+      },
+    });
+  }
+
+  it("shows a verified mismatch, saves it and closes automatically", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, status: "ACCEPTED" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <CameraHealthProvider>
+        <AuditCaptureProvider>
+          <div>Warehouse</div>
+        </AuditCaptureProvider>
+      </CameraHealthProvider>,
+    );
+    const captures = FakeEventSource.instances.find((source) =>
+      source.url.includes("/api/warehouse/captures/events"),
+    );
+
+    act(() => emitAcceptedConfidenceDecrease(captures!));
+
+    expect(
+      screen.getByText("Physical verification · Aluminum Spacers"),
+    ).toBeTruthy();
+    expect(screen.getByText("Bin B6-03")).toBeTruthy();
+    expect(screen.getByText("Recorded")).toBeTruthy();
+    expect(screen.getByText("Counted")).toBeTruthy();
+    expect(screen.getByText("Decision")).toBeTruthy();
+    expect(screen.getByText("Verified")).toBeTruthy();
+    expect(screen.getByText("Inventory mismatch found")).toBeTruthy();
+    expect(
+      screen.getByText(/RackHand corrected inventory:/).textContent,
+    ).toContain("30 → 27");
+    expect(screen.getByText("✓ Returning bin automatically")).toBeTruthy();
+    expect(screen.queryByText("Confidence")).toBeNull();
+    expect(screen.queryByText("80")).toBeNull();
+    expect(screen.queryByText("Twenty-seven expected parts are visible.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry photo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel putaway" })).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    fireEvent.animationEnd(container.querySelector("[role='presentation']")!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/warehouse/putaway/captures/capture-decrease/decision",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ decision: "ACCEPT" }),
+      }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 
   it("closes a stale comparison when the server reports no pending capture", async () => {
     render(
@@ -172,5 +326,41 @@ describe("AuditCaptureProvider", () => {
         body: JSON.stringify({ decision: "AUTO_RETURN" }),
       }),
     );
+  });
+
+  it("keeps a putaway attention result open until the operator decides", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <CameraHealthProvider>
+        <AuditCaptureProvider>
+          <div>Warehouse</div>
+        </AuditCaptureProvider>
+      </CameraHealthProvider>,
+    );
+    const captures = FakeEventSource.instances.find((source) =>
+      source.url.includes("/api/warehouse/captures/events"),
+    );
+
+    act(() => emitAttentionComparison(captures!));
+    expect(screen.getByText("Physical check uncertain")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Scale and visual evidence do not agree clearly enough. Inventory was not changed. Engineer check required.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Estimated")).toBeTruthy();
+    expect(screen.getByText("Not verified")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Removed · retry photo" })).toBeTruthy();
+    expect(screen.queryByText(/Returning bin unchanged in/)).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(screen.getByText("Physical check uncertain")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

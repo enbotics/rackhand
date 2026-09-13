@@ -20,21 +20,29 @@ export function TodayPlanTrigger() {
     <Panel title="Manual RackHand trigger" className="w-full max-w-xl">
       <div className="space-y-5">
         <div>
-          <h2 className="text-lg font-semibold text-ink">Analyze tomorrow’s Google Sheet plan</h2>
+          <h2 className="text-lg font-semibold text-ink">
+            Analyze upcoming work plan
+          </h2>
           <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-            RackHand will read tomorrow’s enabled rows, resolve catalog materials, reuse trustworthy
-            inventory evidence, and audit only bins whose evidence needs refreshing.
+            RackHand will find the needed parts, check current stock, and
+            inspect any bin whose last check is no longer current.
           </p>
         </div>
 
         {run && (
           <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg-elevated px-3 py-2">
-            <span className="text-xs text-ink-muted">Latest run · {run.workDate}</span>
-            <StatusChip status={running
-              ? { label: run.status, symbol: "●", tone: "accent" }
-              : run.status === "FAILED"
-                ? { label: "FAILED", symbol: "×", tone: "danger" }
-                : { label: "FINISHED", symbol: "✓", tone: "ok" }} />
+            <span className="text-xs text-ink-muted">
+              Latest run · {run.workDate}
+            </span>
+            <StatusChip
+              status={
+                running
+                  ? { label: run.status, symbol: "●", tone: "accent" }
+                  : run.status === "FAILED"
+                    ? { label: "FAILED", symbol: "×", tone: "danger" }
+                    : { label: "FINISHED", symbol: "✓", tone: "ok" }
+              }
+            />
           </div>
         )}
 
@@ -53,7 +61,7 @@ export function TodayPlanTrigger() {
               ? "Starting RackHand…"
               : running
                 ? "Analysis already running"
-                : "Analyze tomorrow’s plan"}
+                : "Analyze upcoming work plan"}
           </button>
           <Link href="/" className={BUTTON_VARIANTS.secondary}>
             View RackHand progress

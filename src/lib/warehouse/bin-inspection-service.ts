@@ -59,8 +59,8 @@ export function inspectBinImage(
 
 /**
  * Apply only the safety gates shared by all photographed-bin workflows.
- * The strict `>` threshold deliberately preserves the existing 80% policy:
- * exactly 80% is not sufficient for an automatic decision.
+ * The strict `>` comparison makes the caller's configured boundary exclusive:
+ * a result exactly on that boundary still needs review.
  */
 export function assessBinInspection(
   evidence: BinInspectionEvidence,

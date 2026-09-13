@@ -6,10 +6,14 @@ const TRUSTED_AUDIT_STATUSES = new Set([
   "CONFIRMED",
 ]);
 
+/** A plan must physically re-check evidence once it is seven days old. */
+export const VERIFICATION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+
 export type BinVerificationState =
   | "TRUSTED"
   | "NEVER_VERIFIED"
   | "CHANGED_AFTER_VERIFICATION"
+  | "VERIFICATION_EXPIRED"
   | "LATEST_AUDIT_UNRESOLVED";
 
 export interface BinVerificationEvidence {
@@ -55,14 +59,17 @@ function movementAt(movement: { createdAt: Date; completedAt: Date | null } | nu
 
 /**
  * A verification remains useful until a later completed warehouse event can
- * have changed the bin. Time passing by itself never invalidates evidence.
+ * have changed the bin, or until the evidence reaches seven days old.
  *
  * A verified PUTAWAY is effective at movement completion: its camera frame is
  * captured immediately before motion, while the inventory/status commit is
  * the last step of that same operation. Comparing only the earlier capture
  * timestamp to that commit would incorrectly mark every putaway stale.
  */
-export function classifyBinVerificationEvidence(input: EvidenceInput): BinVerificationEvidence {
+export function classifyBinVerificationEvidence(
+  input: EvidenceInput,
+  now: Date = new Date(),
+): BinVerificationEvidence {
   const auditObservedAt = input.latestAudit
     ? input.latestAudit.capturedAt ?? input.latestAudit.completedAt ?? input.latestAudit.createdAt
     : null;
@@ -73,18 +80,23 @@ export function classifyBinVerificationEvidence(input: EvidenceInput): BinVerifi
   const destinationAt = movementAt(input.latestDestinationMovement);
   const sourceAt = movementAt(input.latestSourceMovement);
   const lastInventoryChangeAt = latest(destinationAt, sourceAt);
-  const verifiedPutawayAt =
+  const verifiedPutawayCapturedAt =
     input.latestDestinationMovement?.type === "PUTAWAY" &&
     input.latestDestinationMovement.verificationCapturedAt &&
     input.latestDestinationMovement.verificationImageUrl
-      ? destinationAt
+      ? input.latestDestinationMovement.verificationCapturedAt
       : null;
-  const lastVerifiedAt = latest(trustedAuditAt, verifiedPutawayAt);
+  // Report when the evidence photo was actually captured. The putaway only
+  // becomes effective warehouse evidence at movement completion, though, so
+  // use that later timestamp exclusively for change/unresolved comparisons.
+  const verifiedPutawayEffectiveAt = verifiedPutawayCapturedAt ? destinationAt : null;
+  const lastVerifiedAt = latest(trustedAuditAt, verifiedPutawayCapturedAt);
+  const effectiveLastVerifiedAt = latest(trustedAuditAt, verifiedPutawayEffectiveAt);
   const unresolvedLatestAudit = Boolean(
     input.latestAudit &&
       !TRUSTED_AUDIT_STATUSES.has(input.latestAudit.status) &&
       auditObservedAt &&
-      (!lastVerifiedAt || auditObservedAt > lastVerifiedAt),
+      (!effectiveLastVerifiedAt || auditObservedAt > effectiveLastVerifiedAt),
   );
 
   let state: BinVerificationState;
@@ -95,9 +107,17 @@ export function classifyBinVerificationEvidence(input: EvidenceInput): BinVerifi
   } else if (!lastVerifiedAt) {
     state = "NEVER_VERIFIED";
     reason = "no accepted audit or verified putaway exists";
-  } else if (lastInventoryChangeAt && lastInventoryChangeAt > lastVerifiedAt) {
+  } else if (
+    effectiveLastVerifiedAt &&
+    lastInventoryChangeAt &&
+    lastInventoryChangeAt > effectiveLastVerifiedAt
+  ) {
     state = "CHANGED_AFTER_VERIFICATION";
     reason = "inventory-changing activity occurred after the latest trusted verification";
+  } else if (now.getTime() - lastVerifiedAt.getTime() >= VERIFICATION_MAX_AGE_MS) {
+    const ageDays = Math.floor((now.getTime() - lastVerifiedAt.getTime()) / (24 * 60 * 60 * 1_000));
+    state = "VERIFICATION_EXPIRED";
+    reason = `latest trusted verification from ${lastVerifiedAt.toISOString().slice(0, 10)} is ${ageDays} days old`;
   } else {
     state = "TRUSTED";
     reason = "latest trusted verification is not older than any inventory-changing activity";

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => {
   const movementUpdateMany = vi.fn();
   const snapshotFindFirst = vi.fn();
   const auditCaptureFindUnique = vi.fn();
+  const auditCaptureFindFirst = vi.fn();
   const auditCaptureUpdateMany = vi.fn();
   const auditCaptureUpdate = vi.fn();
   const binUpdateMany = vi.fn();
@@ -36,6 +37,7 @@ const mocks = vi.hoisted(() => {
     movementUpdateMany,
     snapshotFindFirst,
     auditCaptureFindUnique,
+    auditCaptureFindFirst,
     auditCaptureUpdateMany,
     auditCaptureUpdate,
     binUpdateMany,
@@ -58,6 +60,7 @@ vi.mock("@/lib/warehouse/db", () => ({
     },
     auditCaptureRequest: {
       findUnique: mocks.auditCaptureFindUnique,
+      findFirst: mocks.auditCaptureFindFirst,
       updateMany: mocks.auditCaptureUpdateMany,
     },
     binAudit: {
@@ -71,7 +74,10 @@ vi.mock("@/lib/camera/storage", () => ({
   readCameraCapture: vi.fn(),
 }));
 
-import { decideAuditCapture } from "@/lib/warehouse/audit-bin-service";
+import {
+  decideAuditCapture,
+  pendingAuditCapture,
+} from "@/lib/warehouse/audit-bin-service";
 import { decidePutawayCapture } from "@/lib/warehouse/putaway-verification";
 
 beforeEach(() => {
@@ -88,6 +94,25 @@ beforeEach(() => {
 });
 
 describe("five-second capture return", () => {
+  it("does not expose unattended plan-analysis audits to the operator dialog", async () => {
+    mocks.auditCaptureFindFirst.mockResolvedValue(null);
+
+    await expect(pendingAuditCapture("owner-session")).resolves.toEqual({
+      captureId: null,
+    });
+
+    expect(mocks.auditCaptureFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerSessionId: "owner-session",
+          binAudit: {
+            auditRun: { activeKey: "ACTIVE", trigger: "CLIENT" },
+          },
+        }),
+      }),
+    );
+  });
+
   it("marks putaway verification for return without touching its movement quantity", async () => {
     await expect(
       decidePutawayCapture("putaway-capture", "AUTO_RETURN"),
@@ -102,10 +127,10 @@ describe("five-second capture return", () => {
     expect(mocks.movementUpdateMany).not.toHaveBeenCalled();
   });
 
-  it("keeps the existing putaway quantity write behind a manual click", async () => {
+  it("writes the verified putaway quantity when the capture is accepted", async () => {
     mocks.putawayCaptureFindUnique.mockResolvedValue({
       id: "putaway-capture",
-      status: "READY",
+      status: "REVIEW_DECREASE",
       movementId: "movement-1",
       observedQuantity: 7,
       evidenceUrl: "/evidence/current.jpg",

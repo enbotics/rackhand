@@ -43,6 +43,12 @@ type AuditRunWithBins = Prisma.InventoryAuditRunGetPayload<{
   include: typeof AUDIT_RUN_WITH_BINS;
 }>;
 
+function auditMovementPhase(value: string | null) {
+  return value === "TO_SCAN" || value === "AT_SCAN" || value === "RETURNING"
+    ? value
+    : null;
+}
+
 /**
  * Shared with the legacy materials-plan endpoint, whose historical stock
  * checks referenced InventoryAuditRun rows. One mapping keeps those durable
@@ -68,6 +74,8 @@ export function toInventoryAuditView(run: AuditRunWithBins): InventoryAuditView 
       binCode: audit.bin.code,
       sku: audit.expectedPart?.sku ?? null,
       status: audit.status,
+      movementPhase: auditMovementPhase(audit.movementPhase),
+      movementPhaseStartedAt: audit.movementPhaseStartedAt?.getTime() ?? null,
       expectedQuantity: audit.expectedQuantity,
       observedQuantity: audit.observedQuantity,
       confidencePercent:

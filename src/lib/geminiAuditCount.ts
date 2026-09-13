@@ -168,8 +168,8 @@ export async function inspectBinImageWithGemini(
         };
       }
 
-      // Unsafe or low-confidence observations already route to human review;
-      // additional model calls cannot authorize a database update for them.
+      // Independently judge only the highest-confidence proposals. Workflow-
+      // specific thresholds and the remaining safety gates are applied later.
       if (!warrantsIndependentJudge(proposed)) return true;
       return judgeProposedObservation({ image, expected, proposed });
     },
@@ -194,8 +194,8 @@ export async function inspectBinImageWithGemini(
   const goal = goalLoop.lastResult(analyst);
   if (goal?.passed !== false) return parsed.data;
 
-  // Exhausted validation can never cross the >80% auto-update gate. Preserve
-  // the visible count for review while making the observation non-authorizing.
+  // Preserve the visible count but cap the confidence when independent image
+  // validation is exhausted. The caller then applies its own workflow policy.
   return {
     ...parsed.data,
     countConfidence: Math.min(parsed.data.countConfidence, 0.8),

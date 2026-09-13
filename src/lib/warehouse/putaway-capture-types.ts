@@ -1,4 +1,5 @@
-export const PUTAWAY_CAPTURE_CONFIDENCE_THRESHOLD = 0.8;
+/** Putaway requires more than 60% confidence; exactly 60% still needs review. */
+export const PUTAWAY_CAPTURE_CONFIDENCE_THRESHOLD = 0.6;
 
 export type PutawayCaptureOutcome =
   | "READY"

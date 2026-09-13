@@ -150,6 +150,8 @@ export async function forceResetStaleBins(): Promise<ForceResetSummary> {
               completedAt: now,
               errorCode: "force_reset",
               errorMessage: "Reset by an operator; the audit machine never finished this bin.",
+              movementPhase: null,
+              movementPhaseStartedAt: null,
             },
           });
           summary.binAuditsFailed += auditIds.length;

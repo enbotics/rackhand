@@ -159,7 +159,7 @@ def capture_job(
             )
             total_weight_grams = None
             weight_source = None
-            if job.get("purpose") == "PUTAWAY_VERIFICATION":
+            if job.get("purpose") in {"PUTAWAY_VERIFICATION", "INVENTORY_AUDIT", "RECOUNT"}:
                 # Read immediately before the evidence frame while the bin is
                 # stationary on the scale. Both values are then spooled as one
                 # durable physical observation.

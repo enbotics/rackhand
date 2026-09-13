@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { auditScaleCheck } from "./audit-scale-service";
 import {
   captureProcessingHeartbeatMilliseconds,
   createCaptureJob,
@@ -107,7 +108,14 @@ async function failAudit(
   });
   await prisma.binAudit.update({
     where: { id: binAuditId },
-    data: { status: "FAILED", errorCode: reason, errorMessage: reason, completedAt: new Date() },
+    data: {
+      status: "FAILED",
+      errorCode: reason,
+      errorMessage: reason,
+      movementPhase: null,
+      movementPhaseStartedAt: null,
+      completedAt: new Date(),
+    },
   });
   return {
     captureMode,
@@ -124,6 +132,25 @@ async function failAudit(
     evidenceUrl: existing?.evidenceUrl ?? null,
     reason,
   };
+}
+
+/** Visual telemetry must never be allowed to strand a bin at the scan station. */
+async function reportAuditMovementPhase(
+  binAuditId: string,
+  movementPhase: "AT_SCAN" | "RETURNING" | null,
+): Promise<void> {
+  await prisma.binAudit.update({
+    where: { id: binAuditId },
+    data: {
+      movementPhase,
+      movementPhaseStartedAt: movementPhase ? new Date() : null,
+    },
+  }).catch((error) => {
+    console.error(
+      `[inventory-audit] could not save movement phase audit=${binAuditId} phase=${movementPhase ?? "COMPLETE"}`,
+      error,
+    );
+  });
 }
 
 /**
@@ -264,17 +291,30 @@ async function returnAuditCaptureWithoutInventory(
   });
 }
 
-/** Durable browser recovery for capture, review and acknowledgement states. */
+/**
+ * Durable browser recovery for interactive capture, review and acknowledgement
+ * states. Trusted plan-analysis audits are deliberately absent: their server
+ * workflow captures, returns the bin unchanged when attention is required, and
+ * records the issue in the final report without asking an operator to act.
+ */
 export async function pendingAuditCapture(ownerSessionId: string) {
   const capture = await prisma.auditCaptureRequest.findFirst({
     where: {
       status: { in: RECOVERABLE_CAPTURE_STATUSES },
       ownerSessionId,
-      binAudit: { auditRun: { activeKey: "ACTIVE" } },
+      binAudit: {
+        auditRun: { activeKey: "ACTIVE", trigger: "CLIENT" },
+      },
     },
     orderBy: { createdAt: "asc" },
     include: {
-      binAudit: { include: { bin: true, auditRun: true } },
+      binAudit: {
+        include: {
+          bin: true,
+          auditRun: true,
+          expectedPart: { select: { canonicalName: true } },
+        },
+      },
     },
   });
   if (!capture) return { captureId: null };
@@ -316,6 +356,7 @@ export async function pendingAuditCapture(ownerSessionId: string) {
     auditRunId: capture.binAudit.auditRunId,
     binAuditId: capture.binAuditId,
     binCode: capture.binAudit.bin.code,
+    partName: capture.binAudit.expectedPart?.canonicalName,
     purpose: "AUDIT" as const,
     captureMode,
     status: capture.status,
@@ -518,7 +559,14 @@ export async function executeBinAudit(
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "bin_audit_conflict", simulated ? "SIMULATION" : "PROD");
   }
   try {
-    await prisma.binAudit.update({ where: { id: audit.id }, data: { status: "RUNNING" } });
+    await prisma.binAudit.update({
+      where: { id: audit.id },
+      data: {
+        status: "RUNNING",
+        movementPhase: "TO_SCAN",
+        movementPhaseStartedAt: new Date(),
+      },
+    });
   } catch (error) {
     await prisma.bin.updateMany({
       where: { id: bin.id, status: "AUDITING" },
@@ -532,6 +580,7 @@ export async function executeBinAudit(
     await prisma.bin.updateMany({ where: { id: bin.id, status: "AUDITING" }, data: { status: originalStatus } });
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_move_failed", simulated ? "SIMULATION" : "PROD");
   }
+  await reportAuditMovementPhase(audit.id, "AT_SCAN");
 
   // Physical safety: the bin stays at SCAN_STATION for the ENTIRE capture,
   // retry and confirmation dance below — it is only returned once a
@@ -572,12 +621,14 @@ export async function executeBinAudit(
   // Returning the bin is mandatory once a terminal result exists, whether
   // that is an accepted outcome, a hard failure, or this run giving up on an
   // unsafe result nobody was available to act on.
+  await reportAuditMovementPhase(audit.id, "RETURNING");
   const returned = await gantry.returnBinFromAudit({ binCode: bin.code }).catch(() => null);
   if (!returned || returned.status !== "COMPLETED") {
     // AUDITING deliberately remains set: physical location is uncertain.
     if (workflowCaptureId) clearSimulatedWorkflowCapture(workflowCaptureId);
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_return_failed", simulated ? "SIMULATION" : "PROD");
   }
+  await reportAuditMovementPhase(audit.id, null);
   if (returned.status === "COMPLETED" && captured.ok && captured.finalized) {
     // An accepted result means nothing is carried on the arm — safe to park.
     await gantry.home().catch((error) => {
@@ -826,6 +877,8 @@ export async function processAuditCameraCapture(id: string, input: {
   requestedAt: Date;
   workflowAttempt: number;
   captureMode?: "PROD" | "SIMULATION";
+  totalWeightGrams?: number | null;
+  weightSource?: string | null;
 }): Promise<AuditCaptureView> {
   const captureMode = input.captureMode ?? "PROD";
   if (!Buffer.isBuffer(input.imageBuffer) || input.imageBuffer.length === 0
@@ -879,6 +932,17 @@ export async function processAuditCameraCapture(id: string, input: {
       });
     } finally {
       clearInterval(leaseHeartbeat);
+    }
+    if (captureMode === "PROD") {
+      const scale = await auditScaleCheck({
+        binId: binAudit.binId, partId: binAudit.expectedPartId,
+        capturedAt: input.capturedAt, observedQuantity: vision.observedCount,
+        totalWeightGrams: input.totalWeightGrams, weightSource: input.weightSource,
+      });
+      if (scale.status === "MISMATCH") {
+        vision = { ...vision, countable: false,
+          notes: `${vision.notes} Camera and scale disagree: camera ${vision.observedCount}; scale estimate ${scale.estimatedQuantity}.`.trim() };
+      }
     }
     const processingRenewed = await prisma.auditCaptureRequest.updateMany({
       where: { id, status: "CAPTURING", attempt: input.workflowAttempt },

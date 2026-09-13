@@ -449,6 +449,9 @@ model BinAudit {
   newQuantity            Int?
   errorCode              String?
   errorMessage           String?
+  /// Durable browser-visible phase for the simulated shelf -> scan -> shelf trip.
+  movementPhase          String?
+  movementPhaseStartedAt DateTime?
   startedAt              DateTime             @default(now())
   capturedAt             DateTime?
   completedAt            DateTime?

@@ -194,7 +194,14 @@ export async function pendingPutawayCapture(ownerSessionId: string) {
       ownerSessionId,
       movement: { status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] } },
     },
-    include: { movement: { include: { destinationBin: true } } },
+    include: {
+      movement: {
+        include: {
+          destinationBin: true,
+          part: { select: { canonicalName: true } },
+        },
+      },
+    },
     // A leaked older attempt must not hide the operation the operator just
     // started. Newest-first is also the least surprising recovery policy if
     // an older server request died before releasing its reservation.
@@ -210,6 +217,7 @@ export async function pendingPutawayCapture(ownerSessionId: string) {
   return {
     captureId: capture.id,
     binCode: capture.movement.destinationBin?.code ?? "bin",
+    partName: capture.movement.part.canonicalName,
     purpose: "PUTAWAY" as const,
     captureMode,
     analysis: outcome ? captureView(capture, outcome, captureMode) : null,
@@ -336,10 +344,9 @@ export async function requirePutawayVerification(
   // "put it back?" offer). requestPutawayCameraCapture is idempotent (PROD
   // reuses any existing CameraCaptureJob, SIMULATION just runs its analysis
   // once), so this is safe even if something else also fires it. The
-  // DECISION on whatever the photo shows still belongs to the operator,
-  // exactly as before — REVIEW_DECREASE, a foreign object, low confidence or
-  // capacity overflow still shows the interactive retry-or-confirm popup;
-  // only the "please press capture" step is gone.
+  // A safe mismatch is accepted automatically by the client after it shows
+  // the correction. Foreign objects, low confidence and capacity overflow
+  // still require the operator to correct the physical bin and retry.
   await requestPutawayCameraCapture(request.id, request.ownerSessionId ?? undefined);
 
   while (true) {

@@ -247,6 +247,8 @@ export async function recoverStaleInventoryAudit(
           status: "FAILED",
           errorCode: reason,
           errorMessage: "The audit was recovered after its camera workflow expired.",
+          movementPhase: null,
+          movementPhaseStartedAt: null,
           completedAt: now,
         },
       });
