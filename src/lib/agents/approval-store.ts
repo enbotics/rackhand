@@ -56,6 +56,8 @@ export interface ApprovalSummary {
    * Approve/Deny still mean exactly the same thing underneath.
    */
   autoSuggested?: boolean;
+  /** Server-owned opt-in for the exact prompt's simulation-only demo. */
+  browserScenario?: "CONTROL_MODULE";
   /**
    * Plain-text item descriptions still owed from the operator's original
    * multi-item fulfillment request ("I need screws and allen keys"), not yet

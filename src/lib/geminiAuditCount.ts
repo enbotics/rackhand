@@ -9,8 +9,9 @@ import { GoalLoop } from "@strands-agents/sdk/vended-plugins/goal";
 import sharp from "sharp";
 import { z } from "zod";
 import type { AuditVisionResult } from "@/lib/warehouse/audit-types";
+import { GEMINI_VISION_MODEL_ID } from "./gemini-model";
 
-const MODEL = "gemini-3.5-flash-lite";
+const MODEL = GEMINI_VISION_MODEL_ID;
 const MAX_IMAGE_DIMENSION_PX = 1280;
 const GOAL_LOOP_MAX_ATTEMPTS = 2;
 const GOAL_LOOP_TIMEOUT_MS = 35_000;
@@ -31,14 +32,16 @@ const BIN_INSPECTION_VISION_SCHEMA = z
       context.addIssue({
         code: "custom",
         path: ["observedCount"],
-        message: "A countable image must have a non-negative integer observedCount.",
+        message:
+          "A countable image must have a non-negative integer observedCount.",
       });
     }
     if (!value.countable && value.observedCount !== null) {
       context.addIssue({
         code: "custom",
         path: ["observedCount"],
-        message: "An uncountable image must use null observedCount rather than guessing.",
+        message:
+          "An uncountable image must use null observedCount rather than guessing.",
       });
     }
   });
@@ -52,7 +55,11 @@ export interface BinInspectionContext {
   binCode: string;
   sku: string | null;
   canonicalName: string | null;
-  dimensions: { lengthMM: number | null; widthMM: number | null; heightMM: number | null } | null;
+  dimensions: {
+    lengthMM: number | null;
+    widthMM: number | null;
+    heightMM: number | null;
+  } | null;
 }
 
 /** @deprecated Import BinInspectionContext from warehouse/bin-inspection-service instead. */
@@ -74,7 +81,11 @@ function createGoogleModel(): GoogleModel {
 
 function structuredVisionFrom(message: Message): AuditVisionResult | null {
   for (const block of message.content) {
-    if (block.type !== "toolUseBlock" || block.name !== "strands_structured_output") continue;
+    if (
+      block.type !== "toolUseBlock" ||
+      block.name !== "strands_structured_output"
+    )
+      continue;
     const parsed = BIN_INSPECTION_VISION_SCHEMA.safeParse(block.input);
     if (parsed.success) return parsed.data;
   }
@@ -130,7 +141,10 @@ When rejecting, give short, concrete visual feedback that lets the counting agen
   const parsed = BIN_INSPECTION_JUDGE_SCHEMA.safeParse(result.structuredOutput);
   return parsed.success
     ? parsed.data
-    : { passed: false, feedback: "The independent image judge did not return a valid verdict." };
+    : {
+        passed: false,
+        feedback: "The independent image judge did not return a valid verdict.",
+      };
 }
 
 /**
@@ -188,7 +202,9 @@ export async function inspectBinImageWithGemini(
     new TextBlock(inspectionPrompt(expected)),
     new ImageBlock({ format: "jpeg", source: { bytes: image } }),
   ]);
-  const parsed = BIN_INSPECTION_VISION_SCHEMA.safeParse(result.structuredOutput);
+  const parsed = BIN_INSPECTION_VISION_SCHEMA.safeParse(
+    result.structuredOutput,
+  );
   if (!parsed.success) throw new Error("bin_inspection_vision_invalid");
 
   const goal = goalLoop.lastResult(analyst);
@@ -199,7 +215,10 @@ export async function inspectBinImageWithGemini(
   return {
     ...parsed.data,
     countConfidence: Math.min(parsed.data.countConfidence, 0.8),
-    notes: `${parsed.data.notes} Independent image validation was not satisfied after ${goal.attempts.length} analysis attempts.`.trim().slice(0, 500),
+    notes:
+      `${parsed.data.notes} Independent image validation was not satisfied after ${goal.attempts.length} analysis attempts.`
+        .trim()
+        .slice(0, 500),
   };
 }
 

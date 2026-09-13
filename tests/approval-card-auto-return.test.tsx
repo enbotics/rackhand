@@ -42,7 +42,7 @@ describe("approval card automatic bin return", () => {
     vi.useRealTimers();
   });
 
-  it("automatically approves the suggested return after five seconds", () => {
+  it("gives the operator twenty seconds before automatically returning the bin", () => {
     const onDecide = vi.fn();
     render(
       <ApprovalCard
@@ -55,8 +55,10 @@ describe("approval card automatic bin return", () => {
       />,
     );
 
-    expect(screen.getByText("Returning automatically in 5s")).toBeTruthy();
-    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.getByText("Returning automatically in 20s")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(19_000));
+    expect(onDecide).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1_000));
     expect(onDecide).toHaveBeenCalledOnce();
     expect(onDecide).toHaveBeenCalledWith("APPROVE");
   });
@@ -75,7 +77,7 @@ describe("approval card automatic bin return", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
-    act(() => vi.advanceTimersByTime(5_000));
+    act(() => vi.advanceTimersByTime(20_000));
     expect(onDecide).toHaveBeenCalledOnce();
     expect(onDecide).toHaveBeenCalledWith("DENY");
   });
@@ -116,5 +118,16 @@ describe("approval card automatic bin return", () => {
     act(() => vi.advanceTimersByTime(5_000));
     expect(onDecide).toHaveBeenCalledOnce();
     expect(onDecide).toHaveBeenCalledWith("DENY");
+  });
+
+  it("starts the explicit browser scenario automatically, without changing ordinary prep approvals", () => {
+    const onDecide = vi.fn();
+    render(<ApprovalCard approval={{ ...approval, approvalId: "demo-start", summary: {
+      ...approval.summary, action: "MATERIALS_FULFILLMENT", autoSuggested: false, browserScenario: "CONTROL_MODULE", quantity: 3,
+    } }} outcome={null} busy={false} latestMovement={null} onDecide={onDecide} />);
+    expect(screen.getByText("Browser simulation · starting automatically in 5s")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onDecide).toHaveBeenCalledOnce();
+    expect(onDecide).toHaveBeenCalledWith("APPROVE");
   });
 });

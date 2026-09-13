@@ -38,13 +38,26 @@ import {
   type PutawayCaptureOutcome,
   type PutawayCaptureView,
 } from "./putaway-capture-types";
-import { getContextWorkflowSessionId } from "@/lib/agents/request-context";
+import { getContextWorkflowSessionId, getContextBrowserScenario } from "@/lib/agents/request-context";
+import { controlModuleFrame, isControlModuleScenarioBin, controlModuleCurrentPart } from "./control-module-scenario";
 import {
   calculatePutawayWeight,
   configuredFallbackTotalWeightGrams,
+  verifyPhysicalWeight,
 } from "./putaway-weight";
 
-export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN"];
+export const PUTAWAY_CAPTURE_MARKERS = ["VERIFY_PUTAWAY", "VERIFY_RETURN", "VERIFY_RETRIEVAL"];
+const VERIFICATION_MOVEMENT_STATUSES = ["VALIDATED", "AWAITING_PLACEMENT", "AWAITING_VERIFICATION"];
+const AUTOMATIC_ACCEPT_DELAY_MS = 5_000;
+
+/** Retrieval checks its source bin; returns check their destination bin. */
+function verificationBin<T>(movement: {
+  type?: string;
+  destinationBin: T | null;
+  sourceBin?: T | null;
+}): T | null {
+  return movement.type === "RETRIEVAL" ? movement.sourceBin ?? null : movement.destinationBin;
+}
 const ACTIONABLE_CAPTURE_STATUSES = ["READY", "REVIEW_DECREASE"];
 const RETRYABLE_CAPTURE_STATUSES = [
   "READY",
@@ -54,8 +67,8 @@ const RETRYABLE_CAPTURE_STATUSES = [
 ];
 const RECOVERABLE_CAPTURE_STATUSES = ["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES];
 
-function isPutawaySimulationMode(binCode: string): boolean {
-  return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode);
+function isPutawaySimulationMode(binCode: string, sessionId?: string | null): boolean {
+  return getAuditCaptureMode() === "SIMULATION" && (isSimulationEligibleBin(binCode) || isControlModuleScenarioBin(sessionId, binCode));
 }
 
 /** Shared real/simulated putaway vision policy. */
@@ -95,7 +108,7 @@ function captureView(input: {
   evidenceUrl: string | null;
   foreignObjectsJson: string | null;
   notes: string | null;
-  movement: { destinationBin: { code: string } | null };
+  movement: { type?: string; destinationLocation?: string | null; destinationBin: { code: string } | null; sourceBin?: { code: string } | null };
 }, outcome: PutawayCaptureOutcome, captureMode: "PROD" | "SIMULATION"): PutawayCaptureView {
   const legacyFallback =
     captureMode === "PROD" &&
@@ -110,7 +123,9 @@ function captureView(input: {
   return {
     captureMode,
     captureId: input.id,
-    binCode: input.movement.destinationBin?.code ?? "bin",
+    binCode: verificationBin(input.movement)?.code ?? "bin",
+    operation: input.movement.type === "RETRIEVAL" ? "RETRIEVAL" : "PUTAWAY",
+    isReturn: input.movement.destinationLocation === "VERIFY_RETURN",
     status: input.status,
     outcome,
     expectedQuantity: input.expectedQuantity,
@@ -120,7 +135,7 @@ function captureView(input: {
     tareWeightGrams: input.tareWeightGrams ?? legacyFallback?.tareWeightGrams ?? null,
     netWeightGrams: input.netWeightGrams ?? legacyFallback?.netWeightGrams ?? null,
     unitWeightGrams: input.unitWeightGrams ?? legacyFallback?.unitWeightGrams ?? null,
-    weightSource: input.weightSource === "SCALE" || input.weightSource === "FALLBACK"
+    weightSource: input.weightSource === "SCALE" || input.weightSource === "FALLBACK" || input.weightSource === "SIMULATION"
       ? input.weightSource
       : legacyFallback
         ? "FALLBACK"
@@ -137,7 +152,7 @@ function persistedCaptureOutcome(input: {
   expectedQuantity: number;
   observedQuantity: number | null;
   foreignObjectSuspected: boolean | null;
-  movement: { destinationBin: { capacity: number } | null };
+  movement: { type?: string; destinationBin: { capacity: number } | null; sourceBin?: { capacity: number } | null };
 }): PutawayCaptureOutcome | null {
   if (input.status === "ANALYSIS_FAILED") return "ANALYSIS_FAILED";
   if (input.status === "REVIEW_DECREASE") return "REVIEW_DECREASE";
@@ -150,8 +165,8 @@ function persistedCaptureOutcome(input: {
   if (input.foreignObjectSuspected) return "FOREIGN_OBJECTS";
   if (
     input.observedQuantity !== null &&
-    input.movement.destinationBin &&
-    input.observedQuantity > input.movement.destinationBin.capacity
+    verificationBin(input.movement) &&
+    input.observedQuantity > verificationBin(input.movement)!.capacity
   ) {
     return "CAPACITY_EXCEEDED";
   }
@@ -163,7 +178,8 @@ async function latestSnapshotBefore(binId: string, movementId: string): Promise<
     prisma.movement.findFirst({
       where: {
         id: { not: movementId },
-        destinationBinId: binId,
+        OR: [{ destinationBinId: binId }, { type: "RETRIEVAL", sourceBinId: binId }],
+        status: "COMPLETED",
         verificationImageUrl: { not: null },
         verificationCapturedAt: { not: null },
       },
@@ -192,12 +208,13 @@ export async function pendingPutawayCapture(ownerSessionId: string) {
       // again; otherwise the server waits forever while the UI sees nothing.
       status: { in: RECOVERABLE_CAPTURE_STATUSES },
       ownerSessionId,
-      movement: { status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] } },
+      movement: { status: { in: VERIFICATION_MOVEMENT_STATUSES } },
     },
     include: {
       movement: {
         include: {
           destinationBin: true,
+          sourceBin: true,
           part: { select: { canonicalName: true } },
         },
       },
@@ -210,13 +227,14 @@ export async function pendingPutawayCapture(ownerSessionId: string) {
   if (!capture) return { captureId: null };
 
   const captureMode = isSimulatedWorkflowCapture(capture.id)
-    || isPutawaySimulationMode(capture.movement.destinationBin?.code ?? "")
+    || isPutawaySimulationMode(verificationBin(capture.movement)?.code ?? "", ownerSessionId)
     ? "SIMULATION" as const
     : "PROD" as const;
   const outcome = persistedCaptureOutcome(capture);
   return {
     captureId: capture.id,
-    binCode: capture.movement.destinationBin?.code ?? "bin",
+    binCode: verificationBin(capture.movement)?.code ?? "bin",
+    operation: capture.movement.type === "RETRIEVAL" ? "RETRIEVAL" as const : "PUTAWAY" as const,
     partName: capture.movement.part.canonicalName,
     purpose: "PUTAWAY" as const,
     captureMode,
@@ -234,7 +252,7 @@ export async function requestPutawayCameraCapture(
 > {
   const capture = await prisma.putawayCaptureRequest.findUnique({
     where: { id },
-    include: { movement: { include: { destinationBin: true } } },
+    include: { movement: { include: { destinationBin: true, sourceBin: true } } },
   });
   if (capture && ownerSessionId && capture.ownerSessionId !== ownerSessionId) {
     throw new Error("This putaway verification belongs to another operator session.");
@@ -242,19 +260,22 @@ export async function requestPutawayCameraCapture(
   if (!capture || capture.status !== "WAITING_FOR_CAMERA") {
     throw new Error("This putaway verification is stale or no longer pending.");
   }
-  if (!["VALIDATED", "AWAITING_PLACEMENT"].includes(capture.movement.status)) {
+  if (!VERIFICATION_MOVEMENT_STATUSES.includes(capture.movement.status)) {
     throw new Error("This putaway is no longer waiting for verification.");
   }
-  const binCode = capture.movement.destinationBin?.code;
-  if (binCode && isOutOfSimulationScope(binCode)) {
+  const binCode = verificationBin(capture.movement)?.code;
+  if (binCode && isOutOfSimulationScope(binCode) && !isControlModuleScenarioBin(capture.ownerSessionId, binCode)) {
     throw new SimulationScopeError(binCode);
   }
   const simulated = isSimulatedWorkflowCapture(id)
-    || (binCode ? isPutawaySimulationMode(binCode) : false);
+    || (binCode ? isPutawaySimulationMode(binCode, capture.ownerSessionId) : false);
   if (simulated) {
     if (!binCode) throw new Error("The putaway destination is missing.");
     markSimulatedWorkflowCapture(id);
-    const sample = await nextSimulationEvidence(binCode);
+    const demo = controlModuleFrame({ sessionId: capture.ownerSessionId, binCode,
+      operation: capture.movement.type, expectedQuantity: capture.expectedQuantity, attempt: capture.attempt });
+    const sample = demo ? { bytes: await sharp(Buffer.from(demo.svg)).png().toBuffer(), url: demo.url }
+      : await nextSimulationEvidence(binCode);
     const metadata = await sharp(sample.bytes).metadata();
     const requestedAt = new Date();
     const result = await processPutawayCameraCapture(id, {
@@ -266,6 +287,7 @@ export async function requestPutawayCameraCapture(
       requestedAt,
       workflowAttempt: capture.attempt,
       captureMode: "SIMULATION",
+      simulatedInspection: demo?.vision,
     });
     return { captureMode: "SIMULATION", result };
   }
@@ -274,6 +296,7 @@ export async function requestPutawayCameraCapture(
     where: {
       purpose: "PUTAWAY_VERIFICATION",
       workflowCaptureId: id,
+      workflowAttempt: capture.attempt,
       status: { in: ["PENDING", "CLAIMED", "UPLOADED", "PROCESSING"] },
     },
     orderBy: { requestedAt: "desc" },
@@ -297,60 +320,102 @@ export async function requirePutawayVerification(
   quantity: number;
   simulated: boolean;
   inventoryUpdateApproved: boolean;
+  attempt: number;
 }> {
   const movement = await prisma.movement.findUniqueOrThrow({
     where: { id: movementId },
-    include: { destinationBin: true, part: true },
+    include: { destinationBin: true, sourceBin: true, part: true },
   });
-  if (!movement.destinationBin) throw new Error("Putaway destination is missing.");
+  const bin = verificationBin(movement);
+  if (!bin) throw new Error("Verification bin is missing.");
   const expectedQuantity = movement.newQuantity ?? movement.previousQuantity ?? movement.quantity;
 
   // Refuse before creating any capture request: Simulation mode must never
   // silently fall through to a real capture on a bin it doesn't cover.
-  if (isOutOfSimulationScope(movement.destinationBin.code)) {
-    throw new SimulationScopeError(movement.destinationBin.code);
+  const sessionId = getContextWorkflowSessionId();
+  const demo = getContextBrowserScenario() ? controlModuleFrame({ sessionId, binCode: bin.code, operation: movement.type,
+    expectedQuantity, attempt: 0, baseline: true }) : null;
+  if (demo && controlModuleCurrentPart(sessionId)?.sku !== movement.part.sku) {
+    throw new Error("The control module bin no longer holds its approved part. Inventory was not changed.");
+  }
+  if (isOutOfSimulationScope(bin.code) && !demo) {
+    throw new SimulationScopeError(bin.code);
   }
 
   // Simulation goes through the SAME PutawayCaptureRequest state machine as
   // a real capture (see requestPutawayCameraCapture) — no invisible
   // server-only shortcut — so the comparison popup, Retry and Cancel all
   // work identically whether the photo is real or a curated fixture.
-  const simulated = isPutawaySimulationMode(movement.destinationBin.code);
+  const simulated = isPutawaySimulationMode(bin.code, sessionId);
   const simulatedBaseline = simulated
-    ? await simulationBaselineUrl(movement.destinationBin.code)
+    ? demo?.url ?? await simulationBaselineUrl(bin.code)
     : null;
-  if (simulated && (!simulatedBaseline || !await hasSimulationEvidence(movement.destinationBin.code))) {
-    throw new SimulationEvidenceError(movement.destinationBin.code);
+  if (simulated && !demo && (!simulatedBaseline || !await hasSimulationEvidence(bin.code))) {
+    throw new SimulationEvidenceError(bin.code);
   }
 
-  const request = await prisma.putawayCaptureRequest.create({
-    data: {
-      movementId,
-      ownerSessionId: getContextWorkflowSessionId(),
-      expectedQuantity,
-      previousImageUrl: simulatedBaseline
-        ?? await latestSnapshotBefore(movement.destinationBin.id, movementId),
-      expiresAt: null,
-    },
+  const previousImageUrl = demo ? await latestSnapshotBefore(bin.id, movementId) ?? simulatedBaseline
+    : simulatedBaseline ?? await latestSnapshotBefore(bin.id, movementId);
+  // Publish the capture and its movement marker together. The browser can
+  // request a frame as soon as it sees the capture; it must never observe
+  // WAITING_FOR_CAMERA while the movement still has its old OUTPUT marker.
+  const request = await prisma.$transaction(async (tx) => {
+    await tx.movement.update({
+      where: { id: movementId },
+      data: { destinationLocation: movement.type === "RETRIEVAL" ? "VERIFY_RETRIEVAL" : isReturn ? "VERIFY_RETURN" : "VERIFY_PUTAWAY" },
+    });
+    return tx.putawayCaptureRequest.create({
+      data: {
+        movementId,
+        ownerSessionId: getContextWorkflowSessionId(),
+        expectedQuantity,
+        previousImageUrl,
+        expiresAt: null,
+      },
+    });
   });
   if (simulated) markSimulatedWorkflowCapture(request.id);
-  await prisma.movement.update({
-    where: { id: movementId },
-    data: { destinationLocation: isReturn ? "VERIFY_RETURN" : "VERIFY_PUTAWAY" },
-  });
 
   // ALWAYS auto-fire the capture — no operator click needed to START it, for
   // any putaway (an explicit "put away B2-01" as much as the auto-suggested
   // "put it back?" offer). requestPutawayCameraCapture is idempotent (PROD
   // reuses any existing CameraCaptureJob, SIMULATION just runs its analysis
   // once), so this is safe even if something else also fires it. The
-  // A safe mismatch is accepted automatically by the client after it shows
-  // the correction. Foreign objects, low confidence and capacity overflow
+  // A clear result is accepted automatically by the server after the short
+  // preview. Foreign objects, low confidence and capacity overflow
   // still require the operator to correct the physical bin and retry.
   await requestPutawayCameraCapture(request.id, request.ownerSessionId ?? undefined);
 
+  const recoveredLegacyAttempts = new Set<number>();
   while (true) {
     const current = await prisma.putawayCaptureRequest.findUniqueOrThrow({ where: { id: request.id } });
+    // A camera device may upload to an older deployment sharing this database.
+    // Its putaway-only handler rejects a valid retrieval before vision runs.
+    // Recover the durable frame on the server owning this workflow, once per
+    // attempt. Reanalysis still enforces movement, timestamp, vision and scale
+    // checks; genuinely stale frames are never approved by this fallback.
+    if (movement.type === "RETRIEVAL" && !simulated && current.ownerSessionId
+      && current.status === "ANALYSIS_FAILED"
+      && current.notes?.includes("This capture is stale or no longer pending.")
+      && current.evidenceUrl && current.capturedAt && current.imageWidth && current.imageHeight
+      && !recoveredLegacyAttempts.has(current.attempt)) {
+      recoveredLegacyAttempts.add(current.attempt);
+      try {
+        await reanalyzePutawayCapture(request.id, current.ownerSessionId);
+      } catch (error) {
+        // A concurrent retry/cancel may win the claim. Keep following the
+        // authoritative row; never create a second photo or repeat gantry motion.
+        console.warn(`[putaway-verification] Saved retrieval frame recovery failed for ${request.id}:`, error);
+      }
+      continue;
+    }
+    // The server owns automatic approval. A closed browser must not leave a
+    // trusted count waiting forever. Unsafe observations never enter this path.
+    if (ACTIONABLE_CAPTURE_STATUSES.includes(current.status)
+      && Date.now() - current.updatedAt.getTime() >= AUTOMATIC_ACCEPT_DELAY_MS) {
+      await decidePutawayCapture(request.id, "ACCEPT");
+      continue;
+    }
     if (current.status === "FAILED") {
       clearSimulatedWorkflowCapture(request.id);
       throw new Error("Putaway verification failed.");
@@ -367,6 +432,7 @@ export async function requirePutawayVerification(
         quantity: current.observedQuantity ?? current.expectedQuantity,
         simulated,
         inventoryUpdateApproved: current.status === "ACCEPTED",
+        attempt: current.attempt,
       };
     }
 
@@ -388,17 +454,25 @@ export async function requirePutawayVerification(
       // row is allowed to fail the movement.
       if (expired.count === 0) continue;
       await prisma.movement.updateMany({
-        where: { id: movementId, status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] } },
+        where: { id: movementId, status: { in: VERIFICATION_MOVEMENT_STATUSES } },
         data: { status: "FAILED" },
       });
       clearSimulatedWorkflowCapture(request.id);
-      throw new Error("Camera verification timed out; the gantry did not move.");
+      throw new Error("Camera verification timed out.");
     }
     if (
       current.status !== "CAPTURING" &&
       current.updatedAt.getTime() <= Date.now() - putawayInactivityTimeoutMs()
     ) {
-      await recoverAbandonedPutaways();
+      if (movement.type === "RETRIEVAL") {
+        const expired = await prisma.putawayCaptureRequest.updateMany({
+          where: { id: request.id, status: current.status, updatedAt: { lte: new Date(Date.now() - putawayInactivityTimeoutMs()) } },
+          data: { status: "FAILED", notes: "Checkout verification expired. Bin remains at checkout." },
+        });
+        if (expired.count) throw new Error("Checkout verification expired. Bin remains at checkout.");
+      } else {
+        await recoverAbandonedPutaways();
+      }
       continue;
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -406,6 +480,8 @@ export async function requirePutawayVerification(
 }
 
 interface PutawayAnalysisInput {
+  /** Server-authored only: explicit control-module browser demo. */
+  simulatedInspection?: BinInspectionEvidence;
   imageBuffer: Buffer;
   evidenceUrl: string;
   imageWidth: number;
@@ -452,10 +528,11 @@ async function analyzePutawayCapture(
   try {
     const capture = await prisma.putawayCaptureRequest.findUniqueOrThrow({
       where: { id },
-      include: { movement: { include: { part: true, destinationBin: true } } },
+      include: { movement: { include: { part: true, destinationBin: true, sourceBin: true } } },
     });
     const { movement } = capture;
-    if (!["VALIDATED", "AWAITING_PLACEMENT"].includes(movement.status) || !movement.destinationBin
+    const bin = verificationBin(movement);
+    if (!VERIFICATION_MOVEMENT_STATUSES.includes(movement.status) || !bin
       || !PUTAWAY_CAPTURE_MARKERS.includes(movement.destinationLocation ?? "")
       || capture.attempt !== input.workflowAttempt
       || input.capturedAt.getTime() < input.requestedAt.getTime()
@@ -472,8 +549,9 @@ async function analyzePutawayCapture(
     }, captureProcessingHeartbeatMilliseconds());
     let vision: BinInspectionEvidence;
     try {
-      vision = await inspectBinImage(input.imageBuffer, {
-        binCode: movement.destinationBin.code,
+      vision = input.captureMode === "SIMULATION" && isControlModuleScenarioBin(capture.ownerSessionId, bin.code)
+        && input.simulatedInspection ? input.simulatedInspection : await inspectBinImage(input.imageBuffer, {
+        binCode: bin.code,
         sku: part.sku,
         canonicalName: part.canonicalName,
         dimensions: { lengthMM: part.lengthMM, widthMM: part.widthMM, heightMM: part.heightMM },
@@ -489,10 +567,26 @@ async function analyzePutawayCapture(
       throw new Error("This capture stopped being processable during image analysis.");
     }
     const observed = vision.observedCount;
-    const weight = captureMode === "SIMULATION" || observed === null || observed <= 0
-      ? null
-      : calculatePutawayWeight(input.totalWeightGrams ?? Number.NaN, observed);
-    const { outcome, foreignObjects } = classifyPutawayVision(vision, capture.expectedQuantity, movement.destinationBin.capacity);
+    const reference = await prisma.movement.findFirst({
+      where: {
+        id: { not: movement.id }, partId: part.id, status: "COMPLETED",
+        OR: [{ destinationBinId: bin.id }, { type: "RETRIEVAL", sourceBinId: bin.id }],
+        weightSource: captureMode === "SIMULATION" ? { in: ["SCALE", "SIMULATION"] } : "SCALE",
+        unitWeightGrams: { gt: 0 }, verificationImageUrl: { not: null },
+      },
+      orderBy: { completedAt: "desc" },
+      select: { unitWeightGrams: true },
+    });
+    const scale = verifyPhysicalWeight({
+      totalWeightGrams: input.totalWeightGrams, quantity: observed,
+      weightSource: input.weightSource, referenceUnitWeightGrams: reference?.unitWeightGrams ?? null,
+      simulated: captureMode === "SIMULATION", expectedQuantity: capture.expectedQuantity,
+    });
+    const weight = scale.measurement;
+    const visionAssessment = classifyPutawayVision(vision, capture.expectedQuantity, bin.capacity);
+    const foreignObjects = visionAssessment.foreignObjects;
+    const outcome = !scale.verified && ["READY", "INCREASED", "REVIEW_DECREASE"].includes(visionAssessment.outcome)
+      ? "LOW_CONFIDENCE" : visionAssessment.outcome;
     const nextStatus = outcome === "REVIEW_DECREASE" ? "REVIEW_DECREASE"
       : outcome === "READY" || outcome === "INCREASED" ? "READY"
       : "RETRY_REQUIRED";
@@ -518,14 +612,14 @@ async function analyzePutawayCapture(
         tareWeightGrams: weight?.tareWeightGrams ?? null,
         netWeightGrams: weight?.netWeightGrams ?? null,
         unitWeightGrams: weight?.unitWeightGrams ?? null,
-        weightSource: weight ? input.weightSource ?? "SCALE" : null,
+        weightSource: weight ? scale.source : null,
         expiresAt: null,
       },
     });
     if (persisted.count !== 1) throw new Error("This capture attempt was superseded during analysis.");
     const updated = await prisma.putawayCaptureRequest.findUniqueOrThrow({
       where: { id },
-      include: { movement: { include: { destinationBin: true } } },
+      include: { movement: { include: { destinationBin: true, sourceBin: true } } },
     });
     return captureView(updated, outcome, captureMode);
   } catch (error) {
@@ -558,7 +652,7 @@ async function analyzePutawayCapture(
     });
     const failed = await prisma.putawayCaptureRequest.findUniqueOrThrow({
       where: { id },
-      include: { movement: { include: { destinationBin: true } } },
+      include: { movement: { include: { destinationBin: true, sourceBin: true } } },
     });
     return captureView(failed, "ANALYSIS_FAILED", captureMode);
   }
@@ -578,7 +672,7 @@ export async function reanalyzePutawayCapture(
 ): Promise<PutawayCaptureView> {
   const capture = await prisma.putawayCaptureRequest.findUnique({
     where: { id },
-    include: { movement: { include: { destinationBin: true } } },
+    include: { movement: { include: { destinationBin: true, sourceBin: true } } },
   });
   if (!capture || capture.ownerSessionId !== ownerSessionId) {
     throw new Error("This putaway verification belongs to another operator session.");
@@ -715,26 +809,18 @@ export async function decidePutawayCapture(
   }
 
   if (decision === "AUTO_RETURN") {
-    // The five-second UI timeout is intentionally not an approval. It merely
-    // releases the physical workflow so the bin can go back to its shelf.
-    // Keeping a distinct terminal status lets every putaway caller preserve
-    // the recorded quantity while still retaining the captured evidence.
-    const returned = await prisma.putawayCaptureRequest.updateMany({
-      where: {
-        id,
-        status: { in: RETRYABLE_CAPTURE_STATUSES },
-        evidenceUrl: { not: null },
-        capturedAt: { not: null },
-      },
-      data: { status: "AUTO_RETURNED" },
-    });
-    if (returned.count !== 1) {
-      throw new Error("This verification can no longer be returned automatically.");
+    // Compatibility for older clients: a clear result is an automatic
+    // acceptance; an uncertain result can no longer bypass the physical check.
+    const current = await prisma.putawayCaptureRequest.findUnique({ where: { id } });
+    if (current?.status === "ACCEPTED" || (current && ACTIONABLE_CAPTURE_STATUSES.includes(current.status))) {
+      return decidePutawayCapture(id, "ACCEPT", ownerSessionId);
     }
-    return { ok: true, status: "AUTO_RETURNED" as const };
+    throw new Error("An uncertain physical check must be corrected and retried.");
   }
 
   const capture = await prisma.putawayCaptureRequest.findUnique({ where: { id } });
+  // Client/server automatic acceptance can race. Replaying acceptance is safe.
+  if (capture?.status === "ACCEPTED") return { ok: true, status: "ACCEPTED" as const };
   if (!capture || !ACTIONABLE_CAPTURE_STATUSES.includes(capture.status)
     || capture.observedQuantity === null || !capture.evidenceUrl || !capture.capturedAt) {
     throw new Error("This verification cannot be accepted.");
@@ -744,9 +830,13 @@ export async function decidePutawayCapture(
       where: { id, status: capture.status },
       data: { status: "ACCEPTED" },
     });
-    if (accepted.count !== 1) throw new Error("This verification was already decided.");
+    if (accepted.count !== 1) {
+      const alreadyAccepted = await tx.putawayCaptureRequest.findUnique({ where: { id }, select: { status: true } });
+      if (alreadyAccepted?.status === "ACCEPTED") return;
+      throw new Error("This verification was already decided.");
+    }
     const movement = await tx.movement.updateMany({
-      where: { id: capture.movementId, status: { in: ["VALIDATED", "AWAITING_PLACEMENT"] } },
+      where: { id: capture.movementId, status: { in: VERIFICATION_MOVEMENT_STATUSES } },
       data: {
         newQuantity: capture.observedQuantity,
         imageUrl: capture.evidenceUrl,

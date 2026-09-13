@@ -467,7 +467,7 @@ export function AuditCaptureDialog() {
             )
           ? "ACCEPT"
           : (audit.analysis as PutawayCaptureView).outcome === "READY"
-            ? "AUTO_RETURN"
+            ? "ACCEPT"
             : null;
   const autoReturnKey = automaticDecision
     ? `${audit.pending!.captureId}:${audit.analysis!.status}:${audit.analysis!.outcome}:${automaticDecision}`
@@ -556,6 +556,7 @@ export function AuditCaptureDialog() {
                 }
               : null;
     const partName = audit.pending.partName?.trim() || "Bin contents";
+    const retrieving = result?.operation === "RETRIEVAL";
     return (
       <Modal
         title={`Physical verification · ${partName}`}
@@ -585,7 +586,7 @@ export function AuditCaptureDialog() {
               value={result?.expectedQuantity ?? "—"}
             />
             <Metric
-              label={canAccept ? "Counted" : "Estimated"}
+              label={canAccept ? result?.isReturn ? "Remaining" : "Counted" : "Estimated"}
               value={result?.observedQuantity ?? "—"}
               tone={result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
             />
@@ -602,6 +603,9 @@ export function AuditCaptureDialog() {
                   Scale unavailable · using the configured{" "}
                   {result.totalWeightGrams} g fallback total.
                 </p>
+              )}
+              {result.weightSource === "SIMULATION" && (
+                <p className="mb-2 text-xs text-ink-faint">Simulated scale reading · not a physical measurement</p>
               )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Metric
@@ -637,7 +641,8 @@ export function AuditCaptureDialog() {
                 RackHand corrected inventory: {result.expectedQuantity} →{" "}
                 {result.observedQuantity}
               </p>
-              <p className="mt-1 text-xs font-medium">✓ Returning bin automatically</p>
+              {result.isReturn && <p className="mt-1 text-xs">Remaining in bin: {result.observedQuantity} · inventory updated</p>}
+              <p className="mt-1 text-xs font-medium">{retrieving ? "✓ Bin ready at checkout automatically" : "✓ Returning bin automatically"}</p>
             </div>
           )}
           {warning && (
@@ -646,7 +651,7 @@ export function AuditCaptureDialog() {
               <p className="mt-1 text-xs leading-relaxed">{warning.message}</p>
             </div>
           )}
-          {autoReturnKey && !inventoryMismatch && (
+          {autoReturnKey && !inventoryMismatch && !retrieving && (
             <AutoReturnNotice seconds={autoReturnSeconds} />
           )}
           {audit.error && <p className="text-xs text-danger">{audit.error}</p>}
@@ -657,7 +662,7 @@ export function AuditCaptureDialog() {
               onClick={() => beginDecision("CANCEL")}
               className={BUTTON_VARIANTS.danger}
             >
-              Cancel putaway
+              {retrieving ? "Cancel check" : "Cancel putaway"}
             </button>
             <button
               type="button"
@@ -667,8 +672,8 @@ export function AuditCaptureDialog() {
             >
               {simulation
                 ? result?.outcome === "FOREIGN_OBJECTS"
-                  ? "Removed · next simulation"
-                  : "Run next simulation"
+                  ? "Removed · retry check"
+                  : "Retry check"
                 : result?.outcome === "FOREIGN_OBJECTS"
                   ? "Removed · retry photo"
                   : "Retry photo"}
@@ -692,7 +697,7 @@ export function AuditCaptureDialog() {
               >
                 {result?.outcome === "REVIEW_DECREASE"
                   ? `Confirm ${result.observedQuantity} & continue`
-                  : "Continue putaway"}
+                  : retrieving ? "Continue retrieval" : "Continue putaway"}
               </button>
             )}
           </div>}

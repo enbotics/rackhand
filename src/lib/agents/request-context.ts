@@ -26,6 +26,7 @@ import type { ScanResult } from "@/lib/warehouse/scan-types";
 import type { WarehouseGraphResult } from "@/lib/warehouse/graphs/workflow-types";
 
 interface RequestContext {
+  browserScenario: "CONTROL_MODULE" | null;
   /** Already validated by the API layer. Tools may trust its shape, not its meaning. */
   scanResult: ScanResult | null;
   /** Raw camera evidence paired with scanResult; never authored by the model. */
@@ -81,11 +82,13 @@ export function runWithRequestContext<T>(
     catalogResolutionId?: string | null;
     traceId?: string | null;
     workflowSessionId?: string | null;
+    browserScenario?: "CONTROL_MODULE" | null;
   },
   fn: () => Promise<T>,
 ): Promise<T> {
   return requestContextStorage.run(
     {
+      browserScenario: context.browserScenario ?? null,
       scanResult: context.scanResult ?? null,
       scanImageDataUrl: context.scanImageDataUrl ?? null,
       requestId: context.requestId ?? null,
@@ -116,6 +119,9 @@ export function getContextRequestId(): string | null {
 /** The browser/operator workflow that owns physical UI created this turn. */
 export function getContextWorkflowSessionId(): string | null {
   return requestContextStorage.getStore()?.workflowSessionId ?? null;
+}
+export function getContextBrowserScenario(): "CONTROL_MODULE" | null {
+  return requestContextStorage.getStore()?.browserScenario ?? null;
 }
 
 /** The operator's confirmed identity decision attached to this request, if any. */

@@ -81,6 +81,7 @@ export interface ApprovalSummaryView {
   capacity?: { before: number; after: number; limit: number } | null;
   /** See ApprovalSummary.autoSuggested server-side. */
   autoSuggested?: boolean;
+  browserScenario?: "CONTROL_MODULE";
   /** Remaining server-selected bins in the approved materials job. */
   fulfillmentQueue?: string[];
   /** Stable total bin count for progress across retrieval/return hops. */

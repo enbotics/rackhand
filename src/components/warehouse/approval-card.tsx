@@ -8,6 +8,7 @@ import type { ApprovalOutcome, PendingApprovalView } from "./state";
 import { BUTTON_VARIANTS, Field, Panel, StatusChip } from "./ui";
 
 const AUTO_APPROVAL_DELAY_MS = 5_000;
+const AUTO_RETURN_DELAY_MS = 20_000;
 
 /**
  * The Milestone 9 approval gate, in the operator's line of sight.
@@ -50,13 +51,15 @@ export function ApprovalCard({
   const submittedApprovalRef = useRef<string | null>(null);
   const autoApprovalId =
     approval &&
-    (approval.summary.autoSuggested || approval.summary.action === "RETRIEVAL")
+    (approval.summary.autoSuggested || approval.summary.action === "RETRIEVAL"
+      || (approval.summary.action === "MATERIALS_FULFILLMENT" && approval.summary.browserScenario === "CONTROL_MODULE"))
       ? approval.approvalId
       : null;
   const [countdown, setCountdown] = useState<{
     approvalId: string;
     seconds: number;
   } | null>(null);
+  const autoDelayMs = approval?.summary.autoSuggested ? AUTO_RETURN_DELAY_MS : AUTO_APPROVAL_DELAY_MS;
 
   useEffect(() => {
     onDecideRef.current = onDecide;
@@ -69,7 +72,7 @@ export function ApprovalCard({
   useEffect(() => {
     if (!autoApprovalId) return;
     submittedApprovalRef.current = null;
-    const deadline = Date.now() + AUTO_APPROVAL_DELAY_MS;
+    const deadline = Date.now() + autoDelayMs;
     const timer = window.setInterval(() => {
       const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1_000));
       setCountdown({ approvalId: autoApprovalId, seconds });
@@ -84,7 +87,7 @@ export function ApprovalCard({
       }
     }, 200);
     return () => window.clearInterval(timer);
-  }, [autoApprovalId]);
+  }, [autoApprovalId, autoDelayMs]);
 
   const submitDecision = (decision: "APPROVE" | "DENY") => {
     if (!approval || submittedApprovalRef.current === approval.approvalId) return;
@@ -103,12 +106,12 @@ export function ApprovalCard({
     if (summary.autoSuggested) {
       const seconds = countdown?.approvalId === approval.approvalId
         ? countdown.seconds
-        : AUTO_APPROVAL_DELAY_MS / 1_000;
+        : AUTO_RETURN_DELAY_MS / 1_000;
       return (
         <Panel title="Put it back?" tone="attention">
           <p className="text-sm text-ink">
             Bin <span className="font-mono text-accent">{summary.destination ?? "?"}</span> was
-            just retrieved. Put it back now?
+            ready at checkout. Take the part you need, then put the bin back.
           </p>
           <p aria-live="polite" className="mt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-warn">
             Returning automatically in {seconds}s
@@ -142,6 +145,7 @@ export function ApprovalCard({
 
     if (summary.action === "MATERIALS_FULFILLMENT") {
       const materialTypeCount = summary.quantity ?? 0;
+      const startingSeconds = countdown?.approvalId === approval.approvalId ? countdown.seconds : AUTO_APPROVAL_DELAY_MS / 1_000;
       return (
         <Panel title="Ready to start" tone="attention">
           <div className="space-y-4">
@@ -154,12 +158,15 @@ export function ApprovalCard({
               </p>
             </div>
             <p className="text-sm leading-6 text-ink-muted">
-              RackHand will bring each selected container to OUTPUT one at a time.
+              RackHand will bring each bin to checkout, verify it, then return it after you take the part you need.
             </p>
+            {summary.browserScenario === "CONTROL_MODULE" && (
+              <p aria-live="polite" className="text-xs text-warn">Browser simulation · starting automatically in {startingSeconds}s</p>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => onDecide("DENY")}
+                onClick={() => submitDecision("DENY")}
                 disabled={busy}
                 className={BUTTON_VARIANTS.secondary}
               >
@@ -167,7 +174,7 @@ export function ApprovalCard({
               </button>
               <button
                 type="button"
-                onClick={() => onDecide("APPROVE")}
+                onClick={() => submitDecision("APPROVE")}
                 disabled={busy}
                 className={BUTTON_VARIANTS.approve}
               >
@@ -243,7 +250,9 @@ export function ApprovalCard({
           Nothing has moved yet. No bin is reserved and no stock has changed. Approving authorises
           the attempt. {summary.action === "PUTAWAY"
             ? "Inventory changes only after the physical check is verified."
-            : "Counts at or below 80% confidence remain unchanged for review."}
+          : summary.action === "RETRIEVAL"
+            ? "Trusted camera and scale checks update stock automatically. Unexpected objects require removal and retry."
+            : "Uncertain checks leave inventory unchanged."}
         </p>
 
         <div className="mt-4 flex gap-2">
@@ -277,7 +286,7 @@ export function ApprovalCard({
           <div className="flex items-center gap-3">
             <div className="animate-spin-slow h-4 w-4 shrink-0 rounded-full border-2 border-line border-t-accent" />
             <p className="text-xs text-ink-muted">
-              Starting… RackHand is checking the request. Camera verification may require your confirmation before the gantry runs.
+              RackHand is checking the bin. Verified counts continue automatically; unexpected objects need removal and retry.
             </p>
           </div>
           {/*

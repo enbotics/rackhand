@@ -17,8 +17,8 @@
  * it with no LLM in the picture.
  *
  * THE INVARIANT THAT MATTERS MOST: checking out a whole bin does not guess how
- * many items a client removes. The last verified quantity remains recorded but
- * unavailable until photographed return putaway reconciles it.
+ * many items a client removes. Checkout verifies the current quantity, then
+ * photographed return putaway separately reconciles the remainder after use.
  */
 import { prisma } from "./db";
 import { getInventoryByBin, getInventoryForPart } from "./inventory-service";
@@ -37,6 +37,9 @@ import type { GantryOperation, WarehouseBinCode } from "@/lib/gantry/types";
 import type { Movement } from "@/generated/prisma/client";
 import { compareBinsInShelfOrder } from "./bin-layout";
 import { isOutOfSimulationScope, SIMULATION_ELIGIBLE_BINS } from "./audit-capture-mode";
+import { requirePutawayVerification } from "./putaway-verification";
+import { getContextWorkflowSessionId, getContextBrowserScenario } from "@/lib/agents/request-context";
+import { isControlModuleScenarioBin, recordControlModuleCheckout } from "./control-module-scenario";
 
 /**
  * Retrieval and putaway share one `Movement.idempotencyKey` column, so the
@@ -92,7 +95,7 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
      RetrievalRequest doc comment), so a request needs sku, partId, or a
      sourceBinCode to identify by — never none of the three. */
   let sku = typeof input?.sku === "string" ? input.sku.trim() : "";
-  let partId = typeof input?.partId === "string" ? input.partId.trim() : "";
+  const partId = typeof input?.partId === "string" ? input.partId.trim() : "";
   const requestedBinCode = typeof input?.sourceBinCode === "string" ? input.sourceBinCode.trim().toUpperCase() : "";
   if (sku && partId) {
     return fail(requestId, "invalid_request", "Provide at most one of sku or partId, not both.");
@@ -201,7 +204,7 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   // Refuse before touching bin/gantry state: Simulation mode must never
   // silently run a real retrieval on a bin it doesn't cover, same guard as
   // audit and putaway verification.
-  if (isOutOfSimulationScope(source)) {
+  if (isOutOfSimulationScope(source) && !(getContextBrowserScenario() && isControlModuleScenarioBin(getContextWorkflowSessionId(), source))) {
     return fail(
       requestId,
       "simulation_scope_violation",
@@ -250,6 +253,7 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
           type: "RETRIEVAL",
           partId: part.id,
           quantity: sourceQuantityBefore,
+          previousQuantity: sourceQuantityBefore,
           status: "VALIDATED",
           sourceBinId: sourceBin.id,
           destinationLocation: RETRIEVAL_DESTINATION,
@@ -318,8 +322,8 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     });
   }
 
-  /* 10 — COMMIT TRANSACTION. Inventory stays at its last verified baseline;
-     only its physical availability changes until return putaway recounts it. */
+  /* 10 — Record physical checkout before capture. No availability is restored
+     if verification fails after the machine has moved the bin. */
   try {
     await prisma.$transaction(async (tx) => {
       const stock = await tx.inventory.findUnique({
@@ -336,8 +340,8 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
       await tx.movement.update({
         where: { id: movement.id },
         data: {
-          status: "COMPLETED",
-          completedAt: new Date(),
+          status: input.verifyContents === false ? "COMPLETED" : "AWAITING_VERIFICATION",
+          completedAt: input.verifyContents === false ? new Date() : null,
           gantryOperationId: operation.operationId,
         },
       });
@@ -366,8 +370,50 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     );
   }
 
+  let checkedOutQuantity = sourceQuantityBefore;
+  if (input.verifyContents !== false) {
+    try {
+      const verified = await requirePutawayVerification(movement.id);
+      if (!verified.inventoryUpdateApproved) throw new Error("Checkout count was not verified.");
+      checkedOutQuantity = verified.quantity;
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.inventory.updateMany({
+          where: { partId: part.id, binId: sourceBin.id, quantity: sourceQuantityBefore },
+          // Keep a zero baseline while checked out so an empty bin still has
+          // its catalog identity when it returns.
+          data: { quantity: checkedOutQuantity },
+        });
+        if (updated.count !== 1) throw new Error("Checkout inventory changed during verification.");
+        const completed = await tx.movement.updateMany({
+          where: { id: movement.id, status: "AWAITING_VERIFICATION", sourceBin: { status: "CHECKED_OUT" } },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+            destinationLocation: RETRIEVAL_DESTINATION,
+            newQuantity: checkedOutQuantity,
+            verificationImageUrl: verified.imageUrl,
+            verificationCapturedAt: verified.capturedAt,
+          },
+        });
+        if (completed.count !== 1) throw new Error("Checkout verification was superseded.");
+      });
+      if (getContextBrowserScenario()) recordControlModuleCheckout(getContextWorkflowSessionId(), source, checkedOutQuantity, verified.attempt ?? 0, sourceQuantityBefore);
+    } catch (error) {
+      // Movement has already happened. Never restore the shelf location or
+      // clear the idempotency key, even after cancellation or a camera failure.
+      await prisma.movement.updateMany({
+        where: { id: movement.id, status: { in: ["AWAITING_VERIFICATION", "FAILED"] } },
+        data: { status: "FAILED", completedAt: new Date() },
+      });
+      return fail(requestId, "retrieval_verification_failed",
+        "The bin is at checkout, but its contents were not verified. Inventory was not changed. Remove unexpected objects and retry the check, or request putaway to verify it again.",
+        { movementId: movement.id, gantryOperationId: operation.operationId, partId: part.id, sourceBinCode: source,
+          error: error instanceof Error ? error.message : undefined });
+    }
+  }
+
   logRetrieval(
-    `movement=${movement.id} gantry=${operation.operationId} status=COMPLETED checkedOut=${sourceQuantityBefore}`,
+    `movement=${movement.id} gantry=${operation.operationId} status=COMPLETED checkedOut=${checkedOutQuantity}`,
   );
 
   return {
@@ -378,9 +424,9 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
     destination: RETRIEVAL_DESTINATION,
     movementId: movement.id,
     gantryOperationId: operation.operationId,
-    checkedOutQuantity: sourceQuantityBefore,
+    checkedOutQuantity,
     inventoryQuantityRemoved: 0,
-    remainingQuantityInBin: sourceQuantityBefore,
+    remainingQuantityInBin: checkedOutQuantity,
     binStatus: "CHECKED_OUT",
     status: "COMPLETED",
   };
@@ -412,7 +458,7 @@ async function replayOrReject(
     });
   }
 
-  const checkedOutQuantity = claimed.quantity;
+  const checkedOutQuantity = claimed.newQuantity ?? claimed.quantity;
 
   logRetrieval(`request=${requestId} movement=${claimed.id} status=DUPLICATE`);
   return {

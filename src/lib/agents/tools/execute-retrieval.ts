@@ -17,9 +17,9 @@
  * (or the bin standing in for it) must already be pinned down. The service
  * revalidates it regardless.
  *
- * The machine checks out the entire source bin. Its last verified quantity is
- * preserved until the bin returns through photographed putaway, when the
- * deterministic service reconciles the observed remainder.
+ * The machine checks out the entire source bin and verifies its camera/scale
+ * evidence. Trusted counts reconcile automatically; unexpected objects require
+ * correction and retry. A later return separately verifies the remainder.
  *
  * IDEMPOTENCY IS SERVER-OWNED. The HTTP request id is used, so one operator
  * message can cause at most one physical retrieval. It is deliberately absent
@@ -28,7 +28,8 @@
 import { tool } from "@strands-agents/sdk";
 import { z } from "zod";
 import { runRetrievalGraph } from "@/lib/warehouse/graphs/retrieval-graph";
-import { getContextRequestId, recordContextWorkflow } from "../request-context";
+import { getContextRequestId, recordContextWorkflow, getContextBrowserScenario, getContextWorkflowSessionId } from "../request-context";
+import { controlModuleCurrentPart } from "@/lib/warehouse/control-module-scenario";
 import { logTool, toolFailure } from "./tool-logging";
 
 export const EXECUTE_RETRIEVAL_TOOL_NAME = "execute_retrieval";
@@ -66,7 +67,7 @@ export const executeRetrievalInputSchema = z
 export const executeRetrievalTool = tool({
   name: EXECUTE_RETRIEVAL_TOOL_NAME,
   description:
-    "Check out one entire physical bin and move it to OUTPUT. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Identify what to retrieve either by an exact SKU/part id (optionally narrowed to one bin), or by sourceBinCode ALONE when the operator only named a bin — a bin holds at most one SKU, so the bin code is itself authoritative identity, resolved server-side from that bin's contents, never guessed. It preserves the bin's last verified quantity for later photographed return reconciliation and marks the bin CHECKED_OUT, so those units are not reported as shelf-available. Use only for an explicit physical retrieval request, never for an inventory question. If the operator named several items in one message, call this for the first one and pass the rest as remainingItems — never call execute_retrieval a second time yourself for them. The service independently revalidates identity, stock and source-bin occupancy.",
+    "Check out one entire physical bin to OUTPUT, then verify it automatically with a fresh camera capture and scale reading. THIS TOOL CHANGES PHYSICAL WAREHOUSE STATE. Trusted counts automatically correct recorded stock in either direction. Unexpected objects or uncertain evidence require correction and retry in the popup; the bin stays at checkout. Identify by exact SKU/part id or sourceBinCode ALONE when only a bin was named. The bin is CHECKED_OUT and excluded from shelf-available stock; a later putaway separately verifies the actual remainder. Use only for explicit physical retrieval, never inventory questions. For several requested items, retrieve the first and pass the rest as remainingItems; never call this a second time yourself for them. The service revalidates identity, stock and occupancy.",
   inputSchema: executeRetrievalInputSchema,
   callback: async ({ sku, partId, sourceBinCode }) => {
     try {
@@ -74,10 +75,14 @@ export const executeRetrievalTool = tool({
       // node calls RetrievalService. The service still revalidates identity,
       // stock, the source bin and the gantry, and `run.result` is the
       // unchanged Milestone 8 contract.
+      const demoBin = getContextBrowserScenario() ? controlModuleCurrentPart(getContextWorkflowSessionId()) : null;
+      if (getContextBrowserScenario() && !demoBin) {
+        return { ok: false, reason: "invalid_request", message: "The browser demo is no longer active. Start the control module prep again." };
+      }
       const run = await runRetrievalGraph({
-        sku,
-        partId,
-        sourceBinCode,
+        sku: demoBin?.sku ?? sku,
+        partId: demoBin ? undefined : partId,
+        sourceBinCode: demoBin?.binCode ?? sourceBinCode,
         // Server-authored only; prompt text cannot select an idempotency key.
         requestId: getContextRequestId() ?? undefined,
       });

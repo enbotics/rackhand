@@ -32,7 +32,10 @@ import {
   getContextScanImageDataUrl,
   getContextScanResult,
   recordContextWorkflow,
+  getContextBrowserScenario,
+  getContextWorkflowSessionId,
 } from "../request-context";
+import { controlModuleCurrentBin } from "@/lib/warehouse/control-module-scenario";
 import { logTool, toolFailure } from "./tool-logging";
 
 export const EXECUTE_PUTAWAY_TOOL_NAME = "execute_putaway";
@@ -67,10 +70,21 @@ export const executePutawayTool = tool({
     // The scan the API validated — never one the model wrote.
     const scanResult = getContextScanResult();
 
-    if (binCode || !scanResult) {
+    const demoBin = getContextBrowserScenario() ? controlModuleCurrentBin(getContextWorkflowSessionId()) : null;
+    if (getContextBrowserScenario() && !demoBin) {
+      return { ok: false, reason: "invalid_scan", message: "The browser demo is no longer active. Start the control module prep again." };
+    }
+    if (demoBin || binCode || !scanResult) {
       // The service requests a fresh manual snapshot; historical images cannot bypass it.
       try {
-        const result = await returnCheckedOutBin({ binCode });
+        const result = await returnCheckedOutBin({ binCode: demoBin ?? binCode });
+        const operationId = `wf_return_${result.movementId ?? "blocked"}`;
+        recordContextWorkflow(result.ok ? {
+          workflow: "PUTAWAY", operationId, status: "COMPLETED",
+          movementId: result.movementId, gantryOperationId: result.gantryOperationId,
+          steps: [{ nodeId: "return_verified", label: "Verify and return bin", status: "COMPLETED",
+            summary: `Bin ${result.destinationBinCode} returned. Remaining ${result.inventoryQuantityAfter}; inventory updated.` }],
+        } : { workflow: "PUTAWAY", operationId, status: "BLOCKED", reason: result.reason, message: result.message, steps: [] });
         logTool(
           EXECUTE_PUTAWAY_TOOL_NAME,
           `no-scan return bin="${binCode ?? "auto"}"`,

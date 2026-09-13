@@ -19,8 +19,9 @@
  * reasoning as parts-layout-planner's lib/scan/gemini.ts.
  */
 import sharp from "sharp";
+import { GEMINI_VISION_MODEL_ID } from "./gemini-model";
 
-const MODEL = "gemini-3.5-flash-lite";
+const MODEL = GEMINI_VISION_MODEL_ID;
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 /** Long-side cap before sending to Gemini — keeps the call to one 768x768 image tile (flat token cost regardless of the CM717's native 2K/4MP capture). */

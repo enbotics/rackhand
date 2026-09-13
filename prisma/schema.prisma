@@ -90,7 +90,7 @@ model Movement {
   partId                 String
   quantity               Int
   /// MovementStatus: PENDING | VALIDATED | RUNNING | PRESENTING |
-  /// AWAITING_PLACEMENT | RETURNING | READY_TO_COMMIT | READY_TO_CANCEL |
+  /// AWAITING_PLACEMENT | AWAITING_VERIFICATION | RETURNING | READY_TO_COMMIT | READY_TO_CANCEL |
   /// COMPLETED | FAILED | CANCELLED
   status                 String                 @default("PENDING")
   /// Nullable: a putaway starts at an intake station, a retrieval ends at an
@@ -129,7 +129,7 @@ model Movement {
   /// `quantity` above holds the size of the change (always positive) to stay
   /// consistent with what every other movement type means by that field.
   previousQuantity       Int?
-  /// Fresh manual bin snapshot accepted before putaway. The putaway verifier
+  /// Fresh bin snapshot accepted at retrieval checkout or before putaway. The verifier
   /// compares its count to recorded stock; inventory auditing remains the
   /// independent full-audit workflow.
   verificationImageUrl   String?
@@ -157,8 +157,8 @@ model Movement {
   @@index([destinationBinId, verificationCapturedAt])
 }
 
-/// Durable Raspberry Pi camera and human-review state for one putaway. Unlike an
-/// inventory audit, this only decides whether the presented bin may return;
+/// Durable camera and human-review state for a retrieval or putaway. Unlike an
+/// inventory audit, this checks the presented bin at checkout or before return;
 /// the accepted quantity is committed by the parent Movement after gantry
 /// completion.
 model PutawayCaptureRequest {

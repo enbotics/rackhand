@@ -13,7 +13,10 @@ import { prepareMaterialsFulfillment } from "@/lib/warehouse/materials-fulfillme
 import {
   getContextRequestId,
   recordContextWorkflow,
+  getContextWorkflowSessionId,
+  getContextBrowserScenario,
 } from "../request-context";
+import { controlModuleScenarioPlan } from "@/lib/warehouse/control-module-scenario";
 import { logTool, toolFailure } from "./tool-logging";
 
 export const FULFILL_MATERIALS_PLAN_TOOL_NAME = "fulfill_materials_plan";
@@ -40,11 +43,15 @@ export const fulfillMaterialsPlanTool = tool({
   callback: async ({ requirements }) => {
     try {
       // PREP means retrieve every requested stocked bin. Verification evidence
-      // is deliberately not a selection gate here: the mandatory photo return
-      // observes and reconciles each bin after the engineer removes material.
+      // is deliberately not a selection gate here: checkout verifies stock,
+      // then the mandatory return verifies the remainder after use.
       // The separate engineering-plan audit path keeps the stricter evidence
       // policy and may skip bins whose verification is already current.
-      const plan = await prepareMaterialsFulfillment(requirements, {
+      const demoPlan = getContextBrowserScenario() ? controlModuleScenarioPlan(getContextWorkflowSessionId()) : null;
+      if (getContextBrowserScenario() && !demoPlan) {
+        return { ok: false, reason: "materials_plan_invalid", message: "The browser demo is no longer active. Start the control module prep again." };
+      }
+      const plan = demoPlan ?? await prepareMaterialsFulfillment(requirements, {
         requireTrustedEvidence: false,
       });
 
@@ -68,6 +75,7 @@ export const fulfillMaterialsPlanTool = tool({
 
       const requestId = getContextRequestId();
       const run = await runRetrievalGraph({
+        verifyContents: true,
         sku: first.sku,
         sourceBinCode: first.binCode,
         requestId: requestId ? `${requestId}:fulfillment:1` : undefined,

@@ -1137,6 +1137,7 @@ export function WarehouseSessionProvider({
             "RUNNING",
             "PRESENTING",
             "AWAITING_PLACEMENT",
+            "AWAITING_VERIFICATION",
             "RETURNING",
             "READY_TO_COMMIT",
             "READY_TO_CANCEL",

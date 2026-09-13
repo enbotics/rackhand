@@ -11,6 +11,8 @@ export type PutawayCaptureOutcome =
   | "FOREIGN_OBJECTS";
 
 export interface PutawayCaptureView {
+  operation?: "RETRIEVAL" | "PUTAWAY";
+  isReturn?: boolean;
   captureMode: "PROD" | "SIMULATION";
   captureId: string;
   binCode: string;
@@ -24,7 +26,7 @@ export interface PutawayCaptureView {
   tareWeightGrams: number | null;
   netWeightGrams: number | null;
   unitWeightGrams: number | null;
-  weightSource: "SCALE" | "FALLBACK" | null;
+  weightSource: "SCALE" | "FALLBACK" | "SIMULATION" | null;
   previousImageUrl: string | null;
   currentImageUrl: string | null;
   foreignObjects: string[];

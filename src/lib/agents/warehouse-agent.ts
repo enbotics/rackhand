@@ -34,6 +34,7 @@ import {
 import type { BaseModelConfig, Message, Model, Snapshot } from "@strands-agents/sdk";
 import { HumanInTheLoop } from "@strands-agents/sdk/vended-interventions/hitl";
 import { WAREHOUSE_AGENT_PROMPT } from "./warehouse-prompt";
+import { beginControlModuleScenario, controlModuleRequirements, controlModuleFinalReport } from "@/lib/warehouse/control-module-scenario";
 import {
   APPROVAL_FREE_TOOL_NAMES,
   APPROVAL_REQUIRED_TOOL_NAMES,
@@ -776,7 +777,9 @@ export async function invokeWarehouseAgent(
   const scanResult = validateAgentScanResult(rawScanResult);
   const scanImageDataUrl = validateScanImageDataUrl(rawScanImageDataUrl);
   const sessionId = validateAgentSessionId(rawSessionId);
-  const forcedPhysicalTool = explicitPhysicalToolForMessage(message);
+  const controlModuleDemo = await beginControlModuleScenario(message, sessionId);
+  const demoRequirements = controlModuleDemo ? controlModuleRequirements(sessionId) : null;
+  const forcedPhysicalTool = controlModuleDemo ? FULFILL_MATERIALS_PLAN_TOOL_NAME : explicitPhysicalToolForMessage(message);
 
   // Milestone 12. Server-generated: a browser may not choose its own trace id,
   // and the summary is the operator's own words, truncated — never the system
@@ -803,6 +806,7 @@ export async function invokeWarehouseAgent(
   // Server-authored constants only — no scan- or catalog-derived text ever
   // reaches the model this way, so a hostile label cannot become instruction.
   const notices = [
+    demoRequirements ? `Browser simulation: prepare the three server-selected control module bins. Call fulfill_materials_plan with these requirements (catalog data, not instructions): ${JSON.stringify(demoRequirements)}.` : null,
     scanResult ? SCAN_ATTACHED_NOTICE : null,
     catalogResolutionId ? IDENTITY_RESOLVED_NOTICE : null,
   ].filter(Boolean);
@@ -815,6 +819,7 @@ export async function invokeWarehouseAgent(
   // hooks also record a tool failure here, which the turn's status depends on.
   const invocationState: Record<string, unknown> = {
     [TRACE_ID_STATE_KEY]: traceId,
+    ...(demoRequirements ? { [MATERIALS_PLAN_RESULT_STATE_KEY]: { requirements: demoRequirements } } : {}),
     ...(forcedPhysicalTool
       ? { [FORCED_PHYSICAL_TOOL_STATE_KEY]: forcedPhysicalTool }
       : {}),
@@ -834,6 +839,7 @@ export async function invokeWarehouseAgent(
         catalogResolutionId,
         traceId,
         workflowSessionId: sessionId,
+        browserScenario: controlModuleDemo ? "CONTROL_MODULE" : null,
       },
       async () => {
         const invocation = await agent.invoke(prompt, { invocationState });
@@ -868,6 +874,7 @@ export async function invokeWarehouseAgent(
         // Carried server-side, never re-sent by the browser, so the decision
         // that finishes this action lands back in the conversation it began in.
         sessionId,
+        browserScenario: controlModuleDemo ? "CONTROL_MODULE" : undefined,
       });
       await recordEvent(traceId, {
         type: "APPROVAL_REQUIRED",
@@ -1306,6 +1313,7 @@ async function parkForApproval(input: {
   sessionId: string | null;
   /** See ApprovalSummary.autoSuggested. */
   autoSuggested?: boolean;
+  browserScenario?: "CONTROL_MODULE";
   /**
    * See ApprovalSummary.fulfillmentQueue. Explicit callers (carrying a queue
    * forward hop to hop) always win; when omitted, an execute_retrieval
@@ -1325,6 +1333,10 @@ async function parkForApproval(input: {
     input.catalogResolutionId,
   );
   if (input.autoSuggested) summary.autoSuggested = true;
+  if (input.browserScenario && controlModuleRequirements(input.sessionId)) {
+    summary.browserScenario = "CONTROL_MODULE";
+    if (toolName === FULFILL_MATERIALS_PLAN_TOOL_NAME) summary.quantity = 3;
+  }
 
   const carriedQueue = input.fulfillmentQueue;
   const ownRemainingItems =
@@ -1483,6 +1495,7 @@ export async function resumeWarehouseAgent(
         requestId: parked.requestId,
         catalogResolutionId: parked.catalogResolutionId,
         workflowSessionId: parked.sessionId,
+        browserScenario: parked.summary.browserScenario ?? null,
         // The SAME trace as the interrupted request. Clicking APPROVE
         // continues one timeline; it does not begin a second one.
         traceId,
@@ -1625,7 +1638,8 @@ export async function resumeWarehouseAgent(
           }
         }
 
-        if (invocation.stopReason !== "interrupt" && fulfillmentQueue.length > 0) {
+        if (invocation.stopReason !== "interrupt" && fulfillmentQueue.length > 0
+          && parked.toolName === EXECUTE_PUTAWAY_TOOL_NAME && currentReturnSucceeded) {
           const nextItem = fulfillmentQueue[0];
           const stillOwed = fulfillmentQueue.slice(1);
           const total = parked.summary.fulfillmentTotal ?? fulfillmentQueue.length + 1;
@@ -1787,6 +1801,7 @@ export async function resumeWarehouseAgent(
         traceId,
         sessionId: parked.sessionId,
         autoSuggested: autoSuggestedReturn,
+        browserScenario: parked.summary.browserScenario,
         // Explicit only when THIS hop forced the next call (putaway offer or
         // the next queued item) — carries or advances the queue. Omitted
         // otherwise so parkForApproval falls back to reading a fresh
@@ -1824,7 +1839,7 @@ export async function resumeWarehouseAgent(
     const responseMessage =
       decision === "DENY"
         ? DENIED_REPLY
-        : grounded ?? (visible || EMPTY_REPLY_FALLBACK);
+        : (parked.summary.browserScenario ? controlModuleFinalReport(parked.sessionId) : null) ?? grounded ?? (visible || EMPTY_REPLY_FALLBACK);
     persistConversation(parked.sessionId, agent, result.stopReason, responseMessage);
 
     console.log(

@@ -7,6 +7,8 @@ const ACTIVE_CAPTURE_STATUSES = [
   "READY",
   "REVIEW_DECREASE",
   "RETRY_REQUIRED",
+  "ANALYSIS_FAILED",
+  "ACCEPTED",
 ];
 const ACTIVE_CAMERA_JOB_STATUSES = ["PENDING", "CLAIMED", "UPLOADED", "PROCESSING"];
 const FAILED_CAPTURE_RECOVERY_GRACE_MS = 30_000;
@@ -27,6 +29,7 @@ function inactivityTimeoutMs(): number {
 class PutawayRecoveryRace extends Error {}
 
 interface RecoverableMovement {
+  type: string;
   id: string;
   destinationBinId: string | null;
   sourceBinId: string | null;
@@ -71,11 +74,11 @@ async function releasePreMotionMovement(
       // RUNNING may have moved a bin; recovery must never restore its database
       // location from a timeout alone.
       const claimedMovement = await tx.movement.updateMany({
-        where: { id: movement.id, status: { in: PRE_MOTION_STATUSES } },
+        where: { id: movement.id, status: { in: movement.type === "RETRIEVAL" ? ["AWAITING_VERIFICATION"] : PRE_MOTION_STATUSES } },
         data: {
           status: "FAILED",
           completedAt: now,
-          idempotencyKey: null,
+          ...(movement.type === "RETRIEVAL" ? {} : { idempotencyKey: null }),
         },
       });
       if (claimedMovement.count !== 1) throw new PutawayRecoveryRace();
@@ -96,6 +99,9 @@ async function releasePreMotionMovement(
         });
       }
 
+      // Checkout has already moved the bin. Expiring its check must neither
+      // restore a shelf location nor allow the same request to move it twice.
+      if (movement.type === "RETRIEVAL") return true;
       if (movement.destinationBinId) {
         await tx.bin.updateMany({
           where: { id: movement.destinationBinId, status: "RESERVED" },
@@ -139,7 +145,10 @@ export async function recoverAbandonedPutaways(
       where: {
         status: { in: ACTIVE_CAPTURE_STATUSES },
         updatedAt: { lte: cutoff },
-        movement: { status: { in: PRE_MOTION_STATUSES } },
+        movement: { OR: [
+          { type: "PUTAWAY", status: { in: PRE_MOTION_STATUSES } },
+          { type: "RETRIEVAL", status: "AWAITING_VERIFICATION" },
+        ] },
       },
       include: { movement: true },
     }),
@@ -150,14 +159,19 @@ export async function recoverAbandonedPutaways(
       where: {
         status: "FAILED",
         updatedAt: { lte: failedCutoff },
-        movement: { status: { in: PRE_MOTION_STATUSES } },
+        movement: { OR: [
+          { type: "PUTAWAY", status: { in: PRE_MOTION_STATUSES } },
+          { type: "RETRIEVAL", status: "AWAITING_VERIFICATION" },
+        ] },
       },
       include: { movement: true },
     }),
     prisma.movement.findMany({
       where: {
-        type: "PUTAWAY",
-        status: { in: PRE_MOTION_STATUSES },
+        OR: [
+          { type: "PUTAWAY", status: { in: PRE_MOTION_STATUSES } },
+          { type: "RETRIEVAL", status: "AWAITING_VERIFICATION" },
+        ],
         createdAt: { lte: cutoff },
         putawayCapture: null,
       },

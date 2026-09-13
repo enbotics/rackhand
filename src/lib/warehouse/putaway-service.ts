@@ -2,8 +2,8 @@
  * Authoritative putaway and checked-out-bin return.
  *
  * The model supplies neither the scan, photo nor quantity. One image is
- * analyzed before motion. A human acceptance may update quantity; an
- * automatic return preserves recorded quantity. Any accepted count is
+ * analyzed before motion. Trusted counts automatically update quantity;
+ * uncertain evidence requires correction and retry. Any accepted count is
  * committed only after the gantry completes.
  */
 import { prisma } from "./db";
@@ -32,6 +32,8 @@ import { compareBinsInShelfOrder } from "./bin-layout";
 import { recoverAbandonedPutaways } from "./putaway-recovery-service";
 import { scheduleSimulationRevert } from "./simulation-revert";
 import { SimulationEvidenceError } from "./simulation-evidence";
+import { getContextWorkflowSessionId, getContextBrowserScenario } from "@/lib/agents/request-context";
+import { recordControlModuleReturn } from "./control-module-scenario";
 
 function logPutaway(fields: string): void {
   if (process.env.NODE_ENV !== "test") console.log(`[putaway] ${fields}`);
@@ -637,9 +639,20 @@ export async function returnCheckedOutBin(
     );
   }
 
+  const pendingRetrieval = await prisma.movement.findFirst({
+    where: {
+      type: "RETRIEVAL",
+      status: "AWAITING_VERIFICATION",
+      ...(requestedCode ? { sourceBin: { code: requestedCode } } : {}),
+    },
+  });
+  if (pendingRetrieval) {
+    return fail("", "putaway_in_progress", "Finish the bin’s checkout check before returning it.", { movementId: pendingRetrieval.id });
+  }
+
   const checkedOutBins = await prisma.bin.findMany({
     where: { status: "CHECKED_OUT" },
-    include: { inventory: { where: { quantity: { gt: 0 } }, include: { part: true } } },
+    include: { inventory: { include: { part: true } } },
   });
 
   let bin: (typeof checkedOutBins)[number] | undefined;
@@ -731,13 +744,11 @@ export async function returnCheckedOutBin(
 
   let imageUrl: string;
   let verifiedQuantity: number;
-  let simulatedVerification = false;
   let inventoryUpdateApproved = false;
   try {
     const verified = await requirePutawayVerification(movement.id, true);
     imageUrl = verified.imageUrl;
     verifiedQuantity = verified.quantity;
-    simulatedVerification = verified.simulated;
     inventoryUpdateApproved = verified.inventoryUpdateApproved;
   } catch (error) {
     await releaseClaim(movement.id, bin.id, "CHECKED_OUT");
@@ -834,14 +845,9 @@ export async function returnCheckedOutBin(
     );
   }
 
-  if (simulatedVerification && inventoryAfter !== quantity) {
-    scheduleSimulationRevert({
-      partId: part.id,
-      binId: bin.id,
-      previousQuantity: quantity,
-      source: "putaway-return",
-    });
-  }
+  // A checked-out return establishes the next retrieval baseline, including
+  // in browser simulation. Do not undo the user's verified remainder later.
+  if (getContextBrowserScenario()) recordControlModuleReturn(getContextWorkflowSessionId(), bin.code, inventoryAfter);
 
   logPutaway(
     `return movement=${movement.id} gantry=${operation.operationId} status=COMPLETED bin=${bin.code}`,

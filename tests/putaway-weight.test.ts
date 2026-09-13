@@ -4,6 +4,7 @@ import {
   calculatePutawayWeight,
   configuredContainerTareGrams,
   configuredFallbackTotalWeightGrams,
+  verifyPhysicalWeight,
 } from "@/lib/warehouse/putaway-weight";
 
 const originalTare = process.env.PUTAWAY_CONTAINER_TARE_GRAMS;
@@ -20,6 +21,45 @@ afterEach(() => {
   } else {
     process.env.PUTAWAY_FALLBACK_TOTAL_WEIGHT_GRAMS = originalFallback;
   }
+});
+
+describe("camera and scale quantity checks", () => {
+  const reading = { totalWeightGrams: 237, quantity: 12, weightSource: "SCALE",
+    referenceUnitWeightGrams: 10, simulated: false, expectedQuantity: 12 };
+
+  it("checks both the checkout count and the remaining return count", () => {
+    expect(verifyPhysicalWeight(reading).verified).toBe(true);
+    const returned = verifyPhysicalWeight({ ...reading, quantity: 11, totalWeightGrams: 227 });
+    expect(returned.verified).toBe(true);
+    expect(returned.measurement?.unitWeightGrams).toBe(10);
+  });
+
+  it("does not trust a visual count when measured weight disagrees", () => {
+    expect(verifyPhysicalWeight({ ...reading, quantity: 11 }).verified).toBe(false);
+  });
+
+  it("does not treat a missing scale or synthetic fallback as measured evidence", () => {
+    expect(verifyPhysicalWeight({ ...reading, totalWeightGrams: null }).verified).toBe(false);
+    expect(verifyPhysicalWeight({ ...reading, weightSource: "FALLBACK" }).verified).toBe(false);
+  });
+
+  it("establishes an item-weight reference on the first measured check", () => {
+    const result = verifyPhysicalWeight({ ...reading, referenceUnitWeightGrams: null });
+    expect(result.verified).toBe(true);
+    expect(result.measurement?.unitWeightGrams).toBe(10);
+  });
+
+  it("supports an empty returned bin but not a bin with unexplained weight", () => {
+    expect(verifyPhysicalWeight({ ...reading, quantity: 0, totalWeightGrams: 117 }).verified).toBe(true);
+    expect(verifyPhysicalWeight({ ...reading, quantity: 0, totalWeightGrams: 137 }).verified).toBe(false);
+  });
+
+  it("labels browser-simulation readings as simulation, not a physical scale", () => {
+    const result = verifyPhysicalWeight({ ...reading, quantity: 11, totalWeightGrams: null, simulated: true });
+    expect(result.source).toBe("SIMULATION");
+    expect(result.verified).toBe(true);
+    expect(result.measurement?.netWeightGrams).toBe(110);
+  });
 });
 
 describe("putaway weight", () => {

@@ -37,6 +37,7 @@ import {
 
 /** What the graph is asked to do. Mirrors `RetrievalRequest`. */
 export interface RetrievalGraphRequest {
+  verifyContents?: boolean;
   sku?: string;
   partId?: string;
   /** Deprecated compatibility input. Retrieval checks out the entire bin. */
@@ -415,6 +416,7 @@ export class RetrievalExecuteNode extends WorkflowNode<
   protected async run(context: RetrievalContext): Promise<NodeOutcome> {
     const { request, data } = context;
     const result: RetrievalResult = await executeRetrieval({
+      verifyContents: request.verifyContents,
       sku: request.sku,
       partId: request.partId,
       sourceBinCode: request.sourceBinCode,

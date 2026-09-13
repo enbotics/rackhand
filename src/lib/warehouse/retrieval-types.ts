@@ -31,10 +31,12 @@
  * from, revalidated to actually hold that part.
  *
  * The gantry moves the entire physical bin to OUTPUT. Inventory quantity is
- * therefore observed and reconciled when that same bin later returns through
- * putaway; retrieval never guesses how many units the client removed.
+ * verified at checkout and again when that bin returns through putaway;
+ * retrieval never guesses how many units the client will remove.
  */
 export interface RetrievalRequest {
+  /** Server-only compatibility policy. User-requested prep verifies checkout. */
+  verifyContents?: boolean;
   sku?: string;
   partId?: string;
   /** Deprecated compatibility input. The physical operation always checks out the whole bin. */
@@ -68,6 +70,7 @@ export const RETRIEVAL_FAILURE_REASONS = [
   "gantry_busy",
   "gantry_failed",
   "retrieval_commit_failed",
+  "retrieval_verification_failed",
   /** Project addition, mirroring putaway_in_progress. */
   "retrieval_in_progress",
   /** Simulation mode is on and this bin isn't one of the two it covers. */

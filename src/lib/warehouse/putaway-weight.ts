@@ -79,3 +79,38 @@ export function calculatePutawayWeight(
     unitWeightGrams: roundedGrams(netWeightGrams / quantity),
   };
 }
+
+/** A physical scale reading corroborates vision against a prior item weight.
+ * First-time readings establish that reference; fallback weights are not evidence.
+ * Allow half an item's weight (or 2 g of scale noise), not an arbitrary stock count.
+ */
+export function verifyPhysicalWeight(input: {
+  totalWeightGrams: number | null | undefined;
+  quantity: number | null;
+  weightSource: string | null | undefined;
+  referenceUnitWeightGrams: number | null;
+  simulated: boolean;
+  expectedQuantity: number;
+}): { measurement: PutawayWeightMeasurement | null; verified: boolean; source: "SCALE" | "SIMULATION" | null } {
+  if (input.quantity === null || !Number.isInteger(input.quantity) || input.quantity < 0) {
+    return { measurement: null, verified: false, source: null };
+  }
+  const tare = configuredContainerTareGrams();
+  const reference = input.referenceUnitWeightGrams;
+  const simulatedUnitWeight = reference ?? Math.max(1,
+    (configuredFallbackTotalWeightGrams() - tare) / Math.max(1, input.expectedQuantity));
+  const total = input.simulated ? tare + simulatedUnitWeight * input.quantity : input.totalWeightGrams;
+  if (total == null || !Number.isFinite(total) || total < 0 || (!input.simulated && input.weightSource !== "SCALE")) {
+    return { measurement: null, verified: false, source: null };
+  }
+  const measurement = input.quantity === 0
+    ? { totalWeightGrams: total, tareWeightGrams: total === 0 ? 0 : tare,
+        netWeightGrams: Math.max(0, total - tare), unitWeightGrams: 0 }
+    : total > 0 ? calculatePutawayWeight(total, input.quantity, tare) : null;
+  const tolerance = Math.max(2, (reference ?? 0) * 0.5);
+  const verified = measurement !== null && (input.quantity === 0
+    ? measurement.netWeightGrams <= tolerance
+    : measurement.netWeightGrams > 0 && (reference === null
+      || Math.abs(measurement.netWeightGrams - reference * input.quantity) <= tolerance));
+  return { measurement, verified, source: input.simulated ? "SIMULATION" : "SCALE" };
+}

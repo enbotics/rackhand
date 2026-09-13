@@ -5,6 +5,7 @@ import { createRealtimeAdminClient } from "@/lib/supabase/realtime-admin";
 import { pendingAuditCapture } from "@/lib/warehouse/audit-bin-service";
 import { pendingPutawayCapture } from "@/lib/warehouse/putaway-verification";
 import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session";
+import { controlModuleScenarioRunning } from "@/lib/warehouse/control-module-scenario";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -106,10 +107,19 @@ export function GET(request: Request) {
           void pushCurrent();
         }
       }, 15_000);
+      // Five-second demo previews must remain visible even if a Realtime
+      // notification is lost. Fast polling is limited to this explicit demo.
+      let demoWasRunning = false;
+      const demoPoll = setInterval(() => {
+        const running = controlModuleScenarioRunning(sessionId);
+        if (running || demoWasRunning) void pushCurrent();
+        demoWasRunning = running;
+      }, 1_000);
       const stop = () => {
         if (closed) return;
         closed = true;
         clearInterval(heartbeat);
+        clearInterval(demoPoll);
         void supabase.removeChannel(channel);
       };
       cleanup = stop;

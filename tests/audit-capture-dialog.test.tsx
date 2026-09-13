@@ -144,7 +144,7 @@ describe("AuditCaptureProvider", () => {
     });
   }
 
-  function emitAcceptedConfidenceDecrease(captures: FakeEventSource) {
+  function emitAcceptedConfidenceDecrease(captures: FakeEventSource, operation: "RETRIEVAL" | "PUTAWAY" = "PUTAWAY") {
     captures.emit("pending", {
       captureId: "capture-decrease",
       binCode: "B6-03",
@@ -152,6 +152,7 @@ describe("AuditCaptureProvider", () => {
       purpose: "PUTAWAY",
       captureMode: "PROD",
       analysis: {
+        operation,
         captureMode: "PROD",
         captureId: "capture-decrease",
         binCode: "B6-03",
@@ -256,6 +257,18 @@ describe("AuditCaptureProvider", () => {
     });
   });
 
+  it("keeps a retrieval correction at checkout rather than promising a return", async () => {
+    render(
+      <CameraHealthProvider>
+        <AuditCaptureProvider><div>Warehouse</div></AuditCaptureProvider>
+      </CameraHealthProvider>,
+    );
+    const captures = FakeEventSource.instances.find((source) => source.url.includes("/api/warehouse/captures/events"));
+    act(() => emitAcceptedConfidenceDecrease(captures!, "RETRIEVAL"));
+    expect(screen.getByText("✓ Bin ready at checkout automatically")).toBeTruthy();
+    expect(screen.queryByText("✓ Returning bin automatically")).toBeNull();
+  });
+
   it("does not reopen a comparison when a decision finds it already terminal", async () => {
     vi.stubGlobal(
       "fetch",
@@ -286,12 +299,12 @@ describe("AuditCaptureProvider", () => {
     });
   });
 
-  it("returns the bin without accepting quantity after five seconds", async () => {
+  it("automatically accepts a verified count after five seconds", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, status: "AUTO_RETURNED" }),
+      json: async () => ({ ok: true, status: "ACCEPTED" }),
     } as Response));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -323,7 +336,7 @@ describe("AuditCaptureProvider", () => {
       "/api/warehouse/putaway/captures/capture-1/decision",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ decision: "AUTO_RETURN" }),
+        body: JSON.stringify({ decision: "ACCEPT" }),
       }),
     );
   });

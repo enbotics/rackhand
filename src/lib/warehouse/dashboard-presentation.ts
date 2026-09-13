@@ -45,6 +45,7 @@ export const MOVEMENT_STATUS_PRESENTATION: Record<MovementStatus, StatusPresenta
   RUNNING: { label: "RUNNING", tone: "accent", symbol: "▸" },
   PRESENTING: { label: "FETCHING BIN", tone: "accent", symbol: "▸" },
   AWAITING_PLACEMENT: { label: "AWAITING ITEM", tone: "warn", symbol: "!" },
+  AWAITING_VERIFICATION: { label: "VERIFYING CONTENTS", tone: "accent", symbol: "◎" },
   RETURNING: { label: "RETURNING BIN", tone: "accent", symbol: "▸" },
   READY_TO_COMMIT: { label: "READY TO SAVE", tone: "warn", symbol: "!" },
   READY_TO_CANCEL: { label: "READY TO RELEASE", tone: "warn", symbol: "!" },
