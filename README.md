@@ -349,7 +349,7 @@ not every credential parameter needs to be set.
 | Parameter                  | Example / configuration                          | Purpose                                                                                                             |
 | -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `AWS_REGION`               | `us-west-2`                                      | AWS region used for Bedrock requests.                                                                               |
-| `BEDROCK_MODEL_ID`         | Code default: `global.anthropic.claude-sonnet-5` | Choose an accessible Bedrock model/inference profile; Anthropic IDs require the supported inference-profile prefix. |
+| `BEDROCK_MODEL_ID`         | Code default: `us.amazon.nova-lite-v1:0`         | Choose an accessible Bedrock model/inference profile; ids require the supported inference-profile prefix (`us.`/`global.`). |
 | `AWS_BEARER_TOKEN_BEDROCK` | Secret Bedrock bearer token                      | Alternative Bedrock authentication.                                                                                 |
 | `AWS_ACCESS_KEY_ID`        | Your AWS access key ID                           | AWS signature-based authentication, paired with the secret key.                                                     |
 | `AWS_SECRET_ACCESS_KEY`    | Your AWS secret access key                       | Secret for AWS signature-based authentication.                                                                      |
@@ -422,7 +422,7 @@ it with Strands `Agent.asTool()`; it is not a second client endpoint.
 
 - **Model provider:** Amazon Bedrock via `@strands-agents/sdk`. The model id
   is set by `BEDROCK_MODEL_ID` (code default if unset:
-  `global.anthropic.claude-sonnet-5`). Use a model your AWS account can access.
+  `us.amazon.nova-lite-v1:0`). Use a model your AWS account can access.
   Credentials come from the standard AWS chain and are never committed.
 - **Vision:** Gemini (`GEMINI_API_KEY`) performs scan measurement and the
   shared one-frame quantity/confidence/foreign-object analysis used by putaway

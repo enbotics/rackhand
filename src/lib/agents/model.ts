@@ -19,11 +19,17 @@ import { BedrockModel } from "@strands-agents/sdk";
  * Pinned rather than left to the SDK default, which is documented as subject
  * to change between versions (and logs a warning when relied on).
  *
- * The `global.` prefix is required, not cosmetic: Bedrock lists every
- * Anthropic Sonnet model as INFERENCE_PROFILE-only, so the bare
- * `anthropic.claude-sonnet-5` id is rejected for on-demand invocation.
+ * The `us.` prefix is required, not cosmetic: Bedrock lists Nova as
+ * INFERENCE_PROFILE-only, so the bare `amazon.nova-lite-v1:0` id is rejected
+ * for on-demand invocation. The `:0` version suffix is part of the id — an id
+ * without it does not resolve.
+ *
+ * Nova rather than `global.anthropic.claude-sonnet-5` because this account's
+ * AWS Marketplace subscription for Anthropic models is blocked
+ * (INVALID_PAYMENT_INSTRUMENT); Amazon's own models are not
+ * Marketplace-transacted. Switching back is this line, or BEDROCK_MODEL_ID.
  */
-export const DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-sonnet-5";
+export const DEFAULT_BEDROCK_MODEL_ID = "us.amazon.nova-lite-v1:0";
 
 /** Low but not zero: tool selection should be near-deterministic. */
 const DEFAULT_TEMPERATURE = 0.2;

@@ -148,7 +148,9 @@ describe("agent construction", () => {
 
   it("pins an explicit Bedrock model id", () => {
     expect(getBedrockModelId()).toBe(DEFAULT_BEDROCK_MODEL_ID);
-    expect(DEFAULT_BEDROCK_MODEL_ID).toMatch(/anthropic/);
+    // Whichever model is pinned, it must carry an inference-profile prefix —
+    // a bare provider id is rejected for on-demand invocation.
+    expect(DEFAULT_BEDROCK_MODEL_ID).toMatch(/^(global|us|eu|apac)\./);
   });
 
   it("constructs without any AWS credential being present", () => {
