@@ -1,0 +1,1365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="RackHand application testing: browser scenarios, production scale verification, expected results and automated checks."
+    />
+    <title>RackHand — Application testing guide</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a1017;
+        --panel: #111a24;
+        --ink: #e5edf5;
+        --muted: #9bafc3;
+        --line: #253343;
+        --accent: #81dfbf;
+        --blue: #83bbef;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 90px;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.75 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      a {
+        color: var(--blue);
+        text-underline-offset: 4px;
+      }
+      button,
+      a {
+        -webkit-tap-highlight-color: transparent;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+      }
+      button:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 5px;
+      }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 15px max(24px, calc((100vw - 1400px) / 2));
+        border-bottom: 1px solid var(--line);
+        background: #0a1017f2;
+        backdrop-filter: blur(12px);
+      }
+      .brand {
+        font:
+          700 13px ui-monospace,
+          monospace;
+        letter-spacing: 0.16em;
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .top-actions a {
+        font-size: 13px;
+      }
+      .print-button {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+        color: var(--ink);
+        padding: 7px 13px;
+        font-size: 13px;
+      }
+      .hero {
+        max-width: 1400px;
+        margin: auto;
+        padding: 62px 32px 42px;
+      }
+      .eyebrow {
+        font:
+          12px ui-monospace,
+          monospace;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+      h1 {
+        font-size: clamp(34px, 5vw, 58px);
+        line-height: 1.12;
+        letter-spacing: -0.045em;
+        margin: 16px 0 19px;
+        font-weight: 650;
+      }
+      .hero p {
+        max-width: 690px;
+        color: var(--muted);
+        font-size: 17px;
+        margin: 0;
+      }
+      .badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+        margin-top: 26px;
+      }
+      .badge {
+        font-size: 12px;
+        border: 1px solid var(--line);
+        border-radius: 100px;
+        padding: 5px 12px;
+        color: var(--muted);
+      }
+      .badge strong {
+        color: var(--ink);
+      }
+      .layout {
+        max-width: 1400px;
+        margin: auto;
+        display: grid;
+        grid-template-columns: 255px minmax(0, 1fr);
+        gap: 42px;
+        padding: 0 32px 70px;
+      }
+      .sidebar {
+        position: sticky;
+        top: 84px;
+        align-self: start;
+        max-height: calc(100vh - 108px);
+        overflow: auto;
+        padding-bottom: 12px;
+      }
+      .nav-title {
+        font:
+          11px ui-monospace,
+          monospace;
+        letter-spacing: 0.14em;
+        color: var(--muted);
+        text-transform: uppercase;
+        margin-bottom: 12px;
+      }
+      .sidebar a {
+        display: block;
+        border-left: 2px solid var(--line);
+        padding: 8px 13px;
+        text-decoration: none;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .sidebar a:hover,
+      .sidebar a.active {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: #81dfbf08;
+      }
+      .sidebar .offline {
+        font-size: 11px;
+        color: var(--muted);
+        margin: 20px 13px 0;
+      }
+      main {
+        min-width: 0;
+      }
+      main > p {
+        color: var(--muted);
+        margin: 0 0 28px;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 28px 30px;
+        margin-bottom: 22px;
+      }
+      h2 {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        font-size: 23px;
+        line-height: 1.35;
+        letter-spacing: -0.025em;
+        margin: 0 0 19px;
+      }
+      h3 {
+        font-size: 17px;
+        margin: 28px 0 12px;
+        scroll-margin-top: 90px;
+      }
+      .test-number {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        width: 35px;
+        height: 35px;
+        border-radius: 9px;
+        border: 1px solid #81dfbf3d;
+        background: #81dfbf0b;
+        color: var(--accent);
+        font:
+          13px ui-monospace,
+          monospace;
+      }
+      p {
+        margin: 14px 0;
+        color: #bdcddd;
+      }
+      strong {
+        color: var(--ink);
+        font-weight: 650;
+      }
+      ol,
+      ul {
+        padding-left: 25px;
+        margin: 16px 0;
+      }
+      li {
+        padding-left: 5px;
+        margin: 10px 0;
+        color: #bdcddd;
+      }
+      li::marker {
+        color: var(--accent);
+        font-weight: 650;
+      }
+      code {
+        font:
+          12px/1.6 ui-monospace,
+          SFMono-Regular,
+          Consolas,
+          monospace;
+        color: #c2dcf5;
+        background: #83bbef0c;
+        border-radius: 4px;
+        padding: 2px 5px;
+        overflow-wrap: anywhere;
+      }
+      pre {
+        margin: 0;
+        overflow: auto;
+        padding: 17px 20px;
+      }
+      pre code {
+        background: none;
+        padding: 0;
+        overflow-wrap: normal;
+        font-size: 12px;
+        color: #cae5df;
+        white-space: pre;
+      }
+      .code-block {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: #090f16;
+        margin: 20px 0;
+        overflow: hidden;
+      }
+      .code-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        padding: 8px 16px;
+        color: var(--muted);
+        font:
+          10px ui-monospace,
+          monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .copy-button {
+        background: none;
+        border: 0;
+        color: var(--blue);
+        font-size: 11px;
+        padding: 3px 0;
+      }
+      .table-scroll {
+        overflow: auto;
+        margin: 22px 0;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        line-height: 1.6;
+        text-align: left;
+      }
+      th {
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: #0c131c;
+      }
+      th,
+      td {
+        padding: 13px 14px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th {
+        white-space: nowrap;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      td code {
+        font-size: 11px;
+      }
+      tr:hover td {
+        background: #83bbef04;
+      }
+      .pass-result {
+        background: #81dfbf09;
+        border: 1px solid #81dfbf30;
+        border-left: 3px solid var(--accent);
+        border-radius: 7px;
+        padding: 13px 16px;
+        color: #c0dfd1;
+      }
+      .pass-result strong {
+        color: var(--accent);
+      }
+      footer {
+        max-width: 1400px;
+        margin: auto;
+        padding: 0 32px 35px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+      }
+      @media (max-width: 1000px) {
+        .layout {
+          grid-template-columns: 205px minmax(0, 1fr);
+          gap: 22px;
+        }
+        section {
+          padding: 24px;
+        }
+        .hero {
+          padding-top: 42px;
+        }
+      }
+      @media (max-width: 760px) {
+        .layout {
+          display: block;
+          padding: 0 18px 36px;
+        }
+        .sidebar {
+          position: static;
+          max-height: none;
+          margin-bottom: 25px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0 8px;
+        }
+        .sidebar .nav-title {
+          grid-column: 1/-1;
+        }
+        .sidebar .offline {
+          display: none;
+        }
+        .hero {
+          padding: 35px 20px 30px;
+        }
+        .topbar {
+          padding: 13px 20px;
+        }
+        .top-actions a {
+          display: none;
+        }
+        section {
+          padding: 22px 18px;
+        }
+        h2 {
+          font-size: 20px;
+        }
+        .hero p {
+          font-size: 15px;
+        }
+        footer {
+          padding: 0 20px 25px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+      @media print {
+        :root {
+          color-scheme: light;
+          --ink: #111827;
+          --muted: #4b5563;
+          --line: #d1d5db;
+          --accent: #18644b;
+          --blue: #174d86;
+          --panel: #fff;
+          --bg: #fff;
+        }
+        body {
+          font-size: 11px;
+          background: #fff;
+          color: #111827;
+        }
+        .topbar,
+        .sidebar,
+        .copy-button {
+          display: none;
+        }
+        .hero {
+          padding: 15px 0 25px;
+        }
+        .hero p {
+          font-size: 12px;
+        }
+        h1 {
+          font-size: 32px;
+        }
+        .layout {
+          display: block;
+          padding: 0;
+        }
+        .badges {
+          margin-top: 15px;
+        }
+        section {
+          padding: 18px;
+          border-radius: 0;
+          break-inside: auto;
+        }
+        h2,
+        h3 {
+          break-after: avoid;
+        }
+        h2 {
+          font-size: 18px;
+        }
+        p,
+        li {
+          color: #243244;
+        }
+        .test-number {
+          background: #fff;
+        }
+        .pass-result {
+          background: #f0f8f4;
+          color: #1e4738;
+        }
+        .code-block {
+          background: #f7f8fa;
+          break-inside: avoid;
+        }
+        pre code {
+          color: #183d31;
+        }
+        code {
+          color: #174d86;
+        }
+        th {
+          background: #f3f4f6;
+        }
+        td,
+        th {
+          padding: 9px;
+        }
+        tr {
+          break-inside: avoid;
+        }
+        .table-scroll {
+          overflow: visible;
+        }
+        footer {
+          padding: 15px 0;
+        }
+        a {
+          color: #174d86;
+          text-decoration: none;
+        }
+        @page {
+          size: A4;
+          margin: 15mm;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top">RACKHAND</a>
+      <div class="top-actions">
+        <a href="http://localhost:3000">Open local application ↗</a
+        ><button class="print-button" type="button">Print / Save PDF</button>
+      </div>
+    </header>
+    <div class="hero" id="top">
+      <div class="eyebrow">Application testing guide</div>
+      <h1>Test the complete parts loop.</h1>
+      <p>
+        From one engineering request to verified inventory. Follow the browser
+        scenario, check real scale measurements, and confirm safe failure
+        behavior.
+      </p>
+      <div class="badges">
+        <span class="badge"><strong>7</strong> application tests</span
+        ><span class="badge"><strong>107 g</strong> box tare</span
+        ><span class="badge">Scale determines count</span
+        ><span class="badge">Browser demo + production sensing</span>
+      </div>
+    </div>
+    <div class="layout">
+      <nav class="sidebar" aria-label="Testing guide sections">
+        <div class="nav-title">In this guide</div>
+        <a href="#quick-browser-walkthrough">Quick browser walkthrough</a
+        ><a href="#prepare-the-application">Prepare the application</a
+        ><a href="#test-1-read-only-agent-request">1. read-only agent request</a
+        ><a href="#test-2-three-bin-browser-preparation"
+          >2. three-bin browser preparation</a
+        ><a href="#test-3-cancel-before-execution">3. cancel before execution</a
+        ><a href="#test-4-production-scale-counting-and-engineer-consumption"
+          >4. production scale counting and engineer consumption</a
+        ><a href="#test-5-physical-verification-failures"
+          >5. physical verification failures</a
+        ><a href="#test-6-upcoming-assembly-readiness"
+          >6. upcoming assembly readiness</a
+        ><a href="#test-7-evidence-and-refresh-behavior"
+          >7. evidence and refresh behavior</a
+        ><a href="#automated-checks">Automated checks</a
+        ><a href="#record-the-result">Record the result</a
+        ><a href="#supporting-setup">Supporting setup</a>
+        <p class="offline">
+          Standalone guide.<br />No external assets required.
+        </p>
+      </nav>
+      <main>
+        <p>
+          Use this guide to test the browser experience, production camera/scale
+          verification, and automated checks. Steps below are test procedures
+          and expected results, not a claim that a live hardware test has
+          already passed.
+        </p>
+        <section id="quick-browser-walkthrough">
+          <h2>Quick browser walkthrough</h2>
+          <p>For an already configured demo application:</p>
+          <ol>
+            <li>Open the <strong>Workspace</strong> at <code>/</code>.</li>
+            <li>
+              Set <strong>Audit capture mode</strong> to
+              <strong>Simulation</strong>.
+            </li>
+            <li>
+              Enter:
+              <strong>RackHand, prep the parts for the control module.</strong>
+            </li>
+            <li>
+              Click <strong>Start job</strong>, or let the displayed simulation
+              countdown start it.
+            </li>
+            <li>
+              Follow each bin through checkout and return. At B1-01, click
+              <strong>Removed · retry check</strong> when the unexpected-object
+              warning appears.
+            </li>
+            <li>
+              Confirm that the final report says all three bins were checked and
+              returned.
+            </li>
+            <li>
+              Open <strong>History</strong> to inspect movements and
+              <strong>Activity</strong> to inspect tool activity.
+            </li>
+          </ol>
+          <p>
+            This walkthrough needs stocked B1-01 and B1-02 bins as described
+            below. The scenario uses scripted images and evidence and takes one
+            simulated item from each bin. It demonstrates workflow behavior;
+            production sensing is tested separately.
+          </p>
+        </section>
+        <section id="prepare-the-application">
+          <h2>Prepare the application</h2>
+          <p>
+            For a new checkout, follow
+            <a href="#first-time-application-setup">Running locally</a>. Use
+            Node.js 22.12+ in the 22.x series, or Node.js 24.x, and configure a
+            dedicated development/demo database. Browser workflows update that
+            database.
+          </p>
+          <p>
+            The application needs PostgreSQL/Supabase and accessible Bedrock
+            credentials. Production image inspection also needs
+            <code>GEMINI_API_KEY</code> and an authenticated Pi worker. The
+            explicit browser scenario supplies its own inspection evidence.
+          </p>
+          <p>In the application&#x27;s <code>.env.local</code>, set:</p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>env</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>GANTRY_MODE=simulation
+AUDIT_CAPTURE_MODE=SIMULATION
+PUTAWAY_CONTAINER_TARE_GRAMS=107</code></pre>
+          </div>
+          <p>
+            Keep the existing database/provider credentials. If setting up a new
+            database, apply migrations and seed using the README instructions.
+            Seeding creates bins and example catalog entries; it does not
+            prepare the complete stocked demo.
+          </p>
+          <p>Start the application:</p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>npm run dev</code></pre>
+          </div>
+          <p>
+            Open <a href="http://localhost:3000">http://localhost:3000</a>.
+            Confirm that Workspace, Scan, History, and Activity open without a
+            loading or connection error. Changing the capture-mode toggle
+            affects the server process; finish the current job before switching.
+            Gantry motion remains simulated in both capture modes.
+          </p>
+          <h3 id="demo-stock-prerequisites">Demo stock prerequisites</h3>
+          <p>
+            Use these already registered parts in their intended bins. Each demo
+            bin must be <strong>OCCUPIED</strong>, contain exactly one SKU, and
+            have sufficient stock. The gantry must be idle and the checkout
+            station clear.
+          </p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Bin</th>
+                  <th scope="col">Part</th>
+                  <th scope="col">Suggested starting count</th>
+                  <th scope="col">Known item weight</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>B4-01</td>
+                  <td>V-groove bearing wheel hardware kit</td>
+                  <td>11</td>
+                  <td>19 g</td>
+                </tr>
+                <tr>
+                  <td>B3-03</td>
+                  <td><code>DRIVER-MKS-TMC2160-OC-V1</code></td>
+                  <td>12</td>
+                  <td>47.12 g</td>
+                </tr>
+                <tr>
+                  <td>B6-03</td>
+                  <td><code>HARDWARE-ROUND-SPACER</code></td>
+                  <td>20</td>
+                  <td>6.2 g</td>
+                </tr>
+                <tr>
+                  <td>B5-01</td>
+                  <td><code>ELECTRONICS-SENSOR-MODULE-MIXED</code></td>
+                  <td>20</td>
+                  <td>1.56 g</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            B5-01 is used for the separate sensor/plan tests. The three-bin
+            browser scenario uses the first three bins. Suggested counts are
+            fixtures; the application does not reset stock to them
+            automatically. Record actual starting quantities before each run.
+            For already stocked bins, the bin dialog&#x27;s
+            <strong>Edit quantity</strong> control can establish the intended
+            recorded fixture in the demo database.
+          </p>
+          <p>
+            For the 19 g bearing mapping, use the exact catalog name shown
+            above. It does not apply to every bearing model. Item weights are
+            supplied in
+            <a href="#demo-stock-prerequisites">putaway-weight.ts</a>.
+          </p>
+        </section>
+        <section id="test-1-read-only-agent-request">
+          <h2><span class="test-number">01</span>read-only agent request</h2>
+          <ol>
+            <li>
+              In Workspace, enter
+              <strong>What is the current gantry status?</strong>
+            </li>
+            <li>Wait for the response and inspect Activity.</li>
+            <li>Compare bin state and inventory with the starting state.</li>
+          </ol>
+          <p class="pass-result">
+            <strong>Pass:</strong> RackHand reports status using its status
+            tool. No bin moves, no inventory changes, and no action approval is
+            required.
+          </p>
+          <p>Optional API check, while the server is running:</p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>curl -s -X POST http://localhost:3000/api/agent \
+  -H &#x27;Content-Type: application/json&#x27; \
+  -d &#x27;{&quot;message&quot;:&quot;What is the current gantry status?&quot;}&#x27;</code></pre>
+          </div>
+          <p class="pass-result">
+            <strong>Pass:</strong> The response contains an agent message and a
+            status tool result, rather than a credential/model error.
+          </p>
+        </section>
+        <section id="test-2-three-bin-browser-preparation">
+          <h2>
+            <span class="test-number">02</span>three-bin browser preparation
+          </h2>
+          <ol>
+            <li>
+              Confirm <strong>Simulation</strong> mode and the demo stock
+              prerequisites.
+            </li>
+            <li>
+              Enter the exact prompt:
+              <strong>RackHand, prep the parts for the control module.</strong>
+            </li>
+            <li>Confirm the preparation card contains three selected bins.</li>
+            <li>
+              Click <strong>Start job</strong>, or let the displayed countdown
+              authorize the demo.
+            </li>
+            <li>
+              Watch each checkout comparison, automatic acceptance, and return.
+            </li>
+            <li>
+              On B6-03&#x27;s first checkout, observe the uncertainty warning.
+              Click <strong>Removed · retry check</strong> to simulate removing
+              the unexpected object.
+            </li>
+            <li>
+              Wait for the final completion report, then inspect each bin and
+              History.
+            </li>
+          </ol>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Stage</th>
+                  <th scope="col">
+                    Expected result with the suggested fixtures
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>B4-01 checkout</td>
+                  <td>Recorded 11; verified 11.</td>
+                </tr>
+                <tr>
+                  <td>B4-01 return</td>
+                  <td>Remaining 10; bin returned to its original slot.</td>
+                </tr>
+                <tr>
+                  <td>B3-03 checkout</td>
+                  <td>
+                    Recorded 12; verified 10; inventory mismatch shown and
+                    reconciled.
+                  </td>
+                </tr>
+                <tr>
+                  <td>B3-03 return</td>
+                  <td>Remaining 9; bin returned to its original slot.</td>
+                </tr>
+                <tr>
+                  <td>B6-03 first checkout</td>
+                  <td>
+                    Unexpected object; result stays open and cannot be accepted
+                    as verified.
+                  </td>
+                </tr>
+                <tr>
+                  <td>B6-03 retry</td>
+                  <td>Verified 20 after the retry.</td>
+                </tr>
+                <tr>
+                  <td>B6-03 return</td>
+                  <td>Remaining 19; bin returned to its original slot.</td>
+                </tr>
+                <tr>
+                  <td>Final report</td>
+                  <td>
+                    All three bins checked and returned; recorded, verified, and
+                    remaining quantities shown.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            If using different starting stock, B4-01 and B6-03 verify their
+            recorded counts. B3-03 verifies two fewer when its recorded count is
+            at least three. Each return has one fewer than its checkout count.
+            Require at least three in B3-03 for the mismatch example above.
+          </p>
+          <p class="pass-result">
+            <strong>Pass:</strong> Bins run sequentially, the unexpected-object
+            step requires retry, trusted comparisons continue automatically, and
+            the final stock matches the verified remainder. Simulation is
+            identified as simulation.
+          </p>
+          <p>
+            Repeat runs consume additional simulated stock. Restore fixtures
+            deliberately in the demo database before comparing another run to
+            the table.
+          </p>
+        </section>
+        <section id="test-3-cancel-before-execution">
+          <h2><span class="test-number">03</span>cancel before execution</h2>
+          <ol>
+            <li>
+              With all bins back and the gantry idle, start the control-module
+              prompt again.
+            </li>
+            <li>
+              Click <strong>Cancel</strong> on
+              <strong>Ready to start</strong> before its countdown expires.
+            </li>
+            <li>Inspect the bins, inventory, and History.</li>
+          </ol>
+          <p class="pass-result">
+            <strong>Pass:</strong> This cancelled request causes no new bin
+            movement or inventory change. If the countdown has already started
+            execution, this is no longer a test of cancellation before
+            authorization; finish the current job before retrying.
+          </p>
+        </section>
+        <section id="test-4-production-scale-counting-and-engineer-consumption">
+          <h2>
+            <span class="test-number">04</span>production scale counting and
+            engineer consumption
+          </h2>
+          <p>
+            Configure the
+            <a href="#production-setup">Pi camera/scale worker</a>, use matching
+            device credentials, and point its <code>SERVER_BASE_URL</code> at
+            the running application. Set <strong>Audit capture mode</strong> to
+            <strong>Prod</strong>. Ensure the actual empty box weighs 107 g and
+            the scale reports the gross weight including the box.
+          </p>
+          <p>For a clean bearing test:</p>
+          <ol>
+            <li>
+              Record 11 bearings in B4-01 and place 11 correct 19 g bearing
+              items in the box.
+            </li>
+            <li>
+              Ask <strong>Retrieve the bin B4-01.</strong> Authorize the
+              displayed request, or observe its automatic retrieval countdown.
+            </li>
+            <li>
+              At verification, confirm a stable gross reading near
+              <strong>316 g</strong>.
+            </li>
+            <li>
+              Confirm that the comparison verifies <strong>11</strong> items.
+            </li>
+            <li>
+              While the bin is at checkout, remove two items before the return
+              countdown completes. Use the displayed return action to return the
+              bin.
+            </li>
+            <li>
+              Confirm the return measurement is near <strong>278 g</strong> and
+              the remaining count is <strong>9</strong>.
+            </li>
+            <li>
+              Confirm the informational notice says
+              <strong>Engineer took 2 items</strong> above the comparison
+              images, followed by automatic return.
+            </li>
+            <li>
+              Open B4-01&#x27;s bin dialog and inspect the latest snapshot and
+              current stock.
+            </li>
+          </ol>
+          <p class="pass-result">
+            <strong>Pass:</strong> Return quantity is nine, box tare is 107 g,
+            item weight is 19 g, and stock reconciles to nine. The return notice
+            uses the engineer-consumption wording. A changed count detected at
+            checkout uses the mismatch wording.
+          </p>
+          <p>Use these readings to check other supplied weights:</p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Part</th>
+                  <th scope="col">Initial count</th>
+                  <th scope="col">Initial gross weight</th>
+                  <th scope="col">Remaining count after taking 2</th>
+                  <th scope="col">Return gross weight</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Spacer, 6.2 g</td>
+                  <td>30</td>
+                  <td>293 g</td>
+                  <td>28</td>
+                  <td>280.6 g</td>
+                </tr>
+                <tr>
+                  <td>Bearing, 19 g</td>
+                  <td>11</td>
+                  <td>316 g</td>
+                  <td>9</td>
+                  <td>278 g</td>
+                </tr>
+                <tr>
+                  <td>Motor driver, 47.12 g</td>
+                  <td>4</td>
+                  <td>295.48 g</td>
+                  <td>2</td>
+                  <td>201.24 g</td>
+                </tr>
+                <tr>
+                  <td>Sensor module, 1.56 g</td>
+                  <td>20</td>
+                  <td>138.2 g</td>
+                  <td>18</td>
+                  <td>135.08 g</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Every expected quantity comes from:</p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>text</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>count = round((total_weight − 107) / supplied_item_weight)</code></pre>
+          </div>
+          <p>
+            The camera still checks identity, visibility, confidence, and
+            foreign objects. It does not establish item weight or override
+            quantity from a valid scale reading. Use homogeneous items matching
+            the supplied per-item weight for this test, including the
+            mixed-sensor SKU.
+          </p>
+        </section>
+        <section id="test-5-physical-verification-failures">
+          <h2>
+            <span class="test-number">05</span>physical verification failures
+          </h2>
+          <p>
+            Run these on dedicated test stock and retain the starting inventory
+            values.
+          </p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Test</th>
+                  <th scope="col">Action</th>
+                  <th scope="col">Expected result</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Foreign object</td>
+                  <td>
+                    Include an identifiable foreign object with known parts.
+                  </td>
+                  <td>
+                    Warning and retry required; no verified acceptance until
+                    corrected.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Missing scale</td>
+                  <td>Disconnect the scale before requesting verification.</td>
+                  <td>
+                    Missing evidence is reported; no count is invented or
+                    accepted automatically.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Unknown item weight</td>
+                  <td>
+                    Request verification for a registered SKU without a supplied
+                    weight.
+                  </td>
+                  <td>
+                    Quantity is unverified; the application requests a known
+                    item weight.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Below tare</td>
+                  <td>Supply a gross reading below 107 g.</td>
+                  <td>
+                    Quantity is unverified; the reading is not treated as a net
+                    weight.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Ambiguous count</td>
+                  <td>
+                    Unit test a reading halfway between two sensor quantities,
+                    such as 123.38 g gross.
+                  </td>
+                  <td>
+                    No automatic acceptance; quantity requires another valid
+                    reading.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Over capacity</td>
+                  <td>
+                    Unit/integration test a scale-derived count above the
+                    bin&#x27;s capacity.
+                  </td>
+                  <td>
+                    Acceptance is blocked; do not physically overload a bin.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="pass-result">
+            <strong>Pass:</strong> The affected step stays unresolved and
+            inventory is not reconciled to an unverified count. Correct the
+            cause and retry before continuing.
+          </p>
+        </section>
+        <section id="test-6-upcoming-assembly-readiness">
+          <h2>
+            <span class="test-number">06</span>upcoming assembly readiness
+          </h2>
+          <p>
+            Configure the
+            <a href="#engineering-plan-setup">engineering-plan integration</a>.
+            Use released, enabled work rows for the date selected by the
+            application. For the shortage fixture, make the plan require
+            <strong>19 sensor modules</strong>, record <strong>20</strong> in
+            B5-01, and place <strong>18</strong> matching 1.56 g modules in the
+            box. Ensure B5-01 has stale, missing, changed, or unresolved
+            verification evidence so the server selects it for inspection. A
+            trusted unchanged check under seven days old may be reused instead.
+          </p>
+          <ol>
+            <li>
+              Use <strong>Prod</strong> capture mode and confirm the Pi and
+              scale are available.
+            </li>
+            <li>
+              Open
+              <a href="http://localhost:3000/trig">http://localhost:3000/trig</a
+              >.
+            </li>
+            <li>Click <strong>Analyze upcoming work plan</strong>.</li>
+            <li>Follow the progress in Workspace.</li>
+            <li>
+              Confirm that the sensor bin is selected for verification when
+              freshness policy requires it.
+            </li>
+            <li>
+              Confirm a gross reading near <strong>135.08 g</strong>, giving
+              <strong>18</strong> modules.
+            </li>
+            <li>
+              Inspect the final readiness report and the bin&#x27;s verified
+              inventory.
+            </li>
+          </ol>
+          <p class="pass-result">
+            <strong>Pass:</strong> The report identifies
+            <strong>required 19, physically found 18, short by 1</strong>. Clear
+            evidence allows reconciliation under the audit rules. Uncertain
+            evidence leaves stock unchanged and reports the unresolved check.
+            Plan audits use a report-only review policy rather than the
+            interactive remove/retry flow.
+          </p>
+          <p>
+            This run is started by the user; the server selects its bin checks
+            internally. There is no nightly scheduler or implemented external
+            notification delivery.
+          </p>
+        </section>
+        <section id="test-7-evidence-and-refresh-behavior">
+          <h2>
+            <span class="test-number">07</span>evidence and refresh behavior
+          </h2>
+          <p>After a completed return:</p>
+          <ol>
+            <li>
+              Open the bin dialog and inspect
+              <strong>Latest bin snapshot</strong>.
+            </li>
+            <li>
+              Confirm that its capture time belongs to this test, its quantity
+              matches the verified remainder, and the box/net/item weights match
+              the reading.
+            </li>
+            <li>
+              Refresh Workspace and confirm stock and completed history remain
+              visible.
+            </li>
+            <li>Open History and confirm checkout and return records exist.</li>
+            <li>
+              Open Activity and confirm tool calls and results are visible.
+            </li>
+          </ol>
+          <p class="pass-result">
+            <strong>Pass:</strong> Durable inventory and evidence survive
+            browser refresh. An older snapshot can still show its historical 117
+            g tare; a new capture must show 107 g. The displayed
+            <strong>Each</strong> weight for new verified captures is the
+            supplied item weight, not net weight divided by a camera count.
+          </p>
+        </section>
+        <section id="automated-checks">
+          <h2>Automated checks</h2>
+          <p>From the project directory, with a supported Node.js version:</p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>npm run lint
+npx tsc --noEmit
+npx vitest run --config vitest.verification.config.ts</code></pre>
+          </div>
+          <p>
+            The focused verification configuration runs offline unit/component
+            tests and mocked warehouse workflows. It does not migrate a database
+            or call live models. It covers counting, confidence gates,
+            checkout/return, approvals, recovery, and the explicit browser
+            scenario.
+          </p>
+          <p>
+            A pre-existing test currently asserts a Gemini model name different
+            from the configured default. Keep that failure visible when running
+            the full focused suite. To run the remaining checks while explicitly
+            excluding that assertion:
+          </p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>npx vitest run --config vitest.verification.config.ts \
+  -t &#x27;^(?!.*uses the supported Gemini)&#x27;</code></pre>
+          </div>
+          <p>
+            If type-checking reports syntax errors inside
+            <code>.next/dev/types/validator.ts</code>, those are generated
+            development artifacts; record that separately from source errors and
+            regenerate Next.js types in a clean development/build session. Older
+            Node.js 20 versions may fail to load Vitest&#x27;s ESM dependencies;
+            use the supported Node.js version above.
+          </p>
+          <h3 id="database-integration-suite">Database integration suite</h3>
+          <p>
+            The full suite migrates and resets a dedicated PostgreSQL test
+            database. Export a URL whose database name contains
+            <code>test-warehouse</code>, then run:
+          </p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>export TEST_DATABASE_URL=&#x27;postgresql://test-warehouse:test-warehouse@127.0.0.1:5432/test-warehouse&#x27;
+npm test</code></pre>
+          </div>
+          <p>
+            Do not point these tests at the application&#x27;s demo or
+            production database.
+          </p>
+          <h3 id="live-provider-smoke-test">Live provider smoke test</h3>
+          <p>With Bedrock access configured:</p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>npm run agent:smoke</code></pre>
+          </div>
+          <p>
+            This makes live, billable Bedrock calls. A blocked
+            credential/provider result means the live agent path was not
+            validated; offline passing tests do not replace this check.
+          </p>
+        </section>
+        <section id="record-the-result">
+          <h2>Record the result</h2>
+          <p>For each manual test, record:</p>
+          <ul>
+            <li>
+              Test number, date/time, application build, and capture mode.
+            </li>
+            <li>Starting bin/SKU/count and supplied item weight.</li>
+            <li>
+              Gross reading, tare, expected count, displayed count, and final
+              inventory.
+            </li>
+            <li>
+              Pass/fail, screenshot, and relevant History/Activity entries.
+            </li>
+            <li>
+              Whether evidence was scripted or measured by the connected
+              Pi/scale.
+            </li>
+          </ul>
+          <p>
+            A browser-demo pass requires the complete three-bin job and correct
+            remainders. A production-verification pass requires fresh measured
+            evidence, 107 g tare, known item weights, correct scale-derived
+            quantities, and safe failure behavior.
+          </p>
+        </section>
+        <section id="supporting-setup">
+          <h2>Supporting setup</h2>
+          <h3 id="first-time-application-setup">
+            First-time application setup
+          </h3>
+          <p>
+            In a new checkout, create <code>.env.local</code> from
+            <code>.env.example</code>. Keep an existing configured environment
+            file when testing your current application. Configure
+            <code>DATABASE_URL</code> and <code>DIRECT_URL</code> for the same
+            development database, <code>SUPABASE_URL</code>,
+            <code>SUPABASE_SERVICE_ROLE_KEY</code>, accessible AWS/Bedrock
+            credentials, and <code>GEMINI_API_KEY</code> for production
+            inspection. Keep <code>GANTRY_MODE=simulation</code> and set
+            <code>PUTAWAY_CONTAINER_TARE_GRAMS=107</code>.
+          </p>
+          <div class="code-block">
+            <div class="code-heading">
+              <span>bash</span
+              ><button type="button" class="copy-button">Copy</button>
+            </div>
+            <pre><code>npm ci
+npm run db:deploy
+npm run db:seed
+npm run dev</code></pre>
+          </div>
+          <p>
+            Seeding does not stock the four test bins. Prepare the registered
+            parts and recorded quantities in the demo database before starting
+            the walkthrough.
+          </p>
+          <h3 id="production-setup">Production setup</h3>
+          <p>
+            Configure the server&#x27;s <code>CAMERA_DEVICE_ID</code> and
+            <code>CAMERA_DEVICE_TOKEN</code>. On the Pi, copy
+            <code>hardware/warehouse-camera/camera.env.example</code> to
+            <code>camera.env</code>, set the same device ID/token and a
+            reachable <code>SERVER_BASE_URL</code>, and configure the
+            scale&#x27;s serial port and baud rate. Install the worker
+            dependencies and start it following
+            <code>hardware/warehouse-camera/README.md</code>. Confirm that it
+            can claim jobs and upload a fresh frame with a stable scale reading.
+          </p>
+          <h3 id="engineering-plan-setup">Engineering-plan setup</h3>
+          <p>
+            Set <code>ENGINEERING_PLAN_SPREADSHEET_ID</code>,
+            <code>ENGINEERING_PLAN_SHEET_RANGE</code>, and
+            <code>ENGINEERING_PLAN_TIME_ZONE</code> on the application server.
+            For a private Sheet, set
+            <code>GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL</code> and
+            <code>GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY</code>, enable Sheets API
+            access, and share the Sheet with that service account as a Viewer.
+            Use released PREPARE material rows for the selected work date. See
+            <code>docs/ENGINEERING_PLAN_INTEGRATION.md</code> in the repository
+            for supported headers and plan formats.
+          </p>
+        </section>
+      </main>
+    </div>
+    <footer>
+      RackHand · You build hardware. RackHand handles the parts.<span
+        class="sr-only"
+        role="status"
+        id="copy-status"
+      ></span>
+    </footer>
+    <script>
+      document
+        .querySelector(".print-button")
+        .addEventListener("click", () => window.print());
+      document.querySelectorAll(".copy-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const code = button.closest(".code-block").querySelector("pre code");
+          try {
+            await navigator.clipboard.writeText(code.textContent);
+            button.textContent = "Copied";
+          } catch {
+            const range = document.createRange();
+            range.selectNodeContents(code);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            button.textContent = "Selected — copy";
+          }
+          setTimeout(() => {
+            button.textContent = "Copy";
+          }, 2000);
+        });
+      });
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              document.querySelectorAll(".sidebar a").forEach((link) => {
+                link.classList.toggle(
+                  "active",
+                  link.getAttribute("href") === "#" + entry.target.id,
+                );
+              });
+            });
+          },
+          { rootMargin: "-10% 0px -65% 0px" },
+        );
+        document
+          .querySelectorAll("section[id]")
+          .forEach((section) => observer.observe(section));
+      }
+    </script>
+  </body>
+</html>

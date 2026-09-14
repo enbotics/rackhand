@@ -11,7 +11,7 @@ critical stock before it can block upcoming work.
 Built with **Strands Agents** and **Amazon Bedrock**, with a **Next.js**
 interface, **PostgreSQL/Supabase**, and a **Raspberry Pi camera and scale**.
 
-[Demo](#demo) · [Architecture](#architecture) · [Running locally](#running-locally)
+[Demo](#demo) · [Architecture](#architecture) · [Testing](public/testing.html) · [Running locally](#running-locally)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -442,6 +442,10 @@ the deployed server. Rebuild and restart after server-code changes; an existing
 production process continues serving its previous build.
 
 ### Checks and tests
+
+See the [HTML application testing guide](public/testing.html) (served at `/testing.html`)
+for a short browser walkthrough,
+production scale checks, expected results, and failure tests.
 
 Lint and type-check:
 
