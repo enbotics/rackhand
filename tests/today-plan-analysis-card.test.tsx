@@ -165,13 +165,13 @@ describe("upcoming plan analysis report", () => {
     run.result!.auditedBinCodes = ["B5-01"];
     run.result!.physicalCounts = [{ sku: "SKU-SHORT", binCode: "B5-01", recordedQuantity: 12,
       observedQuantity: 10, usable: true, inventoryUpdated: false,
-      scale: { status: "AGREES", totalWeightGrams: 167, estimatedQuantity: 10 } }];
+      scale: { status: "VERIFIED", totalWeightGrams: 167, estimatedQuantity: 10 } }];
     run.result!.shortages = [{ sku: "SKU-SHORT", required: 11, available: 10, physicallyAvailable: 10 }];
 
     render(<TodayPlanAnalysisCard run={run} />);
     expect(screen.getByText("B5-01 · Recorded: 12")).toBeTruthy();
     expect(screen.getByText("Physically found: 10")).toBeTruthy();
-    expect(screen.getByText("Scale agrees: 10")).toBeTruthy();
+    expect(screen.getByText("Scale count: 10")).toBeTruthy();
     expect(screen.getByText("Needs 11 · Physically found 10")).toBeTruthy();
     expect(screen.getByText("Short by 1 · Engineer attention needed")).toBeTruthy();
     expect(screen.queryByText(/Verified 0/)).toBeNull();

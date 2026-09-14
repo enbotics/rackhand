@@ -935,14 +935,17 @@ export async function processAuditCameraCapture(id: string, input: {
     }
     if (captureMode === "PROD") {
       const scale = await auditScaleCheck({
-        binId: binAudit.binId, partId: binAudit.expectedPartId,
-        capturedAt: input.capturedAt, observedQuantity: vision.observedCount,
+        part,
         totalWeightGrams: input.totalWeightGrams, weightSource: input.weightSource,
       });
-      if (scale.status === "MISMATCH") {
-        vision = { ...vision, countable: false,
-          notes: `${vision.notes} Camera and scale disagree: camera ${vision.observedCount}; scale estimate ${scale.estimatedQuantity}.`.trim() };
-      }
+      vision = {
+        ...vision,
+        observedCount: scale.estimatedQuantity,
+        countable: vision.countable && scale.status === "VERIFIED",
+        notes: scale.status === "VERIFIED"
+          ? vision.notes
+          : `${vision.notes} Quantity requires a valid scale reading and a known item weight.`.trim(),
+      };
     }
     const processingRenewed = await prisma.auditCaptureRequest.updateMany({
       where: { id, status: "CAPTURING", attempt: input.workflowAttempt },

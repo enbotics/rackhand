@@ -41,8 +41,6 @@ import {
 import { getContextWorkflowSessionId, getContextBrowserScenario } from "@/lib/agents/request-context";
 import { controlModuleFrame, isControlModuleScenarioBin, controlModuleCurrentPart } from "./control-module-scenario";
 import {
-  calculatePutawayWeight,
-  configuredFallbackTotalWeightGrams,
   knownPartUnitWeightGrams,
   verifyPhysicalWeight,
 } from "./putaway-weight";
@@ -111,16 +109,6 @@ function captureView(input: {
   notes: string | null;
   movement: { type?: string; part?: { sku: string; canonicalName: string }; destinationLocation?: string | null; destinationBin: { code: string } | null; sourceBin?: { code: string } | null };
 }, outcome: PutawayCaptureOutcome, captureMode: "PROD" | "SIMULATION"): PutawayCaptureView {
-  const legacyFallback =
-    captureMode === "PROD" &&
-    input.totalWeightGrams === null &&
-    input.observedQuantity !== null &&
-    input.observedQuantity > 0
-      ? calculatePutawayWeight(
-          configuredFallbackTotalWeightGrams(),
-          input.observedQuantity,
-        )
-      : null;
   return {
     captureMode,
     captureId: input.id,
@@ -135,15 +123,13 @@ function captureView(input: {
       && knownPartUnitWeightGrams(input.movement.part) != null
       && input.unitWeightGrams === knownPartUnitWeightGrams(input.movement.part) ? "SCALE" : "VISION",
     confidencePercent: input.countConfidence === null ? null : confidencePercent(input.countConfidence),
-    totalWeightGrams: input.totalWeightGrams ?? legacyFallback?.totalWeightGrams ?? null,
-    tareWeightGrams: input.tareWeightGrams ?? legacyFallback?.tareWeightGrams ?? null,
-    netWeightGrams: input.netWeightGrams ?? legacyFallback?.netWeightGrams ?? null,
-    unitWeightGrams: input.unitWeightGrams ?? legacyFallback?.unitWeightGrams ?? null,
+    totalWeightGrams: input.totalWeightGrams,
+    tareWeightGrams: input.tareWeightGrams,
+    netWeightGrams: input.netWeightGrams,
+    unitWeightGrams: input.unitWeightGrams,
     weightSource: input.weightSource === "SCALE" || input.weightSource === "FALLBACK" || input.weightSource === "SIMULATION"
       ? input.weightSource
-      : legacyFallback
-        ? "FALLBACK"
-        : null,
+      : null,
     previousImageUrl: input.previousImageUrl,
     currentImageUrl: input.evidenceUrl,
     foreignObjects: parseInspectionForeignObjects(input.foreignObjectsJson),
@@ -571,23 +557,13 @@ async function analyzePutawayCapture(
       throw new Error("This capture stopped being processable during image analysis.");
     }
     const knownUnitWeight = knownPartUnitWeightGrams(part);
-    const reference = await prisma.movement.findFirst({
-      where: {
-        id: { not: movement.id }, partId: part.id, status: "COMPLETED",
-        OR: [{ destinationBinId: bin.id }, { type: "RETRIEVAL", sourceBinId: bin.id }],
-        weightSource: captureMode === "SIMULATION" ? { in: ["SCALE", "SIMULATION"] } : "SCALE",
-        unitWeightGrams: { gt: 0 }, verificationImageUrl: { not: null },
-      },
-      orderBy: { completedAt: "desc" },
-      select: { unitWeightGrams: true },
-    });
     const scale = verifyPhysicalWeight({
       totalWeightGrams: input.totalWeightGrams, quantity: vision.observedCount,
-      weightSource: input.weightSource, referenceUnitWeightGrams: reference?.unitWeightGrams ?? null,
-      simulated: captureMode === "SIMULATION", expectedQuantity: capture.expectedQuantity,
+      weightSource: input.weightSource,
+      simulated: captureMode === "SIMULATION",
       knownUnitWeightGrams: knownUnitWeight,
     });
-    const observed = scale.quantity ?? vision.observedCount;
+    const observed = scale.verified ? scale.quantity : null;
     const weight = scale.measurement;
     const visionAssessment = classifyPutawayVision(
       { ...vision, observedCount: observed }, capture.expectedQuantity, bin.capacity,

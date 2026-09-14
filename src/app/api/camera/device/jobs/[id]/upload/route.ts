@@ -22,7 +22,6 @@ import {
 } from "@/lib/measurement/measure-image-buffer";
 import { processPutawayCameraCapture } from "@/lib/warehouse/putaway-verification";
 import { processAuditCameraCapture } from "@/lib/warehouse/audit-bin-service";
-import { configuredFallbackTotalWeightGrams } from "@/lib/warehouse/putaway-weight";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -451,16 +450,7 @@ export async function POST(
       }
       weightSource = normalized;
     }
-    if (
-      existingJob.purpose === "PUTAWAY_VERIFICATION" &&
-      totalWeightGrams === null
-    ) {
-      // Server-side continuity for an older worker or a disconnected scale.
-      // The source flag keeps this synthetic total visibly distinct from a
-      // physical measurement throughout the database and UI.
-      totalWeightGrams = configuredFallbackTotalWeightGrams();
-      weightSource = "FALLBACK";
-    } else if (weightSource === null && totalWeightGrams !== null) {
+    if (weightSource === null && totalWeightGrams !== null) {
       // Compatibility for a scale-aware worker deployed just before source
       // provenance was added: a supplied physical value was scale-derived.
       weightSource = "SCALE";

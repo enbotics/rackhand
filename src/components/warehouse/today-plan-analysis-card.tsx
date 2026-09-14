@@ -490,8 +490,8 @@ export function TodayPlanAnalysisCard({
                               <p className="mt-0.5 text-[10px] text-danger">
                                 {physical?.inventoryUpdated ? "Stock updated" : "Stock unchanged"}
                               </p>
-                              {physical?.scale.status === "AGREES" && (
-                                <p className="mt-0.5 text-[10px] text-ink-muted">Scale agrees: {physical.scale.estimatedQuantity}</p>
+                              {physical?.scale.status === "VERIFIED" && (
+                                <p className="mt-0.5 text-[10px] text-ink-muted">Scale count: {physical.scale.estimatedQuantity}</p>
                               )}
                               {physical?.scale.status === "UNAVAILABLE" && (
                                 <p className="mt-0.5 text-[10px] text-ink-muted">Scale check unavailable</p>

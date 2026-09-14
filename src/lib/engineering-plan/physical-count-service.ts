@@ -11,7 +11,7 @@ export async function readPhysicalCount(
   recordedQuantity: number,
 ): Promise<NonNullable<TodayPlanAnalysisResultView["physicalCounts"]>[number]> {
   const audit = await prisma.binAudit.findUniqueOrThrow({
-    where: { id: binAuditId }, include: { bin: true, capture: true },
+    where: { id: binAuditId }, include: { bin: true, capture: true, expectedPart: true },
   });
   const job = await prisma.cameraCaptureJob.findFirst({
     where: { binAuditId, evidenceUrl: audit.evidenceUrl ?? "", status: { in: ["PROCESSING", "COMPLETED"] } },
@@ -19,13 +19,11 @@ export async function readPhysicalCount(
     select: { totalWeightGrams: true, weightSource: true, capturedAt: true },
   });
   const scale = await auditScaleCheck({
-    binId: audit.binId, partId: audit.expectedPartId,
-    capturedAt: audit.capturedAt ?? job?.capturedAt ?? audit.createdAt,
-    observedQuantity: audit.observedQuantity,
+    part: audit.expectedPart,
     totalWeightGrams: job?.totalWeightGrams, weightSource: job?.weightSource,
   });
   const assessment = assessBinInspection({
-    observedCount: audit.observedQuantity, countConfidence: audit.countConfidence ?? 0,
+    observedCount: scale.estimatedQuantity, countConfidence: audit.countConfidence ?? 0,
     countable: audit.countable ?? false, expectedPartPresent: audit.expectedPartPresent ?? false,
     foreignObjectSuspected: audit.foreignObjectSuspected ?? false,
     foreignObjects: parseInspectionForeignObjects(audit.capture?.foreignObjectsJson ?? null),
@@ -33,8 +31,8 @@ export async function readPhysicalCount(
   }, { confidenceThreshold: AUDIT_CAPTURE_CONFIDENCE_THRESHOLD, capacity: audit.bin.capacity,
        requireExpectedPart: audit.expectedPartId !== null });
   return {
-    sku, binCode: audit.bin.code, recordedQuantity, observedQuantity: audit.observedQuantity,
-    usable: assessment.gate === "CLEAR" && scale.status !== "MISMATCH" && audit.status !== "FAILED",
+    sku, binCode: audit.bin.code, recordedQuantity, observedQuantity: scale.estimatedQuantity,
+    usable: assessment.gate === "CLEAR" && scale.status === "VERIFIED" && audit.status !== "FAILED",
     inventoryUpdated: audit.inventoryUpdated, scale,
   };
 }

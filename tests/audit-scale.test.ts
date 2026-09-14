@@ -1,45 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { checkAuditScale } from "@/lib/warehouse/audit-scale";
 
-const baseline = {
-  unitWeightGrams: 5,
-  tareWeightGrams: 107,
-  weightSource: "SCALE",
-};
-const reading = { totalWeightGrams: 167, weightSource: "SCALE" };
-describe("audit camera and scale comparison", () => {
-  it("supports a camera observation of 10 against a 10-item physical reading", () => {
-    expect(checkAuditScale(10, reading, baseline)).toEqual({
-      status: "AGREES",
-      totalWeightGrams: 167,
-      estimatedQuantity: 10,
+const reading = { totalWeightGrams: 122.6, weightSource: "SCALE" };
+describe("audit scale-based quantity", () => {
+  it("counts ten sensor modules using their supplied 1.56 g weight", () => {
+    expect(checkAuditScale(reading, 1.56)).toEqual({
+      status: "VERIFIED", totalWeightGrams: 122.6, estimatedQuantity: 10,
     });
   });
-  it("flags a camera count of 12 against the weight of 10 without overwriting the count", () => {
-    expect(checkAuditScale(12, reading, baseline).status).toBe("MISMATCH");
+  it("requires a supplied weight and physical scale reading", () => {
+    expect(checkAuditScale(reading, null).status).toBe("UNAVAILABLE");
+    expect(checkAuditScale({}, 1.56).status).toBe("UNAVAILABLE");
+    expect(checkAuditScale({ ...reading, weightSource: "FALLBACK" }, 1.56).status).toBe("UNAVAILABLE");
   });
-  it("never treats fallback totals or fallback item weights as scale evidence", () => {
-    expect(
-      checkAuditScale(10, { ...reading, weightSource: "FALLBACK" }, baseline)
-        .status,
-    ).toBe("UNAVAILABLE");
-    expect(
-      checkAuditScale(10, reading, { ...baseline, weightSource: "FALLBACK" })
-        .status,
-    ).toBe("UNAVAILABLE");
+  it("rejects an ambiguous quantity and below-tare readings", () => {
+    expect(checkAuditScale({ ...reading, totalWeightGrams: 123.38 }, 1.56)).toMatchObject({
+      status: "MISMATCH", estimatedQuantity: null,
+    });
+    expect(checkAuditScale({ ...reading, totalWeightGrams: 100 }, 1.56).status).toBe("UNAVAILABLE");
   });
-  it("requires a known item weight and a physical reading", () => {
-    expect(checkAuditScale(10, reading, null).status).toBe("UNAVAILABLE");
-    expect(checkAuditScale(10, {}, baseline).status).toBe("UNAVAILABLE");
-  });
-  it("handles sensor rounding and an empty bin", () => {
-    expect(
-      checkAuditScale(10, { ...reading, totalWeightGrams: 167.1 }, baseline)
-        .status,
-    ).toBe("AGREES");
-    expect(
-      checkAuditScale(0, { ...reading, totalWeightGrams: 107 }, baseline)
-        .status,
-    ).toBe("AGREES");
+  it("supports sensor rounding and an empty bin", () => {
+    expect(checkAuditScale({ ...reading, totalWeightGrams: 122.7 }, 1.56).estimatedQuantity).toBe(10);
+    expect(checkAuditScale({ ...reading, totalWeightGrams: 107 }, 1.56).estimatedQuantity).toBe(0);
   });
 });

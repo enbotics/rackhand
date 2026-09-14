@@ -14,7 +14,7 @@ const fixture = vi.hoisted(() => {
     sourceBin: bin,
     part: {
       id: "part-1",
-      sku: "SENSOR",
+      sku: "ELECTRONICS-SENSOR-MODULE-MIXED",
       canonicalName: "Sensor modules",
       lengthMM: 10,
       widthMM: 10,
@@ -137,7 +137,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   fixture.movement.status = "AWAITING_VERIFICATION";
-  fixture.movement.part.sku = "SENSOR";
+  fixture.movement.part.sku = "ELECTRONICS-SENSOR-MODULE-MIXED";
   fixture.movement.newQuantity = null;
   fixture.movement.previousQuantity = 12;
   fixture.movement.destinationLocation = "OUTPUT";
@@ -161,7 +161,7 @@ async function startCheck() {
   return { completion };
 }
 
-function processFrame(totalWeightGrams = 207, workflowAttempt = 0) {
+function processFrame(totalWeightGrams = 122.6, workflowAttempt = 0) {
   const now = new Date();
   return processPutawayCameraCapture("capture-1", {
     imageBuffer: Buffer.from("frame"),
@@ -178,6 +178,18 @@ function processFrame(totalWeightGrams = 207, workflowAttempt = 0) {
 }
 
 describe("physical verification state machine", () => {
+  it("counts B5-01 sensor modules from their 1.56 g unit weight", async () => {
+    fixture.movement.part.sku = "ELECTRONICS-SENSOR-MODULE-MIXED";
+    const { completion } = await startCheck();
+    // Vision reports 10; the scale's 14.04 g net represents 9 modules.
+    expect(await processFrame(121.04)).toMatchObject({
+      outcome: "REVIEW_DECREASE", observedQuantity: 9, quantitySource: "SCALE",
+      tareWeightGrams: 107, unitWeightGrams: 1.56, netWeightGrams: 14.04,
+    });
+    await vi.advanceTimersByTimeAsync(5_500);
+    await expect(completion).resolves.toMatchObject({ quantity: 9, inventoryUpdateApproved: true });
+    expect(fixture.movement.newQuantity).toBe(9);
+  });
   it("saves and accepts the scale count instead of the spacer camera count", async () => {
     fixture.movement.part.sku = "HARDWARE-ROUND-SPACER";
     fixture.movement.previousQuantity = 30;
@@ -195,13 +207,13 @@ describe("physical verification state machine", () => {
     await expect(completion).resolves.toMatchObject({ quantity: 28, inventoryUpdateApproved: true });
     expect(fixture.movement.newQuantity).toBe(28);
   });
-  it("automatically verifies B4-01's matching count with small per-kit weight variation", async () => {
+  it("uses the supplied item weight instead of a previously derived movement weight", async () => {
     fixture.movement.previousQuantity = 10;
     const { completion } = await startCheck();
     fixture.database.movement.findFirst.mockResolvedValueOnce({
       unitWeightGrams: 16.251,
     });
-    expect((await processFrame(293.15)).outcome).toBe("READY");
+    expect((await processFrame(122.6)).outcome).toBe("READY");
     await vi.advanceTimersByTimeAsync(5_500);
     await expect(completion).resolves.toMatchObject({
       quantity: 10,
@@ -224,7 +236,7 @@ describe("physical verification state machine", () => {
     fixture.database.cameraCaptureJob.findFirst.mockResolvedValueOnce({
       id: "camera-1",
       requestedAt: now,
-      totalWeightGrams: 207,
+      totalWeightGrams: 122.6,
       weightSource: "SCALE",
     });
     await vi.advanceTimersByTimeAsync(300);
@@ -253,7 +265,7 @@ describe("physical verification state machine", () => {
     fixture.database.cameraCaptureJob.findFirst.mockResolvedValueOnce({
       id: "camera-1",
       requestedAt: new Date(now.getTime() + 1_000),
-      totalWeightGrams: 207,
+      totalWeightGrams: 122.6,
       weightSource: "SCALE",
     });
     await vi.advanceTimersByTimeAsync(2_000);
@@ -289,7 +301,7 @@ describe("physical verification state machine", () => {
 
   it("still rejects an old retry attempt without analyzing or changing stock", async () => {
     const { completion } = await startCheck();
-    await expect(processFrame(207, 99)).rejects.toThrow(
+    await expect(processFrame(122.6, 99)).rejects.toThrow(
       "stale or no longer pending",
     );
     expect(fixture.inspect).not.toHaveBeenCalled();
@@ -313,7 +325,7 @@ describe("physical verification state machine", () => {
     fixture.database.cameraCaptureJob.findFirst.mockResolvedValueOnce({
       id: "camera-1",
       requestedAt: fixture.capture.capturedAt as Date,
-      totalWeightGrams: 207,
+      totalWeightGrams: 122.6,
       weightSource: "SCALE",
     });
     expect(
@@ -385,9 +397,9 @@ describe("physical verification state machine", () => {
     });
   });
 
-  it("keeps stock unapproved when camera and scale disagree", async () => {
+  it("keeps stock unapproved when the scale count is ambiguous", async () => {
     const { completion } = await startCheck();
-    expect((await processFrame(277)).outcome).toBe("LOW_CONFIDENCE");
+    expect((await processFrame(123.38)).outcome).toBe("LOW_CONFIDENCE");
     await vi.advanceTimersByTimeAsync(6_000);
     expect(fixture.movement.newQuantity).toBeNull();
     await decidePutawayCapture("capture-1", "CANCEL", "session-1");
