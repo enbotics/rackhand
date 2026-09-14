@@ -6,6 +6,7 @@ import type { Shot } from "@/lib/shots-db";
 import type { BinView } from "@/lib/warehouse/dashboard-types";
 import { groupBinsInShelfOrder } from "@/lib/warehouse/bin-layout";
 import { evaluatePutawayDestination } from "@/lib/warehouse/putaway-destination";
+import { isSimulationEligibleBin } from "@/lib/warehouse/simulation-policy";
 import type {
   GuidedGantryStatus,
   GuidedPutawayResult,
@@ -273,7 +274,7 @@ export function GuidedPutawayDialog({
     [destinationChoices],
   );
   const compatibleChoices = destinationChoices.filter(
-    (choice) => choice.evaluation?.eligible,
+    (choice) => choice.evaluation?.eligible && isSimulationEligibleBin(choice.bin.code),
   );
   const recommendedChoice =
     compatibleChoices.find((choice) => choice.evaluation?.alreadyStoresPart) ??
@@ -676,7 +677,8 @@ export function GuidedPutawayDialog({
                         {row.bins.map((bin) => {
                           const choice = choiceByBinId.get(bin.binId);
                           const evaluation = choice?.evaluation;
-                          const eligible = evaluation?.eligible === true;
+                          const simulationAllowed = isSimulationEligibleBin(bin.code);
+                          const eligible = evaluation?.eligible === true && simulationAllowed;
                           const chosen = selectedChoice?.bin.binId === bin.binId;
                           const isDefault = recommendedChoice?.bin.binId === bin.binId;
                           return (
@@ -687,7 +689,7 @@ export function GuidedPutawayDialog({
                               onClick={() => setSelectedBin(bin.code)}
                               aria-pressed={chosen}
                               aria-label={`${bin.code}, ${
-                                evaluation ? destinationReasonLabel(evaluation.reason) : bin.status
+                                !simulationAllowed ? "Unavailable in simulation" : evaluation ? destinationReasonLabel(evaluation.reason) : bin.status
                               }, capacity ${evaluation?.currentQuantity ?? bin.totalQuantity} of ${bin.capacity}`}
                               className={`flex min-h-[4.75rem] flex-col items-start justify-center rounded-lg border px-2.5 py-2 text-left transition-all ${
                                 chosen
@@ -706,7 +708,7 @@ export function GuidedPutawayDialog({
                                 )}
                               </span>
                               <span className="mt-1 text-[9px]">
-                                {evaluation?.alreadyStoresPart && eligible
+                                {!simulationAllowed ? "Unavailable in simulation" : evaluation?.alreadyStoresPart && eligible
                                   ? "Same item"
                                   : evaluation
                                     ? destinationReasonLabel(evaluation.reason)

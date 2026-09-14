@@ -8,21 +8,23 @@ expected results, not a claim that a live hardware test has already passed.
 
 ## Quick browser walkthrough
 
-For an already configured demo application:
+The public workspace is locked to **Simulation**. Prod mode cannot be enabled
+because it can trigger real hardware. Only **B1-01** and **B1-02** may move.
+Physical tests below are reference procedures and are unavailable in this build.
 
-1. Open the **Workspace** at `/`.
-2. Set **Audit capture mode** to **Simulation**.
-3. Enter: **RackHand, prep the parts for the control module.**
-4. Click **Start job**, or let the displayed simulation countdown start it.
-5. Follow each bin through checkout and return. At B6-03, click
-   **Removed · retry check** when the unexpected-object warning appears.
-6. Confirm that the final report says all three bins were checked and returned.
-7. Open **History** to inspect movements and **Activity** to inspect tool activity.
+1. Open the **Workspace** at `/` and confirm **GANTRY MODE: SIMULATION** in the header.
+2. Confirm the floating simulation dialog opens automatically, explains the lock, and shows both bins and suggested prompts. Dismiss it with **Got it**; use **Simulation · Locked** to reopen it.
+3. Enter **Bring me bin B1-01**, approve the request in chat, and follow the simulation comparison.
+4. Enter **Return bin B1-01 to its shelf**, then approve the return.
+5. Repeat with **Bring me bin B1-02** and **Return bin B1-02 to its shelf**.
+6. Request **Bring me bin B3-03**. Expect an explanation that only B1-01 and B1-02 may move, without a mode-switch suggestion or movement.
+7. Open **History** and **Activity** to inspect the results.
 
-This walkthrough needs stocked B1-01, B1-02 bins as described below.
-The scenario uses scripted images and evidence and takes one simulated item
-from each bin. It demonstrates workflow behavior; production sensing is tested
-separately.
+Both allowed bins must be stocked. B1-01 uses curated photos; B1-02 uses a
+labeled illustration of recorded inventory. Parts without a configured item
+weight keep their recorded quantity. No weight or physical quantity is inferred
+from these illustrations. The earlier three-bin control-module scenario is
+unavailable under this lock.
 
 ## Prepare the application
 
@@ -54,31 +56,24 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). Confirm that Workspace,
 Scan, History, and Activity open without a loading or connection error.
-Changing the capture-mode toggle affects the server process; finish the current
-job before switching. Gantry motion remains simulated in both capture modes.
+The mode badge opens the simulation guide; it cannot change capture mode.
+Gantry and warehouse capture remain in Simulation across restarts.
 
 ### Demo stock prerequisites
 
-Use these already registered parts in their intended bins. Each demo bin must
-be **OCCUPIED**, contain exactly one SKU, and have sufficient stock. The gantry
-must be idle and the checkout station clear.
+B1-01 and B1-02 must each be **OCCUPIED**, contain exactly one registered SKU,
+and have positive recorded stock. The gantry must be idle and the checkout
+station clear. Record starting quantities before each run; the application does
+not reset inventory automatically.
 
-| Bin   | Part                                | Suggested starting count | Known item weight |
-| ----- | ----------------------------------- | -----------------------: | ----------------: |
-| B4-01 | V-groove bearing wheel hardware kit |                       11 |              19 g |
-| B3-03 | `DRIVER-MKS-TMC2160-OC-V1`          |                       12 |           47.12 g |
-| B6-03 | `HARDWARE-ROUND-SPACER`             |                       20 |             6.2 g |
-| B5-01 | `ELECTRONICS-SENSOR-MODULE-MIXED`   |                       20 |            1.56 g |
+| Bin | Evidence | Quantity for an unweighed demo part |
+| --- | --- | --- |
+| B1-01 | Curated local photos | Preserved recorded quantity |
+| B1-02 | Labeled inventory illustration | Preserved recorded quantity |
 
-B5-01 is used for the separate sensor/plan tests. The three-bin browser scenario
-uses the first three bins. Suggested counts are fixtures; the application does
-not reset stock to them automatically. Record actual starting quantities before
-each run. For already stocked bins, the bin dialog's **Edit quantity** control
-can establish the intended recorded fixture in the demo database.
-
-For the 19 g bearing mapping, use the exact catalog name shown above. It does
-not apply to every bearing model. Item weights are supplied in
-[putaway-weight.ts](../src/lib/warehouse/putaway-weight.ts).
+The physical reference procedures below use the supplied item weights from
+[putaway-weight.ts](../src/lib/warehouse/putaway-weight.ts). They cannot be run
+through this locked public workspace.
 
 ## Test 1: read-only agent request
 
@@ -100,39 +95,26 @@ curl -s -X POST http://localhost:3000/api/agent \
 **Pass:** The response contains an agent message and a status tool result,
 rather than a credential/model error.
 
-## Test 2: three-bin browser preparation
+## Test 2: allowed-bin simulation and lock
 
-1. Confirm **Simulation** mode and the demo stock prerequisites.
-2. Enter the exact prompt: **RackHand, prep the parts for the control module.**
-3. Confirm the preparation card contains three selected bins.
-4. Click **Start job**, or let the displayed countdown authorize the demo.
-5. Watch each checkout comparison, automatic acceptance, and return.
-6. On B6-03's first checkout, observe the uncertainty warning. Click
-   **Removed · retry check** to simulate removing the unexpected object.
-7. Wait for the final completion report, then inspect each bin and History.
+Follow the quick browser walkthrough above. Check each allowed bin separately:
+checkout completes after approval, the comparison identifies simulated evidence,
+and return restores the bin to its original shelf slot. A demo part without a
+known item weight retains its recorded quantity and has no invented weight.
 
-| Stage                | Expected result with the suggested fixtures                                              |
-| -------------------- | ---------------------------------------------------------------------------------------- |
-| B4-01 checkout       | Recorded 11; verified 11.                                                                |
-| B4-01 return         | Remaining 10; bin returned to its original slot.                                         |
-| B3-03 checkout       | Recorded 12; verified 10; inventory mismatch shown and reconciled.                       |
-| B3-03 return         | Remaining 9; bin returned to its original slot.                                          |
-| B6-03 first checkout | Unexpected object; result stays open and cannot be accepted as verified.                 |
-| B6-03 retry          | Verified 20 after the retry.                                                             |
-| B6-03 return         | Remaining 19; bin returned to its original slot.                                         |
-| Final report         | All three bins checked and returned; recorded, verified, and remaining quantities shown. |
+Open the floating guide with a click or tap. Confirm that Escape, its close
+button, and clicking outside dismiss it. It should remain visible above the
+rack panel rather than being clipped by the rack image.
 
-If using different starting stock, B4-01 and B6-03 verify their recorded counts.
-B3-03 verifies two fewer when its recorded count is at least three. Each return
-has one fewer than its checkout count. Require at least three in B3-03 for the
-mismatch example above.
+Request movement of B3-03 and confirm no gantry operation or bin reservation
+starts. A direct POST of `{"mode":"PROD"}` to
+`/api/warehouse/audit-capture-mode` must return HTTP 403 with
+`simulation_mode_locked`. GET must still report `SIMULATION`, `locked: true`,
+and eligible bins `B1-01`, `B1-02`.
 
-**Pass:** Bins run sequentially, the unexpected-object step requires retry,
-trusted comparisons continue automatically, and the final stock matches the
-verified remainder. Simulation is identified as simulation.
-
-Repeat runs consume additional simulated stock. Restore fixtures deliberately
-in the demo database before comparing another run to the table.
+**Pass:** Both allowed bins complete simulated checkout and return. Other bins
+cannot move, and neither UI input, API requests nor environment settings enable
+Prod mode.
 
 ## Test 3: cancel before execution
 
@@ -312,6 +294,6 @@ For each manual test, record:
 - Pass/fail, screenshot, and relevant History/Activity entries.
 - Whether evidence was scripted or measured by the connected Pi/scale.
 
-A browser-demo pass requires the complete three-bin job and correct remainders.
+A browser-demo pass requires both allowed-bin workflows and a working simulation lock.
 A production-verification pass requires fresh measured evidence, 107 g tare,
 known item weights, correct scale-derived quantities, and safe failure behavior.

@@ -102,6 +102,13 @@ vi.mock("@/lib/warehouse/db", () => ({
     ),
   },
 }));
+// Exercise the physical verifier independently of the public workspace lock.
+// Simulation-lock tests cover the actual API and movement restrictions.
+vi.mock("@/lib/warehouse/audit-capture-mode", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/warehouse/audit-capture-mode")>("@/lib/warehouse/audit-capture-mode")),
+  getAuditCaptureMode: () => "PROD",
+  isOutOfSimulationScope: () => false,
+}));
 vi.mock("@/lib/camera/capture-job-service", () => ({
   createCaptureJob: async () => ({ id: "camera-1" }),
   captureProcessingHeartbeatMilliseconds: () => 1_000,
@@ -137,6 +144,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   fixture.movement.status = "AWAITING_VERIFICATION";
+  fixture.movement.sourceBin.code = "B5-01";
   fixture.movement.part.sku = "ELECTRONICS-SENSOR-MODULE-MIXED";
   fixture.movement.newQuantity = null;
   fixture.movement.previousQuantity = 12;
@@ -178,6 +186,27 @@ function processFrame(totalWeightGrams = 122.6, workflowAttempt = 0) {
 }
 
 describe("physical verification state machine", () => {
+  it("lets the locked demo preserve an unweighed bin count without inventing weight or using a camera count", async () => {
+    fixture.movement.sourceBin.code = "B1-02";
+    fixture.movement.part.sku = "UNWEIGHED-BRACKET";
+    const { completion } = await startCheck();
+    const now = new Date();
+    const result = await processPutawayCameraCapture("capture-1", {
+      imageBuffer: Buffer.from("simulated-frame"), evidenceUrl: "/audit-simulation/B1-02/frame.png",
+      imageWidth: 520, imageHeight: 360, capturedAt: now, requestedAt: now,
+      workflowAttempt: 0, captureMode: "SIMULATION",
+      simulatedInspection: { countable: true, observedCount: 2, countConfidence: 1,
+        expectedPartPresent: true, foreignObjectSuspected: false, foreignObjects: [], occlusion: "NONE", notes: "Demo illustration" },
+    });
+    expect(result).toMatchObject({ outcome: "READY", expectedQuantity: 12, observedQuantity: 12,
+      quantitySource: "SIMULATION", totalWeightGrams: null, unitWeightGrams: null,
+      notes: expect.stringContaining("preserves recorded quantity") });
+    expect(fixture.inspect).not.toHaveBeenCalled();
+    await decidePutawayCapture("capture-1", "ACCEPT");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await completion).toMatchObject({ quantity: 12 });
+  });
+
   it("does not learn an unknown part's item weight or accept its camera count", async () => {
     fixture.movement.part.sku = "UNKNOWN";
     const { completion } = await startCheck();

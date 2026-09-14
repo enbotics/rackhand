@@ -31,6 +31,7 @@ import type {
 } from "./guided-putaway-types";
 import { uploadPutawayPhoto } from "./storage";
 import { requirePutawayVerification } from "./putaway-verification";
+import { isOutOfSimulationScope, SimulationScopeError } from "./audit-capture-mode";
 
 const QUANTITY = 1;
 
@@ -314,6 +315,9 @@ export async function prepareGuidedPutaway(
   const scanResult = input?.scanResult;
   const scanId =
     typeof scanResult?.scanId === "string" ? scanResult.scanId : "";
+  if (typeof input?.destinationBinCode === "string" && isOutOfSimulationScope(input.destinationBinCode)) {
+    return failure("simulation_scope_violation", new SimulationScopeError(input.destinationBinCode).message, { scanId });
+  }
   const issues = collectScanResultIssues(scanResult);
   if (issues.length > 0) {
     return failure(
@@ -503,6 +507,9 @@ export async function presentGuidedPutawayBin(
     return failure("movement_not_found", "That guided putaway does not exist.");
   }
   const info = context(loaded, loaded.part, loaded.destinationBin);
+  if (isOutOfSimulationScope(loaded.destinationBin.code)) {
+    return failure("simulation_scope_violation", new SimulationScopeError(loaded.destinationBin.code).message, info);
+  }
   const claimed = await prisma.movement.updateMany({
     where: { id: loaded.id, status: "VALIDATED" },
     data: { status: "PRESENTING" },
@@ -612,6 +619,9 @@ export async function returnGuidedPutawayBin(
     return failure("movement_not_found", "That guided putaway does not exist.");
   }
   const info = context(loaded, loaded.part, loaded.destinationBin);
+  if (isOutOfSimulationScope(loaded.destinationBin.code)) {
+    return failure("simulation_scope_violation", new SimulationScopeError(loaded.destinationBin.code).message, info);
+  }
   const placed = decision.placed;
 
   let verification:

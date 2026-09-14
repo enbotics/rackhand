@@ -542,7 +542,7 @@
         ><a href="#prepare-the-application">Prepare the application</a
         ><a href="#test-1-read-only-agent-request">1. read-only agent request</a
         ><a href="#test-2-three-bin-browser-preparation"
-          >2. three-bin browser preparation</a
+          >2. allowed-bin simulation and lock</a
         ><a href="#test-3-cancel-before-execution">3. cancel before execution</a
         ><a href="#test-4-production-scale-counting-and-engineer-consumption"
           >4. production scale counting and engineer consumption</a
@@ -568,41 +568,17 @@
         </p>
         <section id="quick-browser-walkthrough">
           <h2>Quick browser walkthrough</h2>
-          <p>For an already configured demo application:</p>
+          <p><strong>The public workspace is locked to Simulation.</strong> Prod can trigger real hardware, so it cannot be enabled here. Only <strong>B1-01</strong> and <strong>B1-02</strong> may move. Physical procedures elsewhere in this guide are unavailable in this build.</p>
           <ol>
-            <li>Open the <strong>Workspace</strong> at <code>/</code>.</li>
-            <li>
-              Set <strong>Audit capture mode</strong> to
-              <strong>Simulation</strong>.
-            </li>
-            <li>
-              Enter:
-              <strong>RackHand, prep the parts for the control module.</strong>
-            </li>
-            <li>
-              Click <strong>Start job</strong>, or let the displayed simulation
-              countdown start it.
-            </li>
-            <li>
-              Follow each bin through checkout and return. At B1-01, click
-              <strong>Removed · retry check</strong> when the unexpected-object
-              warning appears.
-            </li>
-            <li>
-              Confirm that the final report says all three bins were checked and
-              returned.
-            </li>
-            <li>
-              Open <strong>History</strong> to inspect movements and
-              <strong>Activity</strong> to inspect tool activity.
-            </li>
+            <li>Open <strong>Workspace</strong> at <code>/</code> and confirm <strong>GANTRY MODE: SIMULATION</strong> in the header.</li>
+            <li>Confirm the floating simulation dialog opens automatically. Check the lock explanation, allowed bins and suggested prompts. Dismiss it with <strong>Got it</strong>; use <strong>Simulation · Locked</strong> to reopen it.</li>
+            <li>Ask <strong>Bring me bin B1-01</strong>, approve the request in chat, and follow the simulation comparison.</li>
+            <li>Ask <strong>Return bin B1-01 to its shelf</strong> and approve the return.</li>
+            <li>Repeat with <strong>Bring me bin B1-02</strong> and <strong>Return bin B1-02 to its shelf</strong>.</li>
+            <li>Ask <strong>Bring me bin B3-03</strong>. Expect the allowed-bin explanation without movement or a suggestion to enable Prod.</li>
+            <li>Inspect <strong>History</strong> and <strong>Activity</strong>.</li>
           </ol>
-          <p>
-            This walkthrough needs stocked B1-01 and B1-02 bins as described
-            below. The scenario uses scripted images and evidence and takes one
-            simulated item from each bin. It demonstrates workflow behavior;
-            production sensing is tested separately.
-          </p>
+          <p>Both allowed bins must be stocked. B1-01 uses curated photos; B1-02 uses a labeled illustration. Parts without a configured item weight keep their recorded quantity, without an invented weight or measured count. The earlier three-bin control-module scenario is unavailable.</p>
         </section>
         <section id="prepare-the-application">
           <h2>Prepare the application</h2>
@@ -646,70 +622,12 @@ PUTAWAY_CONTAINER_TARE_GRAMS=107</code></pre>
           <p>
             Open <a href="http://localhost:3000">http://localhost:3000</a>.
             Confirm that Workspace, Scan, History, and Activity open without a
-            loading or connection error. Changing the capture-mode toggle
-            affects the server process; finish the current job before switching.
-            Gantry motion remains simulated in both capture modes.
+            loading or connection error. The mode badge opens the simulation guide; it cannot change capture mode. Gantry and warehouse capture remain in Simulation across restarts.
           </p>
           <h3 id="demo-stock-prerequisites">Demo stock prerequisites</h3>
-          <p>
-            Use these already registered parts in their intended bins. Each demo
-            bin must be <strong>OCCUPIED</strong>, contain exactly one SKU, and
-            have sufficient stock. The gantry must be idle and the checkout
-            station clear.
-          </p>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Bin</th>
-                  <th scope="col">Part</th>
-                  <th scope="col">Suggested starting count</th>
-                  <th scope="col">Known item weight</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>B4-01</td>
-                  <td>V-groove bearing wheel hardware kit</td>
-                  <td>11</td>
-                  <td>19 g</td>
-                </tr>
-                <tr>
-                  <td>B3-03</td>
-                  <td><code>DRIVER-MKS-TMC2160-OC-V1</code></td>
-                  <td>12</td>
-                  <td>47.12 g</td>
-                </tr>
-                <tr>
-                  <td>B6-03</td>
-                  <td><code>HARDWARE-ROUND-SPACER</code></td>
-                  <td>20</td>
-                  <td>6.2 g</td>
-                </tr>
-                <tr>
-                  <td>B5-01</td>
-                  <td><code>ELECTRONICS-SENSOR-MODULE-MIXED</code></td>
-                  <td>20</td>
-                  <td>1.56 g</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p>
-            B5-01 is used for the separate sensor/plan tests. The three-bin
-            browser scenario uses the first three bins. Suggested counts are
-            fixtures; the application does not reset stock to them
-            automatically. Record actual starting quantities before each run.
-            For already stocked bins, the bin dialog&#x27;s
-            <strong>Edit quantity</strong> control can establish the intended
-            recorded fixture in the demo database.
-          </p>
-          <p>
-            For the 19 g bearing mapping, use the exact catalog name shown
-            above. It does not apply to every bearing model. Item weights are
-            supplied in
-            <a href="#demo-stock-prerequisites">putaway-weight.ts</a>.
-          </p>
+          <p>B1-01 and B1-02 must each be <strong>OCCUPIED</strong>, contain exactly one registered SKU, and have positive recorded stock. The gantry must be idle and the checkout station clear. Record starting quantities; inventory is not reset automatically.</p>
+          <div class="table-scroll"><table><thead><tr><th>Bin</th><th>Evidence</th><th>Unweighed demo quantity</th></tr></thead><tbody><tr><td>B1-01</td><td>Curated local photos</td><td>Preserved recorded quantity</td></tr><tr><td>B1-02</td><td>Labeled inventory illustration</td><td>Preserved recorded quantity</td></tr></tbody></table></div>
+          <p>The physical reference procedures below cannot be run through this locked public workspace.</p>
         </section>
         <section id="test-1-read-only-agent-request">
           <h2><span class="test-number">01</span>read-only agent request</h2>
@@ -742,108 +660,11 @@ PUTAWAY_CONTAINER_TARE_GRAMS=107</code></pre>
           </p>
         </section>
         <section id="test-2-three-bin-browser-preparation">
-          <h2>
-            <span class="test-number">02</span>three-bin browser preparation
-          </h2>
-          <ol>
-            <li>
-              Confirm <strong>Simulation</strong> mode and the demo stock
-              prerequisites.
-            </li>
-            <li>
-              Enter the exact prompt:
-              <strong>RackHand, prep the parts for the control module.</strong>
-            </li>
-            <li>Confirm the preparation card contains three selected bins.</li>
-            <li>
-              Click <strong>Start job</strong>, or let the displayed countdown
-              authorize the demo.
-            </li>
-            <li>
-              Watch each checkout comparison, automatic acceptance, and return.
-            </li>
-            <li>
-              On B6-03&#x27;s first checkout, observe the uncertainty warning.
-              Click <strong>Removed · retry check</strong> to simulate removing
-              the unexpected object.
-            </li>
-            <li>
-              Wait for the final completion report, then inspect each bin and
-              History.
-            </li>
-          </ol>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Stage</th>
-                  <th scope="col">
-                    Expected result with the suggested fixtures
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>B4-01 checkout</td>
-                  <td>Recorded 11; verified 11.</td>
-                </tr>
-                <tr>
-                  <td>B4-01 return</td>
-                  <td>Remaining 10; bin returned to its original slot.</td>
-                </tr>
-                <tr>
-                  <td>B3-03 checkout</td>
-                  <td>
-                    Recorded 12; verified 10; inventory mismatch shown and
-                    reconciled.
-                  </td>
-                </tr>
-                <tr>
-                  <td>B3-03 return</td>
-                  <td>Remaining 9; bin returned to its original slot.</td>
-                </tr>
-                <tr>
-                  <td>B6-03 first checkout</td>
-                  <td>
-                    Unexpected object; result stays open and cannot be accepted
-                    as verified.
-                  </td>
-                </tr>
-                <tr>
-                  <td>B6-03 retry</td>
-                  <td>Verified 20 after the retry.</td>
-                </tr>
-                <tr>
-                  <td>B6-03 return</td>
-                  <td>Remaining 19; bin returned to its original slot.</td>
-                </tr>
-                <tr>
-                  <td>Final report</td>
-                  <td>
-                    All three bins checked and returned; recorded, verified, and
-                    remaining quantities shown.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p>
-            If using different starting stock, B4-01 and B6-03 verify their
-            recorded counts. B3-03 verifies two fewer when its recorded count is
-            at least three. Each return has one fewer than its checkout count.
-            Require at least three in B3-03 for the mismatch example above.
-          </p>
-          <p class="pass-result">
-            <strong>Pass:</strong> Bins run sequentially, the unexpected-object
-            step requires retry, trusted comparisons continue automatically, and
-            the final stock matches the verified remainder. Simulation is
-            identified as simulation.
-          </p>
-          <p>
-            Repeat runs consume additional simulated stock. Restore fixtures
-            deliberately in the demo database before comparing another run to
-            the table.
-          </p>
+          <h2><span class="test-number">02</span>allowed-bin simulation and lock</h2>
+          <p>Follow the quick walkthrough for B1-01 and B1-02 separately. Check that simulated checkout and return complete after approval, each bin returns to its original slot, and unweighed demo parts keep their recorded quantity.</p>
+          <p>Open the floating guide by click or tap. Close it with Escape, its close button, or an outside click. Confirm it is not clipped by the rack panel.</p>
+          <p>Other bins must not move or become reserved. POST <code>{"mode":"PROD"}</code> to <code>/api/warehouse/audit-capture-mode</code> must return HTTP 403 with <code>simulation_mode_locked</code>. GET must still return Simulation, a locked status and both allowed bins.</p>
+          <p class="pass-result"><strong>Pass:</strong> Both allowed bins complete the simulated workflow; UI, API and environment settings cannot enable Prod.</p>
         </section>
         <section id="test-3-cancel-before-execution">
           <h2><span class="test-number">03</span>cancel before execution</h2>
@@ -1246,8 +1067,7 @@ npm test</code></pre>
             </li>
           </ul>
           <p>
-            A browser-demo pass requires the complete three-bin job and correct
-            remainders. A production-verification pass requires fresh measured
+            A browser-demo pass requires both allowed-bin workflows and a working simulation lock. A production-verification pass requires fresh measured
             evidence, 107 g tare, known item weights, correct scale-derived
             quantities, and safe failure behavior.
           </p>

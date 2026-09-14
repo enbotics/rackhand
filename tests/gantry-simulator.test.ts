@@ -425,16 +425,11 @@ describe("controller factory", () => {
     expect(getGantryMode()).toBe("SIMULATION");
   });
 
-  it("refuses hardware mode — no hardware controller exists yet", () => {
+  it("keeps the public demo simulated even when hardware is configured", async () => {
     resetGantryController();
     process.env.GANTRY_MODE = "hardware";
-    expect(() => getGantryController()).toThrow(GantryError);
-    try {
-      getGantryController();
-    } catch (err) {
-      expect((err as GantryError).code).toBe("gantry_mode_unsupported");
-      expect((err as GantryError).status).toBe(501);
-    }
+    expect(getGantryMode()).toBe("SIMULATION");
+    expect((await getGantryController().getStatus()).mode).toBe("SIMULATION");
   });
 });
 

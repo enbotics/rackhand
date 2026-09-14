@@ -667,7 +667,7 @@ export function AuditCaptureDialog() {
               value={result?.expectedQuantity ?? "—"}
             />
             <Metric
-              label={canAccept ? result?.isReturn ? "Remaining" : "Counted" : "Estimated"}
+              label={simulation ? "Simulated count" : canAccept ? result?.isReturn ? "Remaining" : "Counted" : "Estimated"}
               value={result?.observedQuantity ?? "—"}
               tone={retrieving && result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
             />
@@ -677,6 +677,9 @@ export function AuditCaptureDialog() {
               tone={canAccept ? "ok" : "warn"}
             />
           </div>
+          {simulation && result?.totalWeightGrams == null && result?.notes && (
+            <p className="text-xs leading-relaxed text-ink-faint">{result.notes}</p>
+          )}
           {result?.totalWeightGrams != null && (
             <div>
               {result.weightSource === "FALLBACK" && (

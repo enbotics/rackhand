@@ -542,7 +542,7 @@ export async function executeBinAudit(
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "simulation_scope_violation", "SIMULATION");
   }
   const simulated = isAuditSimulationMode() && isSimulationEligibleBin(bin.code);
-  const simulatedBaseline = simulated ? await simulationBaselineUrl(bin.code) : null;
+  const simulatedBaseline = simulated ? await simulationBaselineUrl(bin.code, audit.expectedQuantity) : null;
   if (simulated && (!simulatedBaseline || !await hasSimulationEvidence(bin.code))) {
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_simulation_no_evidence", "SIMULATION");
   }
@@ -833,7 +833,7 @@ export async function requestAuditCameraCapture(
     || (isAuditSimulationMode() && isSimulationEligibleBin(binCode));
   if (simulated) {
     markSimulatedWorkflowCapture(id);
-    const sample = await nextSimulationEvidence(binCode);
+    const sample = await nextSimulationEvidence(binCode, capture.expectedQuantity);
     const metadata = await sharp(sample.bytes).metadata();
     const requestedAt = new Date();
     const result = await processAuditCameraCapture(id, {
@@ -845,6 +845,7 @@ export async function requestAuditCameraCapture(
       requestedAt,
       workflowAttempt: capture.attempt,
       captureMode: "SIMULATION",
+      simulatedInspection: sample.simulatedInspection,
     });
     return { captureMode: "SIMULATION", result };
   }
@@ -877,6 +878,7 @@ export async function processAuditCameraCapture(id: string, input: {
   requestedAt: Date;
   workflowAttempt: number;
   captureMode?: "PROD" | "SIMULATION";
+  simulatedInspection?: AuditVisionResult;
   totalWeightGrams?: number | null;
   weightSource?: string | null;
 }): Promise<AuditCaptureView> {
@@ -922,7 +924,8 @@ export async function processAuditCameraCapture(id: string, input: {
     }, captureProcessingHeartbeatMilliseconds());
     let vision: AuditVisionResult;
     try {
-      vision = await inspectBinImage(input.imageBuffer, {
+      vision = captureMode === "SIMULATION" && isSimulationEligibleBin(binAudit.bin.code)
+        && input.simulatedInspection ? input.simulatedInspection : await inspectBinImage(input.imageBuffer, {
         binCode: binAudit.bin.code,
         sku: part?.sku ?? null,
         canonicalName: part?.canonicalName ?? null,

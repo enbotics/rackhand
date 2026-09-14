@@ -34,6 +34,7 @@ import { scheduleSimulationRevert } from "./simulation-revert";
 import { SimulationEvidenceError } from "./simulation-evidence";
 import { getContextWorkflowSessionId, getContextBrowserScenario } from "@/lib/agents/request-context";
 import { recordControlModuleReturn } from "./control-module-scenario";
+import { isOutOfSimulationScope, SimulationScopeError } from "./audit-capture-mode";
 
 function logPutaway(fields: string): void {
   if (process.env.NODE_ENV !== "test") console.log(`[putaway] ${fields}`);
@@ -101,7 +102,7 @@ async function planDestination(
       inventory: { some: { partId: part.id, quantity: { gt: 0 } } },
     },
   });
-  const checkedOutBin = checkedOutBins.sort(compareBinsInShelfOrder)[0] ?? null;
+  const checkedOutBin = checkedOutBins.filter((candidate) => !isOutOfSimulationScope(candidate.code)).sort(compareBinsInShelfOrder)[0] ?? null;
 
   if (requestedCode !== undefined) {
     bin = await getBinByCode(requestedCode);
@@ -114,7 +115,7 @@ async function planDestination(
     if (bin && observedQuantity > bin.capacity) {
       const destinations = await listPutawayDestinations(part.id, observedQuantity);
       const emptyDestination = destinations.find(
-        (candidate) => candidate.eligible && candidate.status === "AVAILABLE" && candidate.currentQuantity === 0,
+        (candidate) => candidate.eligible && !isOutOfSimulationScope(candidate.code) && candidate.status === "AVAILABLE" && candidate.currentQuantity === 0,
       );
       bin = emptyDestination ? await getBinByCode(emptyDestination.code) : null;
       if (!bin) {
@@ -127,8 +128,8 @@ async function planDestination(
     } else if (!bin) {
       const destinations = await listPutawayDestinations(part.id, observedQuantity);
       const chosen =
-        destinations.find((candidate) => candidate.eligible && candidate.alreadyStoresPart) ??
-        destinations.find((candidate) => candidate.eligible);
+        destinations.find((candidate) => candidate.eligible && !isOutOfSimulationScope(candidate.code) && candidate.alreadyStoresPart) ??
+        destinations.find((candidate) => candidate.eligible && !isOutOfSimulationScope(candidate.code));
       if (!chosen) {
         return fail(
           scanId,
@@ -141,6 +142,9 @@ async function planDestination(
   }
 
   if (!bin) return fail(scanId, "bin_not_found", "The selected destination no longer exists.");
+  if (isOutOfSimulationScope(bin.code)) {
+    return fail(scanId, "simulation_scope_violation", new SimulationScopeError(bin.code).message);
+  }
   const contents = await binContents(bin.id);
   const baselineQuantity = contents.reduce((sum, row) => sum + row.quantity, 0);
 
@@ -227,6 +231,9 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
     typeof (scanResult as { scanId?: unknown } | undefined)?.scanId === "string"
       ? (scanResult as { scanId: string }).scanId
       : "";
+  if (typeof input?.destinationBinCode === "string" && isOutOfSimulationScope(input.destinationBinCode)) {
+    return fail(scanId, "simulation_scope_violation", new SimulationScopeError(input.destinationBinCode).message);
+  }
 
   const issues = collectScanResultIssues(scanResult);
   if (issues.length > 0) {
@@ -587,8 +594,11 @@ export interface CheckedOutReturnRequest {
 export async function returnCheckedOutBin(
   input: CheckedOutReturnRequest,
 ): Promise<PutawayResult> {
-  await recoverAbandonedPutaways();
   const requestedCode = input.binCode?.trim().toUpperCase();
+  if (requestedCode && isOutOfSimulationScope(requestedCode)) {
+    return fail("", "simulation_scope_violation", new SimulationScopeError(requestedCode).message);
+  }
+  await recoverAbandonedPutaways();
 
   const reservedReturnMovements = requestedCode
     ? []
@@ -689,6 +699,9 @@ export async function returnCheckedOutBin(
     bin = checkedOutBins[0];
   }
 
+  if (isOutOfSimulationScope(bin.code)) {
+    return fail("", "simulation_scope_violation", new SimulationScopeError(bin.code).message);
+  }
   const inventoryRow = bin.inventory[0];
   if (!inventoryRow || bin.inventory.length !== 1) {
     return fail("", "inventory_conflict", `Checked-out bin ${bin.code} has no preserved baseline to return.`);

@@ -13,6 +13,7 @@ import { z } from "zod";
 import { matchScanToCatalog } from "@/lib/warehouse/catalog-matcher";
 import { resolveCatalogIdentity } from "@/lib/warehouse/catalog-identity";
 import { getPartById, listPutawayDestinations } from "@/lib/warehouse/repository";
+import { isSimulationEligibleBin } from "@/lib/warehouse/simulation-policy";
 import {
   getContextCatalogResolutionId,
   getContextScanResult,
@@ -68,7 +69,7 @@ export const requestGuidedPutawayTool = tool({
         };
       }
       const destinations = await listPutawayDestinations(part.id);
-      const compatible = destinations.filter((bin) => bin.eligible);
+      const compatible = destinations.filter((bin) => bin.eligible && isSimulationEligibleBin(bin.code));
       const recommended =
         compatible.find((bin) => bin.alreadyStoresPart) ?? compatible[0] ?? null;
       const fullExisting = destinations.find(
@@ -90,7 +91,7 @@ export const requestGuidedPutawayTool = tool({
             canonicalName: part.canonicalName,
           },
           message:
-            "No bin can accept this item: matching bins are full and no compatible empty bin is available.",
+            "No compatible simulation bin can accept this item. Only B1-01 and B1-02 may move in this locked demo.",
         };
       }
 

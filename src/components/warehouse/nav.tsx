@@ -183,10 +183,10 @@ export function WarehouseNav() {
               {totals ? `${totals.binsAvailable} available` : "—"}
             </span>
           </span>
-          {/* <span className="inline-flex items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-2.5 py-1 font-medium tracking-[0.1em] text-warn">
+          <span className="inline-flex items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-2.5 py-1 font-medium tracking-[0.1em] text-warn">
             <span aria-hidden="true">●</span>
             GANTRY MODE: {gantry?.mode ?? "SIMULATION"}
-          </span> */}
+          </span>
         </div>
       </div>
     </header>

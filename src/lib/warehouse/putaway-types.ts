@@ -44,6 +44,7 @@ export const PUTAWAY_RETURN_SOURCE = "OUTPUT" as const;
 export const MIN_PUTAWAY_QUANTITY_CONFIDENCE = 0.8;
 
 export const PUTAWAY_FAILURE_REASONS = [
+  "simulation_scope_violation",
   "invalid_scan",
   "photo_required",
   "photo_upload_failed",

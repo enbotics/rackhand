@@ -3,7 +3,7 @@
  * retrieval/return transactions; this module supplies simulated evidence only.
  */
 import { prisma } from "./db";
-import { getAuditCaptureMode } from "./audit-capture-mode";
+import { getAuditCaptureMode, isOutOfSimulationScope } from "./audit-capture-mode";
 import { getGantryMode } from "@/lib/gantry/factory";
 import type { MaterialRequirement } from "./materials-plan-service";
 import type { MaterialsFulfillmentPlan } from "./materials-fulfillment-service";
@@ -30,7 +30,7 @@ export function isControlModulePrompt(message: string): boolean {
 function demoFor(sessionId: string | null | undefined): Demo | null {
   if (!sessionId || getAuditCaptureMode() !== "SIMULATION" || getGantryMode() !== "SIMULATION") return null;
   const demo = demos.get(sessionId);
-  if (demo && demo.expiresAt > Date.now()) return demo;
+  if (demo && demo.expiresAt > Date.now() && !demo.bins.some((bin) => isOutOfSimulationScope(bin.code))) return demo;
   demos.delete(sessionId);
   return null;
 }
@@ -51,6 +51,8 @@ export function controlModuleCurrentPart(sessionId: string | null): { binCode: s
 export async function beginControlModuleScenario(message: string, sessionId: string | null): Promise<boolean> {
   if (!sessionId || !isControlModulePrompt(message) || getAuditCaptureMode() !== "SIMULATION"
     || getGantryMode() !== "SIMULATION") return false;
+  const blockedBin = CONTROL_MODULE_BIN_ORDER.find(isOutOfSimulationScope);
+  if (blockedBin) return false;
   const existing = demoFor(sessionId);
   if (existing && existing.bins.some((bin) => bin.checkedOut !== null && bin.returned === null)) {
     throw new Error("Finish the current control module bin before starting another demo.");

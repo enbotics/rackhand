@@ -25,6 +25,7 @@ import type {
 import { isSimulationEvidenceUrl } from "./simulation-evidence";
 import { confidencePercent } from "./audit-types";
 import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
+import { simulationIllustrationUrl } from "./simulation-evidence";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -102,18 +103,12 @@ export async function getInventoryAuditRunView(auditRunId: string): Promise<Inve
 }
 
 /**
- * While AUDIT_CAPTURE_MODE=SIMULATION is active for a bin set up for it, the
- * dashboard shows that bin's curated demo baseline image instead of
- * whatever a real (or previously simulated) photo happens to be on file —
- * both the rack's "latest snapshot" and the bin-detail card's per-part
- * thumbnail. Flipping back to PROD immediately goes back to reporting the
- * real dynamically-computed photo, exactly as this file's own "read only,
- * reports what IS" rule intends: while simulating, the demo baseline IS
- * what this bin currently represents.
+ * The locked demo shows curated B1-01 photos and a labeled B1-02 inventory
+ * illustration. Other bins retain their stored images for read-only inspection.
  */
-function simulationSnapshotOverride(binCode: string): string | null {
+function simulationSnapshotOverride(binCode: string, quantity: number): string | null {
   return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode)
-    ? `/audit-simulation/${binCode}/snapshot.jpg`
+    ? simulationIllustrationUrl(binCode, quantity) ?? `/audit-simulation/${binCode}/snapshot.jpg`
     : null;
 }
 
@@ -253,7 +248,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
   ]);
 
   const binViews: BinView[] = bins.map((bin) => {
-    const simulationImageUrl = simulationSnapshotOverride(bin.code);
+    const simulationImageUrl = simulationSnapshotOverride(bin.code, bin.inventory.reduce((sum, row) => sum + row.quantity, 0));
     const contents = bin.inventory
       // A zero row is bookkeeping left behind by a retrieval, not stock. It
       // must not draw a part into a bin that is physically empty.

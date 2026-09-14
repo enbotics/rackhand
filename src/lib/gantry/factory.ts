@@ -23,13 +23,20 @@ import {
   SimulatedGantryController,
   type SimulatorOptions,
 } from "./simulator";
-import { GANTRY_MODES, type GantryMode } from "./types";
+import type { GantryMode } from "./types";
 import { withWarehouseHardwareLease } from "@/lib/warehouse/hardware-lease";
+import { isSimulationEligibleBin, simulationScopeMessage } from "@/lib/warehouse/simulation-policy";
 
-/** GANTRY_MODE, case-insensitive; anything unrecognized falls back to SIMULATION. */
+/** The public workspace is locked to the simulated controller. */
 export function getGantryMode(): GantryMode {
-  const raw = process.env.GANTRY_MODE?.trim().toUpperCase();
-  return (GANTRY_MODES as readonly string[]).includes(raw ?? "") ? (raw as GantryMode) : "SIMULATION";
+  return "SIMULATION";
+}
+
+async function moveSimulationBin<T>(binCode: string, work: () => Promise<T>): Promise<T> {
+  if (!isSimulationEligibleBin(binCode)) {
+    throw new GantryError("simulation_scope_violation", simulationScopeMessage(binCode));
+  }
+  return withWarehouseHardwareLease(work);
 }
 
 function readDelay(name: string, fallback: number): number {
@@ -62,7 +69,7 @@ function readSimulatorOptions(): SimulatorOptions {
  * A small explicit version preserves one controller across route bundles and
  * still gives implementation changes a deliberate cache-busting mechanism.
  */
-const GANTRY_CONTROLLER_CACHE_VERSION = 2;
+const GANTRY_CONTROLLER_CACHE_VERSION = 3;
 const globalForGantry = globalThis as unknown as {
   gantryController?: GantryController;
   gantryControllerVersion?: number;
@@ -71,15 +78,6 @@ const globalForGantry = globalThis as unknown as {
 };
 
 export function getGantryController(): GantryController {
-  const mode = getGantryMode();
-
-  if (mode === "HARDWARE") {
-    throw new GantryError(
-      "gantry_mode_unsupported",
-      "GANTRY_MODE=HARDWARE is reserved for a later milestone — no hardware controller is implemented. Use GANTRY_MODE=simulation.",
-    );
-  }
-
   if (
     !globalForGantry.gantryController ||
     globalForGantry.gantryControllerVersion !== GANTRY_CONTROLLER_CACHE_VERSION
@@ -94,12 +92,12 @@ export function getGantryController(): GantryController {
       getStatus: () => controller.getStatus(),
       getRecentOperations: (limit) => controller.getRecentOperations(limit),
       home: () => withWarehouseHardwareLease(() => controller.home()),
-      putaway: (input) => withWarehouseHardwareLease(() => controller.putaway(input)),
-      retrieve: (input) => withWarehouseHardwareLease(() => controller.retrieve(input)),
-      presentBin: (input) => withWarehouseHardwareLease(() => controller.presentBin(input)),
-      returnBin: (input) => withWarehouseHardwareLease(() => controller.returnBin(input)),
-      presentBinForAudit: (input) => withWarehouseHardwareLease(() => controller.presentBinForAudit(input)),
-      returnBinFromAudit: (input) => withWarehouseHardwareLease(() => controller.returnBinFromAudit(input)),
+      putaway: (input) => moveSimulationBin(input.destination, () => controller.putaway(input)),
+      retrieve: (input) => moveSimulationBin(input.source, () => controller.retrieve(input)),
+      presentBin: (input) => moveSimulationBin(input.source, () => controller.presentBin(input)),
+      returnBin: (input) => moveSimulationBin(input.destination, () => controller.returnBin(input)),
+      presentBinForAudit: (input) => moveSimulationBin(input.binCode, () => controller.presentBinForAudit(input)),
+      returnBinFromAudit: (input) => moveSimulationBin(input.binCode, () => controller.returnBinFromAudit(input)),
     };
   }
   return globalForGantry.leasedGantryController!;

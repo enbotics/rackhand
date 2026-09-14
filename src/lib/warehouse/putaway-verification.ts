@@ -39,7 +39,7 @@ import {
   type PutawayCaptureView,
 } from "./putaway-capture-types";
 import { getContextWorkflowSessionId, getContextBrowserScenario } from "@/lib/agents/request-context";
-import { controlModuleFrame, isControlModuleScenarioBin, controlModuleCurrentPart } from "./control-module-scenario";
+import { controlModuleFrame, controlModuleCurrentPart } from "./control-module-scenario";
 import {
   knownPartUnitWeightGrams,
   verifyPhysicalWeight,
@@ -66,8 +66,8 @@ const RETRYABLE_CAPTURE_STATUSES = [
 ];
 const RECOVERABLE_CAPTURE_STATUSES = ["WAITING_FOR_CAMERA", ...RETRYABLE_CAPTURE_STATUSES];
 
-function isPutawaySimulationMode(binCode: string, sessionId?: string | null): boolean {
-  return getAuditCaptureMode() === "SIMULATION" && (isSimulationEligibleBin(binCode) || isControlModuleScenarioBin(sessionId, binCode));
+function isPutawaySimulationMode(binCode: string): boolean {
+  return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode);
 }
 
 /** Shared real/simulated putaway vision policy. */
@@ -119,7 +119,7 @@ function captureView(input: {
     outcome,
     expectedQuantity: input.expectedQuantity,
     observedQuantity: input.observedQuantity,
-    quantitySource: input.weightSource === "SCALE" && input.movement.part
+    quantitySource: captureMode === "SIMULATION" ? "SIMULATION" : input.weightSource === "SCALE" && input.movement.part
       && knownPartUnitWeightGrams(input.movement.part) != null
       && input.unitWeightGrams === knownPartUnitWeightGrams(input.movement.part) ? "SCALE" : "VISION",
     confidencePercent: input.countConfidence === null ? null : confidencePercent(input.countConfidence),
@@ -217,7 +217,7 @@ export async function pendingPutawayCapture(ownerSessionId: string) {
   if (!capture) return { captureId: null };
 
   const captureMode = isSimulatedWorkflowCapture(capture.id)
-    || isPutawaySimulationMode(verificationBin(capture.movement)?.code ?? "", ownerSessionId)
+    || isPutawaySimulationMode(verificationBin(capture.movement)?.code ?? "")
     ? "SIMULATION" as const
     : "PROD" as const;
   const outcome = persistedCaptureOutcome(capture);
@@ -254,18 +254,19 @@ export async function requestPutawayCameraCapture(
     throw new Error("This putaway is no longer waiting for verification.");
   }
   const binCode = verificationBin(capture.movement)?.code;
-  if (binCode && isOutOfSimulationScope(binCode) && !isControlModuleScenarioBin(capture.ownerSessionId, binCode)) {
+  if (!binCode) throw new Error("The verification bin is missing.");
+  if (isOutOfSimulationScope(binCode)) {
     throw new SimulationScopeError(binCode);
   }
   const simulated = isSimulatedWorkflowCapture(id)
-    || (binCode ? isPutawaySimulationMode(binCode, capture.ownerSessionId) : false);
+    || isPutawaySimulationMode(binCode);
   if (simulated) {
     if (!binCode) throw new Error("The putaway destination is missing.");
     markSimulatedWorkflowCapture(id);
     const demo = controlModuleFrame({ sessionId: capture.ownerSessionId, binCode,
       operation: capture.movement.type, expectedQuantity: capture.expectedQuantity, attempt: capture.attempt });
-    const sample = demo ? { bytes: await sharp(Buffer.from(demo.svg)).png().toBuffer(), url: demo.url }
-      : await nextSimulationEvidence(binCode);
+    const sample = demo ? { bytes: await sharp(Buffer.from(demo.svg)).png().toBuffer(), url: demo.url, simulatedInspection: demo.vision }
+      : await nextSimulationEvidence(binCode, capture.expectedQuantity);
     const metadata = await sharp(sample.bytes).metadata();
     const requestedAt = new Date();
     const result = await processPutawayCameraCapture(id, {
@@ -277,7 +278,7 @@ export async function requestPutawayCameraCapture(
       requestedAt,
       workflowAttempt: capture.attempt,
       captureMode: "SIMULATION",
-      simulatedInspection: demo?.vision,
+      simulatedInspection: demo?.vision ?? sample.simulatedInspection,
     });
     return { captureMode: "SIMULATION", result };
   }
@@ -328,7 +329,7 @@ export async function requirePutawayVerification(
   if (demo && controlModuleCurrentPart(sessionId)?.sku !== movement.part.sku) {
     throw new Error("The control module bin no longer holds its approved part. Inventory was not changed.");
   }
-  if (isOutOfSimulationScope(bin.code) && !demo) {
+  if (isOutOfSimulationScope(bin.code)) {
     throw new SimulationScopeError(bin.code);
   }
 
@@ -336,9 +337,9 @@ export async function requirePutawayVerification(
   // a real capture (see requestPutawayCameraCapture) — no invisible
   // server-only shortcut — so the comparison popup, Retry and Cancel all
   // work identically whether the photo is real or a curated fixture.
-  const simulated = isPutawaySimulationMode(bin.code, sessionId);
+  const simulated = isPutawaySimulationMode(bin.code);
   const simulatedBaseline = simulated
-    ? demo?.url ?? await simulationBaselineUrl(bin.code)
+    ? demo?.url ?? await simulationBaselineUrl(bin.code, expectedQuantity)
     : null;
   if (simulated && !demo && (!simulatedBaseline || !await hasSimulationEvidence(bin.code))) {
     throw new SimulationEvidenceError(bin.code);
@@ -539,7 +540,7 @@ async function analyzePutawayCapture(
     }, captureProcessingHeartbeatMilliseconds());
     let vision: BinInspectionEvidence;
     try {
-      vision = input.captureMode === "SIMULATION" && isControlModuleScenarioBin(capture.ownerSessionId, bin.code)
+      vision = input.captureMode === "SIMULATION" && isSimulationEligibleBin(bin.code)
         && input.simulatedInspection ? input.simulatedInspection : await inspectBinImage(input.imageBuffer, {
         binCode: bin.code,
         sku: part.sku,
@@ -563,13 +564,16 @@ async function analyzePutawayCapture(
       simulated: captureMode === "SIMULATION",
       knownUnitWeightGrams: knownUnitWeight,
     });
-    const observed = scale.verified ? scale.quantity : null;
+    // Unweighed demo parts retain recorded stock. This only exercises the
+    // simulated movement; it cannot invent an item weight or a measured count.
+    const recordedSimulation = captureMode === "SIMULATION" && knownUnitWeight === null;
+    const observed = recordedSimulation ? capture.expectedQuantity : scale.verified ? scale.quantity : null;
     const weight = scale.measurement;
     const visionAssessment = classifyPutawayVision(
       { ...vision, observedCount: observed }, capture.expectedQuantity, bin.capacity,
     );
     const foreignObjects = visionAssessment.foreignObjects;
-    const outcome = !scale.verified && ["READY", "INCREASED", "REVIEW_DECREASE"].includes(visionAssessment.outcome)
+    const outcome = !scale.verified && !recordedSimulation && ["READY", "INCREASED", "REVIEW_DECREASE"].includes(visionAssessment.outcome)
       ? "LOW_CONFIDENCE" : visionAssessment.outcome;
     const nextStatus = outcome === "REVIEW_DECREASE" ? "REVIEW_DECREASE"
       : outcome === "READY" || outcome === "INCREASED" ? "READY"
@@ -587,7 +591,9 @@ async function analyzePutawayCapture(
         foreignObjectSuspected: outcome === "FOREIGN_OBJECTS",
         foreignObjectsJson: JSON.stringify(foreignObjects),
         occlusion: vision.occlusion,
-        notes: knownUnitWeight === null
+        notes: recordedSimulation
+          ? "Simulation preserves recorded quantity for this unweighed demo part. No physical camera or scale quantity was measured."
+          : knownUnitWeight === null
           ? "This part needs a known item weight before its quantity can be verified."
           : !scale.verified
             ? "Quantity could not be verified from the scale reading. Check the scale and retry."

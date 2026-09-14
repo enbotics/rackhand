@@ -274,7 +274,7 @@ installing dependencies, because Prisma generation reads `DIRECT_URL`:
 | `BEDROCK_MODEL_ID`          | Bedrock model or inference-profile ID enabled for your account.                                                                 |
 | `GEMINI_API_KEY`            | Gemini key for camera measurement and inventory verification.                                                                   |
 | `GANTRY_MODE`               | Keep `simulation`; real gantry control is not implemented.                                                                      |
-| `AUDIT_CAPTURE_MODE`        | `PROD` for the Raspberry Pi, or `SIMULATION` for supported demo captures.                                                       |
+| `AUDIT_CAPTURE_MODE`        | Locked to `SIMULATION` in this public demo; `PROD` requests are rejected. Only B1-01 and B1-02 may move.                        |
 
 Bedrock uses the standard AWS credential chain. Configure an AWS profile or set
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN` for
@@ -368,7 +368,7 @@ when needed. Restart the application after changing environment settings.
 | Parameter                             | Example / configuration | Purpose                                                                                                 |
 | ------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
 | `GANTRY_MODE`                         | `simulation`            | Simulated bin movement. Hardware mode is not implemented.                                               |
-| `AUDIT_CAPTURE_MODE`                  | `PROD` or `SIMULATION`  | Initial camera mode; simulation supports only configured demo bins.                                     |
+| `AUDIT_CAPTURE_MODE`                  | `SIMULATION`           | Public demo is locked; environment values cannot enable physical warehouse captures.                    |
 | `GANTRY_SIM_MOVE_DELAY_MS`            | `300`                   | Simulator movement delay, in milliseconds.                                                              |
 | `GANTRY_SIM_PICK_DELAY_MS`            | `200`                   | Simulator bin-pick delay, in milliseconds.                                                              |
 | `GANTRY_SIM_DROP_DELAY_MS`            | `200`                   | Simulator bin-drop delay, in milliseconds.                                                              |
@@ -489,18 +489,21 @@ an AgentCore deployment.
 
 ## Demo scenarios
 
-### Control-module preparation
+### Locked browser simulation
 
-With the required catalog and stock already configured, start the supported
-browser scenario using:
+The public workspace locks gantry and warehouse capture to Simulation because
+Prod mode can trigger real hardware. Only stocked `B1-01` and `B1-02` may move.
+Simulation info opens by default as a floating dialog. Dismiss it with **Got it**
+or reopen it from **Simulation · Locked** beside the rack menu.
 
-> RackHand, prep the parts for the control module.
-
-In `AUDIT_CAPTURE_MODE=SIMULATION`, the explicit scenario uses server-selected
-`B4-01`, `B3-03`, and `B6-03` bins. Show normal verification, a trusted inventory
-correction, an unexpected-object retry, verified remaining stock, and bin
-return. The scenario uses scripted images and inspection evidence; it does not
-prove that a live camera or scale measured those items.
+Try **Bring me bin B1-01** or **Bring me bin B1-02**, approve the request in
+chat, then return the checked-out bin before requesting another.
+`B1-01` uses curated photos; `B1-02` uses a labeled illustration and scripted
+inspection of recorded inventory, without a physical camera or scale reading.
+Demo parts without a configured item weight retain their recorded quantity;
+simulation never derives an item weight from an image count.
+The earlier control-module scenario uses `B4-01`, `B3-03`, and `B6-03` and
+is unavailable under this lock.
 
 ### Upcoming-work shortage
 
@@ -517,18 +520,17 @@ nightly scheduler or implemented email/chat notification service.
 
 ### Production sensing
 
-Set `AUDIT_CAPTURE_MODE=PROD`, connect the authenticated Pi worker and serial
-scale, and show a fresh image and scale reading. Verify remaining quantity
-using the configured tare and supplied item weight. A public browser demo does
-not imply access to physical motor control.
+Physical warehouse sensing cannot be enabled in this locked public workspace.
+The Pi camera and scale integration remains in the code, but changing
+`AUDIT_CAPTURE_MODE` or posting `PROD` to the mode API cannot activate it.
 
 ### Simulation configuration
 
-`GANTRY_MODE=simulation` controls movement independently of capture mode.
-General audit simulation supports `B1-01`; unsupported bins are rejected.
-The explicit control-module scenario adds its configured bins. Simulation
-writes to the configured database, so use a development/demo database. The UI
-capture-mode override resets to the environment setting after server restart.
+Both gantry and warehouse capture remain in Simulation across server restarts.
+Only `B1-01` and `B1-02` may move; all other bins remain available for read-only
+inspection. The server enforces this limit for retrieval, putaway, returns and
+audits, including direct movement endpoints. Simulation writes to the
+configured database, so use a development/demo database.
 
 ## Safety / failure behavior
 

@@ -387,29 +387,29 @@ model MaterialsPlanCheck {
 /// Durable, manually/event-triggered analysis of today's enabled engineering
 /// plan. It may run targeted trusted audits, but never retrieves materials.
 model EngineeringPlanAnalysisRun {
-  id                 String                         @id @default(cuid())
-  ownerSessionId     String
-  trigger            String                         @default("MANUAL")
-  status             String                         @default("QUEUED")
-  stage              String                         @default("QUEUED")
+  id                String                         @id @default(cuid())
+  ownerSessionId    String
+  trigger           String                         @default("MANUAL")
+  status            String                         @default("QUEUED")
+  stage             String                         @default("QUEUED")
   /// One warehouse has one physical gantry/camera. Null once terminal.
-  activeKey          String?                        @unique
-  workDate           String
-  sourceFingerprint  String?
-  sourceContextJson  String?
-  checkpointJson     String?
-  rowsFound          Int                            @default(0)
-  currentBinCode     String?
-  planRowsJson       String                         @default("[]")
-  requirementsJson   String                         @default("[]")
-  resultJson         String?
-  errorCode          String?
-  errorMessage       String?
-  startedAt          DateTime?
-  completedAt        DateTime?
-  createdAt          DateTime                       @default(now())
-  updatedAt          DateTime                       @updatedAt
-  events             EngineeringPlanAnalysisEvent[]
+  activeKey         String?                        @unique
+  workDate          String
+  rowsFound         Int                            @default(0)
+  currentBinCode    String?
+  planRowsJson      String                         @default("[]")
+  requirementsJson  String                         @default("[]")
+  resultJson        String?
+  errorCode         String?
+  errorMessage      String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime                       @default(now())
+  updatedAt         DateTime                       @updatedAt
+  sourceFingerprint String?
+  sourceContextJson String?
+  checkpointJson    String?
+  events            EngineeringPlanAnalysisEvent[]
 
   @@index([ownerSessionId, createdAt])
   @@index([status])
@@ -417,23 +417,23 @@ model EngineeringPlanAnalysisRun {
 
 /// Latest Sheet-change signal. Drained by the Node coordinator, not browsers.
 model EngineeringPlanInbox {
-  id              String   @id
+  id              String    @id
   signalAt        DateTime
   dueAt           DateTime
-  pending         Boolean  @default(true)
+  pending         Boolean   @default(true)
   lastFingerprint String?
   lastWorkDate    String?
   lastError       String?
   leaseToken      String?
   leaseUntil      DateTime?
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime  @updatedAt
 }
 
 /// Cross-process exclusion for motion and a complete audit camera/return cycle.
 model WarehouseHardwareLease {
-  id         String   @id
-  token      String
-  expiresAt  DateTime
+  id        String   @id
+  token     String
+  expiresAt DateTime
 }
 
 /// Submitted client turns take priority at the next background safe boundary.
@@ -481,9 +481,6 @@ model BinAudit {
   newQuantity            Int?
   errorCode              String?
   errorMessage           String?
-  /// Durable browser-visible phase for the simulated shelf -> scan -> shelf trip.
-  movementPhase          String?
-  movementPhaseStartedAt DateTime?
   startedAt              DateTime             @default(now())
   capturedAt             DateTime?
   completedAt            DateTime?
@@ -493,6 +490,9 @@ model BinAudit {
   /// once at finalize time (findLatestAcceptedSnapshot) so it stays fixed
   /// even if a later audit changes what "latest accepted" means.
   priorEvidenceUrl       String?
+  /// Durable browser-visible phase for the simulated shelf -> scan -> shelf trip.
+  movementPhase          String?
+  movementPhaseStartedAt DateTime?
   capture                AuditCaptureRequest?
   auditRun               InventoryAuditRun    @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
   bin                    Bin                  @relation(fields: [binId], references: [id])
@@ -613,45 +613,3 @@ model CameraDeviceHealth {
 
   @@index([lastSeenAt])
 }
-
-// /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-// model EngineeringPlanAnalysisEvent {
-//   id                         String                     @id
-//   runId                      String
-//   sequence                   Int
-//   stage                      String
-//   status                     String
-//   summary                    String
-//   metadataJson               String?
-//   createdAt                  DateTime                   @default(now())
-//   EngineeringPlanAnalysisRun EngineeringPlanAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-//   @@unique([runId, sequence])
-//   @@index([runId])
-// }
-
-// /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-// model EngineeringPlanAnalysisRun {
-//   id                           String                         @id
-//   ownerSessionId               String
-//   trigger                      String                         @default("MANUAL")
-//   status                       String                         @default("QUEUED")
-//   stage                        String                         @default("QUEUED")
-//   activeKey                    String?                        @unique
-//   workDate                     String
-//   rowsFound                    Int                            @default(0)
-//   currentBinCode               String?
-//   planRowsJson                 String                         @default("[]")
-//   requirementsJson             String                         @default("[]")
-//   resultJson                   String?
-//   errorCode                    String?
-//   errorMessage                 String?
-//   startedAt                    DateTime?
-//   completedAt                  DateTime?
-//   createdAt                    DateTime                       @default(now())
-//   updatedAt                    DateTime
-//   EngineeringPlanAnalysisEvent EngineeringPlanAnalysisEvent[]
-
-//   @@index([ownerSessionId, createdAt])
-//   @@index([status])
-// }

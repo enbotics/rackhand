@@ -6,6 +6,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "tests/simulation-lock.test.ts",
+      "tests/simulation-mode-guide.test.tsx",
       "tests/putaway-weight.test.ts",
       "tests/putaway-confidence-policy.test.ts",
       "tests/audit-capture-dialog.test.tsx",

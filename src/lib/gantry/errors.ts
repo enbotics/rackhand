@@ -8,6 +8,8 @@
  */
 
 export const GANTRY_ERROR_STATUS = {
+  /** Public demo movements are restricted to the two approved simulation bins. */
+  simulation_scope_violation: 403,
   /** Body was unparseable or structurally wrong. */
   invalid_request: 422,
   /** A source/destination that is not a legal location for this operation. */

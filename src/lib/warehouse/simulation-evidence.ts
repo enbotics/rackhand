@@ -1,5 +1,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
+import type { BinInspectionEvidence } from "./bin-inspection-service";
 
 const ROOT = path.join(process.cwd(), "public", "audit-simulation");
 
@@ -31,10 +33,37 @@ export function isSimulatedWorkflowCapture(captureId: string): boolean {
 }
 
 export function isSimulationEvidenceUrl(url: string | null | undefined): boolean {
-  return Boolean(url?.startsWith("/audit-simulation/"));
+  if (url?.startsWith("/audit-simulation/")) return true;
+  return Boolean(url?.startsWith("data:image/svg+xml;base64,")
+    && Buffer.from(url.split(",")[1], "base64").toString().includes('data-rackhand-simulation="true"'));
 }
 
-export async function simulationBaselineUrl(binCode: string): Promise<string | null> {
+/** B1-02 has no curated photos. Its labeled illustration never invents a physical reading. */
+function illustratedFrame(binCode: string, quantity: number) {
+  if (binCode !== "B1-02") return null;
+  if (!Number.isInteger(quantity) || quantity < 0) throw new SimulationEvidenceError(binCode);
+  const objects = Array.from({ length: Math.min(quantity, 60) }, (_, index) => {
+    const x = 45 + (index % 10) * 43;
+    const y = 80 + Math.floor(index / 10) * 35;
+    return `<rect x="${x}" y="${y}" width="26" height="20" rx="4" fill="#b7d4e8" stroke="#5c90b0"/>`;
+  }).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" data-rackhand-simulation="true" width="520" height="360" viewBox="0 0 520 360"><rect width="520" height="360" fill="#111920"/><text x="24" y="30" fill="#9daebc" font-family="sans-serif" font-size="14">SIMULATION · B1-02 · Recorded inventory illustration</text><rect x="24" y="55" width="472" height="260" rx="16" fill="#202e38" stroke="#567084"/>${objects}<text x="24" y="344" fill="#b7d4e8" font-family="sans-serif" font-size="14">${quantity} recorded items · No physical camera or scale reading</text></svg>`;
+  const vision: BinInspectionEvidence = {
+    countable: true, observedCount: quantity, countConfidence: 1,
+    expectedPartPresent: quantity > 0, foreignObjectSuspected: false,
+    foreignObjects: [], occlusion: "NONE",
+    notes: "Browser simulation based on recorded inventory; no physical camera or scale reading.",
+  };
+  return { svg, url: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`, vision };
+}
+
+export function simulationIllustrationUrl(binCode: string, quantity: number): string | null {
+  return illustratedFrame(binCode, quantity)?.url ?? null;
+}
+
+export async function simulationBaselineUrl(binCode: string, quantity = 0): Promise<string | null> {
+  const illustration = simulationIllustrationUrl(binCode, quantity);
+  if (illustration) return illustration;
   const file = path.join(ROOT, binCode, "snapshot.jpg");
   try {
     await access(file);
@@ -45,6 +74,7 @@ export async function simulationBaselineUrl(binCode: string): Promise<string | n
 }
 
 export async function hasSimulationEvidence(binCode: string): Promise<boolean> {
+  if (binCode === "B1-02") return true;
   try {
     const files = await readdir(path.join(ROOT, binCode, "pool"));
     return files.some((file) => /\.(jpe?g|png)$/i.test(file));
@@ -54,14 +84,19 @@ export async function hasSimulationEvidence(binCode: string): Promise<boolean> {
 }
 
 /**
- * Returns curated demo frames in stable round-robin order. Simulation still
- * exercises the real Gemini analysis, but repeated runs are reproducible and
- * never depend on Math.random().
+ * B1-01 returns curated photos in stable round-robin order for Gemini analysis.
+ * B1-02 returns a labeled illustration and scripted inspection of recorded stock.
  */
-export async function nextSimulationEvidence(binCode: string): Promise<{
+export async function nextSimulationEvidence(binCode: string, quantity = 0): Promise<{
   url: string;
   bytes: Buffer;
+  simulatedInspection?: BinInspectionEvidence;
 }> {
+  const illustration = illustratedFrame(binCode, quantity);
+  if (illustration) {
+    return { url: illustration.url, bytes: await sharp(Buffer.from(illustration.svg)).png().toBuffer(),
+      simulatedInspection: illustration.vision };
+  }
   const dir = path.join(ROOT, binCode, "pool");
   let files: string[];
   try {

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => {
   const part = { id: "part-1", sku: "SENSOR", canonicalName: "Sensor modules" };
-  const bin = { id: "bin-1", code: "B5-01", status: "OCCUPIED", capacity: 100 };
+  const bin = { id: "bin-1", code: "B1-02", status: "OCCUPIED", capacity: 100 };
   const stock = { id: "stock-1", partId: part.id, binId: bin.id, quantity: 12 };
   const movements: Array<Record<string, unknown>> = [];
   const events: string[] = [];
@@ -105,7 +105,7 @@ describe("user-requested bin checkout and return", () => {
   it("moves to checkout before verification, then saves a trusted mismatch", async () => {
     fixture.verify.mockResolvedValueOnce({ imageUrl: "/checked.jpg", capturedAt: new Date(),
       quantity: 10, simulated: true, inventoryUpdateApproved: true });
-    const result = await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-1" });
+    const result = await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-1" });
     expect(result).toMatchObject({ ok: true, checkedOutQuantity: 10, binStatus: "CHECKED_OUT" });
     expect(fixture.retrieve).toHaveBeenCalledOnce();
     expect(fixture.verify).toHaveBeenCalledOnce();
@@ -115,11 +115,11 @@ describe("user-requested bin checkout and return", () => {
   });
 
   it("verifies 12 at checkout and saves 11 on return after one item was taken", async () => {
-    await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-2" });
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-2" });
     expect(fixture.events).toEqual(["retrieve", "verify"]);
     fixture.verify.mockResolvedValueOnce({ imageUrl: "/returned.jpg", capturedAt: new Date(),
       quantity: 11, simulated: true, inventoryUpdateApproved: true });
-    const returned = await returnCheckedOutBin({ binCode: "B5-01" });
+    const returned = await returnCheckedOutBin({ binCode: "B1-02" });
     expect(returned).toMatchObject({ ok: true, inventoryQuantityBefore: 12, inventoryQuantityAfter: 11,
       inventoryQuantityRemoved: 1 });
     expect(fixture.stock.quantity).toBe(11);
@@ -131,7 +131,7 @@ describe("user-requested bin checkout and return", () => {
 
   it("preserves checkout location and stock when a check is cancelled or fails", async () => {
     fixture.verify.mockRejectedValueOnce(new Error("Unexpected object; check cancelled"));
-    const result = await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-3" });
+    const result = await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-3" });
     expect(result).toMatchObject({ ok: false, reason: "retrieval_verification_failed" });
     expect(fixture.bin.status).toBe("CHECKED_OUT");
     expect(fixture.stock.quantity).toBe(12);
@@ -142,15 +142,15 @@ describe("user-requested bin checkout and return", () => {
   it("replays a corrected checkout without moving or verifying twice", async () => {
     fixture.verify.mockResolvedValueOnce({ imageUrl: "/checked.jpg", capturedAt: new Date(),
       quantity: 10, simulated: false, inventoryUpdateApproved: true });
-    await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-4" });
-    const replay = await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-4" });
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-4" });
+    const replay = await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-4" });
     expect(replay).toMatchObject({ ok: true, duplicate: true, checkedOutQuantity: 10 });
     expect(fixture.retrieve).toHaveBeenCalledOnce();
     expect(fixture.verify).toHaveBeenCalledOnce();
   });
 
   it("keeps plan fulfillment outside the new checkout-verification flow", async () => {
-    await executeRetrieval({ sourceBinCode: "B5-01", requestId: "plan-1", verifyContents: false });
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "plan-1", verifyContents: false });
     expect(fixture.verify).not.toHaveBeenCalled();
     expect(fixture.stock.quantity).toBe(12);
     expect(fixture.movements[0].status).toBe("COMPLETED");
@@ -159,7 +159,7 @@ describe("user-requested bin checkout and return", () => {
   it("also corrects a trusted higher checkout count automatically", async () => {
     fixture.verify.mockResolvedValueOnce({ imageUrl: "/checked.jpg", capturedAt: new Date(),
       quantity: 14, simulated: false, inventoryUpdateApproved: true });
-    expect(await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-5" }))
+    expect(await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-5" }))
       .toMatchObject({ ok: true, checkedOutQuantity: 14 });
     expect(fixture.stock.quantity).toBe(14);
   });
@@ -167,16 +167,16 @@ describe("user-requested bin checkout and return", () => {
   it("returns an empty verified bin while retaining checkout identity until return", async () => {
     fixture.verify.mockResolvedValueOnce({ imageUrl: "/empty.jpg", capturedAt: new Date(),
       quantity: 0, simulated: false, inventoryUpdateApproved: true });
-    await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-empty" });
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-empty" });
     expect(fixture.stock.quantity).toBe(0);
-    expect(await returnCheckedOutBin({ binCode: "B5-01" })).toMatchObject({ ok: true, inventoryQuantityAfter: 0 });
+    expect(await returnCheckedOutBin({ binCode: "B1-02" })).toMatchObject({ ok: true, inventoryQuantityAfter: 0 });
     expect(fixture.bin.status).toBe("AVAILABLE");
   });
 
   it("does not move back or update stock when return verification fails", async () => {
-    await executeRetrieval({ sourceBinCode: "B5-01", requestId: "user-return-failure" });
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "user-return-failure" });
     fixture.verify.mockRejectedValueOnce(new Error("Physical check uncertain"));
-    const returned = await returnCheckedOutBin({ binCode: "B5-01" });
+    const returned = await returnCheckedOutBin({ binCode: "B1-02" });
     expect(returned).toMatchObject({ ok: false, reason: "photo_required" });
     expect(fixture.stock.quantity).toBe(12);
     expect(fixture.bin.status).toBe("CHECKED_OUT");

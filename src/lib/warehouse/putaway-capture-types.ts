@@ -20,7 +20,7 @@ export interface PutawayCaptureView {
   outcome: PutawayCaptureOutcome;
   expectedQuantity: number;
   observedQuantity: number | null;
-  quantitySource?: "SCALE" | "VISION";
+  quantitySource?: "SCALE" | "VISION" | "SIMULATION";
   confidencePercent: number | null;
   /** Gross bin weight from the USB scale, including the container. */
   totalWeightGrams: number | null;
