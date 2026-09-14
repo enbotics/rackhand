@@ -364,7 +364,7 @@ describe("AuditCaptureProvider", () => {
     expect(screen.getByText("Physical check uncertain")).toBeTruthy();
     expect(
       screen.getByText(
-        "Scale and visual evidence do not agree clearly enough. Inventory was not changed. Engineer check required.",
+        "Physical evidence does not verify the contents safely. Inventory was not changed. Engineer check required.",
       ),
     ).toBeTruthy();
     expect(screen.getByText("Estimated")).toBeTruthy();

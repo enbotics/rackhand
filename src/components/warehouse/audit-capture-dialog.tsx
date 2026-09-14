@@ -540,8 +540,9 @@ export function AuditCaptureDialog() {
             result?.outcome === "LOW_CONFIDENCE"
           ? {
               headline: "Physical check uncertain",
-              message:
-                "Scale and visual evidence do not agree clearly enough. Inventory was not changed. Engineer check required.",
+              message: result.outcome === "LOW_CONFIDENCE" && result.observedQuantity === null
+                ? result.notes || "Quantity requires a valid scale reading and a known item weight. Inventory was not changed."
+                : "Physical evidence does not verify the contents safely. Inventory was not changed. Engineer check required.",
             }
           : result?.outcome === "CAPACITY_EXCEEDED"
             ? {

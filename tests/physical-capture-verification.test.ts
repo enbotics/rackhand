@@ -178,6 +178,23 @@ function processFrame(totalWeightGrams = 122.6, workflowAttempt = 0) {
 }
 
 describe("physical verification state machine", () => {
+  it("does not learn an unknown part's item weight or accept its camera count", async () => {
+    fixture.movement.part.sku = "UNKNOWN";
+    const { completion } = await startCheck();
+    expect(await processFrame()).toMatchObject({
+      outcome: "LOW_CONFIDENCE", observedQuantity: null, unitWeightGrams: null,
+      notes: "This part needs a known item weight before its quantity can be verified.",
+    });
+    expect(fixture.database.movement.findFirst).not.toHaveBeenCalledWith(
+      expect.objectContaining({ select: expect.objectContaining({ unitWeightGrams: true }) }),
+    );
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(fixture.movement.newQuantity).toBeNull();
+    await decidePutawayCapture("capture-1", "CANCEL", "session-1");
+    const failed = expect(completion).rejects.toThrow("verification failed");
+    await vi.advanceTimersByTimeAsync(300);
+    await failed;
+  });
   it("counts B5-01 sensor modules from their 1.56 g unit weight", async () => {
     fixture.movement.part.sku = "ELECTRONICS-SENSOR-MODULE-MIXED";
     const { completion } = await startCheck();

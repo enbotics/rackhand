@@ -587,7 +587,11 @@ async function analyzePutawayCapture(
         foreignObjectSuspected: outcome === "FOREIGN_OBJECTS",
         foreignObjectsJson: JSON.stringify(foreignObjects),
         occlusion: vision.occlusion,
-        notes: vision.notes,
+        notes: knownUnitWeight === null
+          ? "This part needs a known item weight before its quantity can be verified."
+          : !scale.verified
+            ? "Quantity could not be verified from the scale reading. Check the scale and retry."
+            : vision.notes,
         evidenceUrl: imageUrl,
         imageWidth: input.imageWidth,
         imageHeight: input.imageHeight,
