@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { GantryMode } from "@/lib/gantry/types";
 import { SIMULATION_ELIGIBLE_BINS, SIMULATION_LOCK_REASON } from "@/lib/warehouse/simulation-policy";
 
 /** Opens the floating simulation dialog after mount, outside the rack's overflow clipping. */
-export function AuditCaptureModeToggle() {
+export function AuditCaptureModeToggle({ mode = "SIMULATION", locked = true }: { mode?: GantryMode | null; locked?: boolean }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ top: 0, left: 0, maxHeight: 0 });
   const trigger = useRef<HTMLButtonElement>(null);
@@ -24,10 +25,11 @@ export function AuditCaptureModeToggle() {
   }, []);
 
   useEffect(() => {
+    if (mode !== "SIMULATION" || !locked) return;
     // Wait for browser layout before positioning the default-open dialog.
     const frame = window.requestAnimationFrame(showGuide);
     return () => window.cancelAnimationFrame(frame);
-  }, [showGuide]);
+  }, [showGuide, mode, locked]);
 
   function closeGuide() {
     setOpen(false);
@@ -35,7 +37,7 @@ export function AuditCaptureModeToggle() {
   }
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || mode !== "SIMULATION" || !locked) return;
     function outside(event: PointerEvent) {
       const target = event.target as Node;
       if (!trigger.current?.contains(target) && !popup.current?.contains(target)) setOpen(false);
@@ -65,7 +67,12 @@ export function AuditCaptureModeToggle() {
       window.removeEventListener("resize", reposition);
       window.removeEventListener("scroll", reposition, true);
     };
-  }, [open]);
+  }, [open, mode, locked]);
+
+  if (mode === null) return null;
+  if (mode === "PRODUCTION" || !locked) {
+    return <span title={mode === "PRODUCTION" ? "Production mode sends commands to real Klipper hardware." : "Gantry movement is simulated."} className="rounded-full border border-warn/40 bg-warn-soft px-3 py-1.5 font-mono text-[9px] uppercase tracking-wider text-warn">{mode === "PRODUCTION" ? "Production · Klipper" : "Gantry Simulation"}</span>;
+  }
 
   return (
     <>

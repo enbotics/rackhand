@@ -6,6 +6,7 @@
  */
 import { NextResponse } from "next/server";
 import { GantryError, isGantryError } from "./errors";
+import { getGantryMode } from "./factory";
 
 export async function parseGantryBody(request: Request): Promise<Record<string, unknown>> {
   let body: unknown;
@@ -51,7 +52,7 @@ export function gantryErrorResponse(err: unknown): NextResponse {
  * The read-only routes are deliberately NOT guarded.
  */
 export function assertGantryDevRoute(): void {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || getGantryMode() === "PRODUCTION") {
     throw new GantryError(
       "gantry_dev_only",
       "Direct gantry movement endpoints are development-only. Use the Warehouse Agent, which validates, records and approves client operations.",

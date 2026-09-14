@@ -74,8 +74,8 @@ export const GANTRY_OPERATION_STATUSES = [
 ] as const;
 export type GantryOperationStatus = (typeof GANTRY_OPERATION_STATUSES)[number];
 
-/** HARDWARE is reserved for a later milestone; no hardware controller exists yet. */
-export const GANTRY_MODES = ["SIMULATION", "HARDWARE"] as const;
+/** Production executes configured Klipper macros through Moonraker. */
+export const GANTRY_MODES = ["SIMULATION", "PRODUCTION"] as const;
 export type GantryMode = (typeof GANTRY_MODES)[number];
 
 /** Deterministic failure kinds the simulator can be told to inject. Never random. */
@@ -89,6 +89,8 @@ export type GantryFailureKind = (typeof GANTRY_FAILURE_KINDS)[number];
 
 export interface GantryStatus {
   mode: GantryMode;
+  /** Server deployment policy; the browser cannot change it. */
+  simulationLocked?: boolean;
   state: GantryState;
   /** Where the head last arrived. null means the home position (or not yet homed). */
   currentLocation: GantryLocation | null;
@@ -127,6 +129,8 @@ export interface GantryOperation {
   completedAt: number | null;
   /** A GantryFailureKind when the operation failed, else null. */
   error: string | null;
+  /** A command was dispatched and its physical outcome is uncertain. Keep bin reservations. */
+  reconciliationRequired?: boolean;
 }
 
 export interface PutawayRequest {

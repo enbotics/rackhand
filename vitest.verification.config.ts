@@ -6,6 +6,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "tests/gantry-klipper.test.ts",
       "tests/simulation-lock.test.ts",
       "tests/simulation-mode-guide.test.tsx",
       "tests/putaway-weight.test.ts",

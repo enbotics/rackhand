@@ -66,7 +66,7 @@ flowchart LR
     Plans --> Planner
     Plans --> Services
     Planner --> Sheets["Google Sheets: read-only plan"]
-    Services --> Gantry["Gantry simulator / bin state"]
+    Services --> Gantry["Gantry simulator / Klipper macros"]
     Services <-->|"Camera jobs / evidence"| Pi["Raspberry Pi<br/>Camera + serial scale"]
     Services <-->|"Visual inspection"| Vision["Strands vision agents + Gemini"]
     Services <-->|"Warehouse truth / evidence"| Supabase["Supabase PostgreSQL<br/>Storage + Realtime"]
@@ -187,9 +187,17 @@ a **USB serial digital scale** at the inspection station. The Python worker
 captures images and stable scale samples, claims durable jobs, and uploads
 evidence through authenticated application endpoints.
 
-The rack concept uses bins and a three-axis gantry. **Gantry movement in this
-repository is simulated**; hardware motor control is not implemented. Production
-camera and scale evidence can be used independently of simulated bin motion.
+The rack uses bins and a three-axis gantry. The public demo defaults to simulated
+movement. Private deployments can use the **Klipper gantry controller**, which
+sends configured macros through Moonraker at `https://kli-prod.enbotics.tech`.
+Klipper owns calibrated movement and gripper control; RackHand owns approvals,
+workflow sequencing, camera/scale verification, and inventory commits.
+
+The server queries readiness, homed axes, and printer activity before movement,
+posts a macro to `/printer/gcode/script`, appends `M400` to wait for queued motion,
+and checks readiness again before reporting completion. See the
+[Moonraker printer API](https://moonraker.readthedocs.io/en/latest/external_api/printer/)
+and [Klipper G-code documentation](https://www.klipper3d.org/G-Codes.html).
 
 See [Pi camera and scale setup](hardware/warehouse-camera/README.md) and
 [camera.env.example](hardware/warehouse-camera/camera.env.example). The Pi’s
@@ -273,8 +281,10 @@ installing dependencies, because Prisma generation reads `DIRECT_URL`:
 | `AWS_REGION`                | AWS region where your selected Bedrock model is accessible.                                                                     |
 | `BEDROCK_MODEL_ID`          | Bedrock model or inference-profile ID enabled for your account.                                                                 |
 | `GEMINI_API_KEY`            | Gemini key for camera measurement and inventory verification.                                                                   |
-| `GANTRY_MODE`               | Keep `simulation`; real gantry control is not implemented.                                                                      |
-| `AUDIT_CAPTURE_MODE`        | Locked to `SIMULATION` in this public demo; `PROD` requests are rejected. Only B1-01 and B1-02 may move.                        |
+| `WAREHOUSE_SIMULATION_LOCKED` | Default `true` protects the public demo. Only a private server setting of `false` unlocks physical deployment.                 |
+| `GANTRY_MODE`               | `simulation` by default; `production` selects Klipper when the server lock is disabled.                                        |
+| `AUDIT_CAPTURE_MODE`        | `SIMULATION` for the public demo; `PROD` is required with the production gantry.                                                 |
+| `KLIPPER_BASE_URL`          | Moonraker API URL: `https://kli-prod.enbotics.tech`. Set `KLIPPER_API_KEY` if authentication requires it.                         |
 
 Bedrock uses the standard AWS credential chain. Configure an AWS profile or set
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN` for
@@ -342,6 +352,76 @@ To analyze an engineering plan, configure:
 intentionally accessible through API-key access. This integration reads the
 plan; it does not edit it.
 
+### Private production gantry setup
+
+In the private application's `.env.local` (or deployment environment), set:
+
+```dotenv
+WAREHOUSE_SIMULATION_LOCKED=false
+GANTRY_MODE=production
+AUDIT_CAPTURE_MODE=PROD
+KLIPPER_BASE_URL=https://kli-prod.enbotics.tech
+# KLIPPER_API_KEY=your-server-only-moonraker-key
+KLIPPER_HOME_MACRO=RACKHAND_HOME
+KLIPPER_PUTAWAY_MACRO=RACKHAND_PUTAWAY
+KLIPPER_RETRIEVE_MACRO=RACKHAND_RETRIEVE
+KLIPPER_PRESENT_BIN_MACRO=RACKHAND_RETRIEVE
+KLIPPER_RETURN_BIN_MACRO=RACKHAND_RETURN
+KLIPPER_AUDIT_PRESENT_MACRO=RACKHAND_RETRIEVE
+KLIPPER_AUDIT_RETURN_MACRO=RACKHAND_RETURN
+```
+
+Replace the macro bindings with your installed names, then restart RackHand.
+The hostname must route `/printer/*` requests to Moonraker; a dashboard HTML
+page alone is insufficient. Credentials stay on the application server. The
+header displays **GANTRY MODE: PRODUCTION** and the rack badge shows
+**Production · Klipper**. All configured rack positions `B1-01` through `B6-05`
+are available through the usual warehouse checks and approval workflow.
+
+#### Required macro contract
+
+Macro bindings default to the names above; RackHand does not install them on
+the machine. Home receives no parameters. Every bin macro receives:
+
+```text
+BIN=B6-03 BED=6 SLOT=3 STATION=OUTPUT
+```
+
+`BED` and `SLOT` identify the calibrated shelf position. `STATION` is the
+destination for retrieval/presentation and the source for return/putaway:
+`OUTPUT`, `INTAKE`, or `SCAN_STATION`. For example, a retrieval sends:
+
+```gcode
+RACKHAND_RETRIEVE BIN=B6-03 BED=6 SLOT=3 STATION=OUTPUT
+M400
+```
+
+Your macros must implement the corresponding complete, calibrated transfer,
+including gripper actions and failure checks. Return and putaway must park the
+unloaded carriage after shelving the bin. Keep transfers synchronous: a macro
+that schedules `delayed_gcode` and returns early cannot provide completion
+through this controller. If existing macros use other parameter names, add
+Klipper wrapper macros that accept this contract and call the existing macros;
+see [Klipper command templates](https://www.klipper3d.org/Command_Templates.html).
+
+Confirm the installed macro names using the read-only Moonraker
+`GET /printer/gcode/help` endpoint or your Klipper dashboard. Home the machine
+from that dashboard before starting a bin workflow. Connect and authenticate
+the Pi camera/scale worker as described in the hardware setup. Raw development
+gantry endpoints are disabled whenever the production controller is selected,
+including under `next dev`; real transfers use approved warehouse workflows.
+
+Requests are serialized using the warehouse hardware lease. Macro errors,
+timeouts, unexpected acknowledgements, or failed post-movement status checks
+produce a failed movement, preserve bin reservations and idempotency, and block
+further commands in that server process.
+RackHand never resends an uncertain command automatically: the machine may
+continue moving after an HTTP timeout. Inspect the machine and reconcile bin
+and workflow state before restarting the application. Use one persistent
+application process for production control; operation history and this failure
+latch are process-local. Mock HTTP tests verify the integration without moving
+the real gantry; this repository has not verified the live macro bindings.
+
 <details>
 <summary>Environment variable reference</summary>
 
@@ -367,8 +447,9 @@ when needed. Restart the application after changing environment settings.
 
 | Parameter                             | Example / configuration | Purpose                                                                                                 |
 | ------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| `GANTRY_MODE`                         | `simulation`            | Simulated bin movement. Hardware mode is not implemented.                                               |
-| `AUDIT_CAPTURE_MODE`                  | `SIMULATION`           | Public demo is locked; environment values cannot enable physical warehouse captures.                    |
+| `WAREHOUSE_SIMULATION_LOCKED`         | `true`                  | Server-only public demo lock. Only explicit `false` permits production settings.                         |
+| `GANTRY_MODE`                         | `simulation`            | `production` selects Klipper when unlocked; `PROD` and legacy `HARDWARE` are accepted aliases.             |
+| `AUDIT_CAPTURE_MODE`                  | `SIMULATION`            | `PROD` uses physical camera/scale evidence when unlocked. Required for production gantry movement.         |
 | `GANTRY_SIM_MOVE_DELAY_MS`            | `300`                   | Simulator movement delay, in milliseconds.                                                              |
 | `GANTRY_SIM_PICK_DELAY_MS`            | `200`                   | Simulator bin-pick delay, in milliseconds.                                                              |
 | `GANTRY_SIM_DROP_DELAY_MS`            | `200`                   | Simulator bin-drop delay, in milliseconds.                                                              |
@@ -376,6 +457,25 @@ when needed. Restart the application after changing environment settings.
 | `GANTRY_SIM_BIN_TRANSFER_DELAY_MS`    | `5000`                  | Guided bin presentation/return delay, in milliseconds.                                                  |
 | `PUTAWAY_INACTIVITY_TIMEOUT_MS`       | `240000`                | Workflow inactivity window, in milliseconds; successful camera/retry transitions refresh it.            |
 | `PUTAWAY_CONTAINER_TARE_GRAMS`        | `107`                   | Empty-bin weight subtracted from scale readings; configure the actual weight in grams.                  |
+
+#### Klipper / Moonraker
+
+These settings are server-only. Configure installed macro names to match the
+contract below; do not put scripts or parameter expressions in the bindings.
+
+| Parameter | Default / example | Purpose |
+| --- | --- | --- |
+| `KLIPPER_BASE_URL` | `https://kli-prod.enbotics.tech` | Required in production; HTTP(S) Moonraker API root. |
+| `KLIPPER_API_KEY` | Optional secret | Moonraker `X-Api-Key` authentication. Omit only if the server is already authorized. |
+| `KLIPPER_REQUEST_TIMEOUT_MS` | `90000` | Time allowed for a macro and queued motion to finish. |
+| `KLIPPER_STATUS_TIMEOUT_MS` | `5000` | Time allowed for a read-only printer status request. |
+| `KLIPPER_HOME_MACRO` | `RACKHAND_HOME` | Home X, Y and Z. |
+| `KLIPPER_PUTAWAY_MACRO` | `RACKHAND_PUTAWAY` | Store a bin from INTAKE and park the unloaded carriage. |
+| `KLIPPER_RETRIEVE_MACRO` | `RACKHAND_RETRIEVE` | Fetch a bin to OUTPUT. |
+| `KLIPPER_PRESENT_BIN_MACRO` | `RACKHAND_RETRIEVE` | Present a shelf bin at INTAKE for guided putaway. |
+| `KLIPPER_RETURN_BIN_MACRO` | `RACKHAND_RETURN` | Return a bin from OUTPUT or INTAKE and park the unloaded carriage. |
+| `KLIPPER_AUDIT_PRESENT_MACRO` | `RACKHAND_RETRIEVE` | Present a bin at SCAN_STATION for an audit. |
+| `KLIPPER_AUDIT_RETURN_MACRO` | `RACKHAND_RETURN` | Return a bin from SCAN_STATION and park the unloaded carriage. |
 
 #### Camera worker connection and capture limits
 
@@ -520,13 +620,14 @@ nightly scheduler or implemented email/chat notification service.
 
 ### Production sensing
 
-Physical warehouse sensing cannot be enabled in this locked public workspace.
-The Pi camera and scale integration remains in the code, but changing
-`AUDIT_CAPTURE_MODE` or posting `PROD` to the mode API cannot activate it.
+The public deployment keeps physical sensing and movement disabled. A private
+hardware deployment must explicitly disable the server lock and configure both
+capture and gantry modes; posting `PROD` to the mode API cannot switch modes.
 
 ### Simulation configuration
 
-Both gantry and warehouse capture remain in Simulation across server restarts.
+With `WAREHOUSE_SIMULATION_LOCKED=true` (the default), both gantry and warehouse
+capture remain in Simulation across server restarts.
 Only `B1-01` and `B1-02` may move; all other bins remain available for read-only
 inspection. The server enforces this limit for retrieval, putaway, returns and
 audits, including direct movement endpoints. Simulation writes to the
@@ -545,6 +646,7 @@ configured database, so use a development/demo database.
 | Duplicate automatic acceptance | Acceptance is idempotent to handle client/server races. |
 | Browser closes during trusted verification | Server-owned automatic acceptance continues the workflow. |
 | Return verification fails | Keep stock unapproved and do not complete a successful return. |
+| Klipper macro fails or completion is uncertain | Fail the movement, block further commands, and require machine/bin reconciliation before restarting. No automatic command retry. |
 
 Interactive retrieve/return checks can ask for removal and retry. Upcoming-plan
 audits retain report-only review outcomes; they do not use the same interaction.

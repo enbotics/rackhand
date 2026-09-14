@@ -274,7 +274,7 @@ export function GuidedPutawayDialog({
     [destinationChoices],
   );
   const compatibleChoices = destinationChoices.filter(
-    (choice) => choice.evaluation?.eligible && isSimulationEligibleBin(choice.bin.code),
+    (choice) => choice.evaluation?.eligible && (gantry?.mode === "PRODUCTION" || isSimulationEligibleBin(choice.bin.code)),
   );
   const recommendedChoice =
     compatibleChoices.find((choice) => choice.evaluation?.alreadyStoresPart) ??
@@ -677,7 +677,7 @@ export function GuidedPutawayDialog({
                         {row.bins.map((bin) => {
                           const choice = choiceByBinId.get(bin.binId);
                           const evaluation = choice?.evaluation;
-                          const simulationAllowed = isSimulationEligibleBin(bin.code);
+                          const simulationAllowed = gantry?.mode === "PRODUCTION" || isSimulationEligibleBin(bin.code);
                           const eligible = evaluation?.eligible === true && simulationAllowed;
                           const chosen = selectedChoice?.bin.binId === bin.binId;
                           const isDefault = recommendedChoice?.bin.binId === bin.binId;

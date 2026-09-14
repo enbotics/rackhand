@@ -307,12 +307,14 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
   }
 
   if (operation.status !== "COMPLETED") {
-    // The item is still assumed to be where it was: nothing left the bin.
-    await releaseClaim(movement.id, sourceBin.id, operation.operationId);
+    // A dispatched hardware command may have moved the bin despite a failed acknowledgement.
+    await releaseClaim(movement.id, sourceBin.id, operation.operationId, operation.reconciliationRequired);
     logRetrieval(
       `movement=${movement.id} gantry=${operation.operationId} status=FAILED reason=${operation.error ?? "unknown"}`,
     );
-    return fail(requestId, "gantry_failed", "The gantry did not complete the retrieval.", {
+    return fail(requestId, "gantry_failed", operation.reconciliationRequired
+      ? "The retrieval's physical outcome is uncertain. The bin remains reserved; inspect the machine and reconcile before retrying."
+      : "The gantry did not complete the retrieval.", {
       movementId: movement.id,
       gantryOperationId: operation.operationId,
       partId: part.id,
@@ -484,8 +486,8 @@ function isUniqueViolation(value: unknown): boolean {
 }
 
 /**
- * Undoes a claim that never moved the bin: the movement becomes FAILED, the
- * source returns to OCCUPIED, and the request id is released.
+ * Ends a failed claim. When no physical outcome is uncertain, the source
+ * returns to OCCUPIED and the request id is released. Otherwise keep both.
  *
  * The idempotency key is cleared so the operator can retry the same request
  * after a failure, exactly as putaway does.
@@ -494,6 +496,7 @@ async function releaseClaim(
   movementId: string,
   binId: string,
   gantryOperationId?: string,
+  reconciliationRequired = false,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.movement.update({
@@ -501,10 +504,11 @@ async function releaseClaim(
       data: {
         status: "FAILED",
         completedAt: new Date(),
-        idempotencyKey: null,
+        ...(reconciliationRequired ? {} : { idempotencyKey: null }),
         ...(gantryOperationId ? { gantryOperationId } : {}),
       },
     });
+    if (reconciliationRequired) return;
     await tx.bin.updateMany({
       where: { id: binId, status: "RESERVED" },
       data: { status: "OCCUPIED" },

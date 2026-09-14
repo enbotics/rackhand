@@ -1,9 +1,7 @@
 /**
  * Chooses which gantry implementation the application talks to.
  *
- * This is the only place that knows a simulator exists. Swapping in real
- * hardware later is a change here and nowhere else — routes, services and the
- * future Strands tool all depend on the GantryController interface.
+ * Routes, warehouse services and agent tools share the same controller interface.
  *
  * SIMULATION STATE IS PROCESS-LOCAL and intended for the local hackathon MVP.
  * The instance is cached on globalThis so Next.js hot reloads (and separate
@@ -14,6 +12,7 @@
  */
 import type { GantryController } from "./controller";
 import { GantryError } from "./errors";
+import { KlipperGantryController, readKlipperOptions } from "./klipper";
 import {
   DEFAULT_SIM_HOME_DELAY_MS,
   DEFAULT_SIM_BIN_TRANSFER_DELAY_MS,
@@ -25,15 +24,21 @@ import {
 } from "./simulator";
 import type { GantryMode } from "./types";
 import { withWarehouseHardwareLease } from "@/lib/warehouse/hardware-lease";
-import { isSimulationEligibleBin, simulationScopeMessage } from "@/lib/warehouse/simulation-policy";
+import { simulationScopeMessage } from "@/lib/warehouse/simulation-policy";
+import { getAuditCaptureMode, isOutOfSimulationScope } from "@/lib/warehouse/audit-capture-mode";
+import { isWarehouseSimulationLocked } from "@/lib/warehouse/deployment-mode";
 
-/** The public workspace is locked to the simulated controller. */
+/** Only a server environment setting can unlock real hardware. */
 export function getGantryMode(): GantryMode {
-  return "SIMULATION";
+  if (isWarehouseSimulationLocked()) return "SIMULATION";
+  const mode = process.env.GANTRY_MODE?.trim().toUpperCase() || "SIMULATION";
+  if (mode === "SIMULATION") return "SIMULATION";
+  if (["PRODUCTION", "PROD", "HARDWARE"].includes(mode)) return "PRODUCTION";
+  throw new GantryError("gantry_configuration_invalid", "GANTRY_MODE must be simulation or production.");
 }
 
-async function moveSimulationBin<T>(binCode: string, work: () => Promise<T>): Promise<T> {
-  if (!isSimulationEligibleBin(binCode)) {
+async function moveBin<T>(binCode: string, work: () => Promise<T>): Promise<T> {
+  if (isOutOfSimulationScope(binCode)) {
     throw new GantryError("simulation_scope_violation", simulationScopeMessage(binCode));
   }
   return withWarehouseHardwareLease(work);
@@ -69,35 +74,44 @@ function readSimulatorOptions(): SimulatorOptions {
  * A small explicit version preserves one controller across route bundles and
  * still gives implementation changes a deliberate cache-busting mechanism.
  */
-const GANTRY_CONTROLLER_CACHE_VERSION = 3;
+const GANTRY_CONTROLLER_CACHE_VERSION = 4;
 const globalForGantry = globalThis as unknown as {
   gantryController?: GantryController;
   gantryControllerVersion?: number;
+  gantryControllerMode?: GantryMode;
   leasedGantryController?: GantryController;
   leasedGantrySource?: GantryController;
 };
 
 export function getGantryController(): GantryController {
+  const mode = getGantryMode();
+  if (mode === "PRODUCTION" && getAuditCaptureMode() !== "PROD") {
+    throw new GantryError("gantry_configuration_invalid", "Production gantry requires AUDIT_CAPTURE_MODE=PROD so real movement uses physical verification.");
+  }
   if (
     !globalForGantry.gantryController ||
-    globalForGantry.gantryControllerVersion !== GANTRY_CONTROLLER_CACHE_VERSION
+    globalForGantry.gantryControllerVersion !== GANTRY_CONTROLLER_CACHE_VERSION ||
+    globalForGantry.gantryControllerMode !== mode
   ) {
-    globalForGantry.gantryController = new SimulatedGantryController(readSimulatorOptions());
+    globalForGantry.gantryController = mode === "PRODUCTION"
+      ? new KlipperGantryController(readKlipperOptions())
+      : new SimulatedGantryController(readSimulatorOptions());
     globalForGantry.gantryControllerVersion = GANTRY_CONTROLLER_CACHE_VERSION;
+    globalForGantry.gantryControllerMode = mode;
   }
   const controller = globalForGantry.gantryController;
   if (globalForGantry.leasedGantrySource !== controller) {
     globalForGantry.leasedGantrySource = controller;
     globalForGantry.leasedGantryController = {
-      getStatus: () => controller.getStatus(),
+      getStatus: async () => ({ ...await controller.getStatus(), simulationLocked: isWarehouseSimulationLocked() }),
       getRecentOperations: (limit) => controller.getRecentOperations(limit),
       home: () => withWarehouseHardwareLease(() => controller.home()),
-      putaway: (input) => moveSimulationBin(input.destination, () => controller.putaway(input)),
-      retrieve: (input) => moveSimulationBin(input.source, () => controller.retrieve(input)),
-      presentBin: (input) => moveSimulationBin(input.source, () => controller.presentBin(input)),
-      returnBin: (input) => moveSimulationBin(input.destination, () => controller.returnBin(input)),
-      presentBinForAudit: (input) => moveSimulationBin(input.binCode, () => controller.presentBinForAudit(input)),
-      returnBinFromAudit: (input) => moveSimulationBin(input.binCode, () => controller.returnBinFromAudit(input)),
+      putaway: (input) => moveBin(input.destination, () => controller.putaway(input)),
+      retrieve: (input) => moveBin(input.source, () => controller.retrieve(input)),
+      presentBin: (input) => moveBin(input.source, () => controller.presentBin(input)),
+      returnBin: (input) => moveBin(input.destination, () => controller.returnBin(input)),
+      presentBinForAudit: (input) => moveBin(input.binCode, () => controller.presentBinForAudit(input)),
+      returnBinFromAudit: (input) => moveBin(input.binCode, () => controller.returnBinFromAudit(input)),
     };
   }
   return globalForGantry.leasedGantryController!;
@@ -107,4 +121,5 @@ export function getGantryController(): GantryController {
 export function resetGantryController(): void {
   globalForGantry.gantryController = undefined;
   globalForGantry.gantryControllerVersion = undefined;
+  globalForGantry.gantryControllerMode = undefined;
 }

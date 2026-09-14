@@ -18,6 +18,10 @@ export const GANTRY_ERROR_STATUS = {
   gantry_busy: 409,
   /** GANTRY_MODE asked for a controller this milestone does not implement. */
   gantry_mode_unsupported: 501,
+  gantry_configuration_invalid: 422,
+  gantry_not_ready: 503,
+  gantry_offline: 503,
+  gantry_reconciliation_required: 409,
   /**
    * A development-only endpoint was called outside development (Milestone 13).
    *

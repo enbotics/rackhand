@@ -24,8 +24,7 @@ import { useWarehouseSession } from "./session";
  * open — the approval that would otherwise be invisible while they are
  * reading history or standing at the scan station. The decision itself lives
  * inline in the Warehouse Agent conversation on that page, never a separate
- * panel. GANTRY MODE stays pinned across every page so nothing can imply that
- * real hardware exists.
+ * panel. GANTRY MODE stays pinned across every page to identify the controller.
  */
 
 interface Tab {
@@ -185,7 +184,7 @@ export function WarehouseNav() {
           </span>
           <span className="inline-flex items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-2.5 py-1 font-medium tracking-[0.1em] text-warn">
             <span aria-hidden="true">●</span>
-            GANTRY MODE: {gantry?.mode ?? "SIMULATION"}
+            GANTRY MODE: {gantry?.mode ?? "CONNECTING"}
           </span>
         </div>
       </div>

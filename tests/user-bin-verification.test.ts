@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { GantryOperation } from "@/lib/gantry/types";
 
 const fixture = vi.hoisted(() => {
   const part = { id: "part-1", sku: "SENSOR", canonicalName: "Sensor modules" };
@@ -55,8 +56,8 @@ const fixture = vi.hoisted(() => {
     },
   };
   return { part, bin, stock, movements, events, database, verify: vi.fn(), revert: vi.fn(),
-    retrieve: vi.fn(async () => { events.push("retrieve"); return { status: "COMPLETED", operationId: "gantry-1" }; }),
-    returnBin: vi.fn(async () => { events.push("return"); return { status: "COMPLETED", operationId: "gantry-2" }; }) };
+    retrieve: vi.fn<() => Promise<Partial<GantryOperation>>>(async () => { events.push("retrieve"); return { status: "COMPLETED", operationId: "gantry-1" }; }),
+    returnBin: vi.fn<() => Promise<Partial<GantryOperation>>>(async () => { events.push("return"); return { status: "COMPLETED", operationId: "gantry-2" }; }) };
 });
 
 vi.mock("@/lib/warehouse/db", () => ({ prisma: {
@@ -102,6 +103,30 @@ beforeEach(() => {
 });
 
 describe("user-requested bin checkout and return", () => {
+  it("preserves reservations and idempotency after an uncertain physical retrieval", async () => {
+    fixture.retrieve.mockResolvedValueOnce({ status: "FAILED", operationId: "uncertain-retrieval", error: "movement_timeout", reconciliationRequired: true });
+    expect(await executeRetrieval({ sourceBinCode: "B1-02", requestId: "uncertain" }))
+      .toMatchObject({ ok: false, reason: "gantry_failed", message: expect.stringContaining("remains reserved") });
+    expect(fixture.bin.status).toBe("RESERVED");
+    expect(fixture.stock.quantity).toBe(12);
+    expect(fixture.movements[0]).toMatchObject({ status: "FAILED", idempotencyKey: "retrieval:uncertain", gantryOperationId: "uncertain-retrieval" });
+    expect(fixture.verify).not.toHaveBeenCalled();
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "uncertain" });
+    expect(fixture.retrieve).toHaveBeenCalledOnce();
+  });
+
+  it("preserves reservations and the original stock after an uncertain physical return", async () => {
+    await executeRetrieval({ sourceBinCode: "B1-02", requestId: "before-uncertain-return" });
+    fixture.verify.mockResolvedValueOnce({ imageUrl: "/returned.jpg", capturedAt: new Date(), quantity: 10, simulated: false, inventoryUpdateApproved: true });
+    fixture.returnBin.mockResolvedValueOnce({ status: "FAILED", operationId: "uncertain-return", error: "controller_error", reconciliationRequired: true });
+    expect(await returnCheckedOutBin({ binCode: "B1-02" })).toMatchObject({ ok: false, reason: "gantry_failed" });
+    expect(fixture.bin.status).toBe("RESERVED");
+    expect(fixture.stock.quantity).toBe(12);
+    expect(fixture.movements[1]).toMatchObject({ status: "FAILED", gantryOperationId: "uncertain-return" });
+    expect(await returnCheckedOutBin({ binCode: "B1-02" })).toMatchObject({ ok: false, reason: "bin_unavailable" });
+    expect(fixture.returnBin).toHaveBeenCalledOnce();
+    expect(fixture.revert).not.toHaveBeenCalled();
+  });
   it("moves to checkout before verification, then saves a trusted mismatch", async () => {
     fixture.verify.mockResolvedValueOnce({ imageUrl: "/checked.jpg", capturedAt: new Date(),
       quantity: 10, simulated: true, inventoryUpdateApproved: true });

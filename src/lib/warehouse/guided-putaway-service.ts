@@ -550,7 +550,13 @@ export async function presentGuidedPutawayBin(
         },
       );
     }
-    throw error;
+    await prisma.movement.updateMany({
+      where: { id: loaded.id, status: "PRESENTING" },
+      data: { status: "FAILED", completedAt: new Date() },
+    });
+    return failure("gantry_failed", "The bin presentation could not be started. Check the controller and reconcile the reserved bin.", {
+      ...info, databaseStatus: "RECONCILIATION_REQUIRED", gantryStatus: "FAILED",
+    });
   }
 
   if (operation.status !== "COMPLETED") {

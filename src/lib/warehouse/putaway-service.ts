@@ -466,8 +466,11 @@ export async function executePutaway(input: PutawayRequest): Promise<PutawayResu
       bin.status,
       operation.operationId,
       relocatingCheckout ? checkedOutBin : null,
+      operation.reconciliationRequired,
     );
-    return fail(scanId, "gantry_failed", "The gantry did not complete the putaway.", {
+    return fail(scanId, "gantry_failed", operation.reconciliationRequired
+      ? "The putaway's physical outcome is uncertain. Bins remain reserved and inventory was not saved; reconcile the machine before retrying."
+      : "The gantry did not complete the putaway.", {
       movementId: movement.id,
       gantryOperationId: operation.operationId,
       error: operation.error ?? undefined,
@@ -811,8 +814,10 @@ export async function returnCheckedOutBin(
   }
 
   if (operation.status !== "COMPLETED") {
-    await releaseClaim(movement.id, bin.id, "CHECKED_OUT", operation.operationId);
-    return fail("", "gantry_failed", "The gantry did not complete the return.", {
+    await releaseClaim(movement.id, bin.id, "CHECKED_OUT", operation.operationId, null, operation.reconciliationRequired);
+    return fail("", "gantry_failed", operation.reconciliationRequired
+      ? "The return's physical outcome is uncertain. The bin remains reserved and inventory was not saved; reconcile the machine before retrying."
+      : "The gantry did not complete the return.", {
       movementId: movement.id,
       gantryOperationId: operation.operationId,
       error: operation.error ?? undefined,
@@ -902,6 +907,7 @@ async function releaseClaim(
   originalStatus: string,
   gantryOperationId?: string,
   checkedOutSource?: Bin | null,
+  reconciliationRequired = false,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.movement.update({
@@ -909,10 +915,11 @@ async function releaseClaim(
       data: {
         status: "FAILED",
         completedAt: new Date(),
-        idempotencyKey: null,
+        ...(reconciliationRequired ? {} : { idempotencyKey: null }),
         ...(gantryOperationId ? { gantryOperationId } : {}),
       },
     });
+    if (reconciliationRequired) return;
     await tx.bin.updateMany({
       where: { id: binId, status: "RESERVED" },
       data: { status: originalStatus },

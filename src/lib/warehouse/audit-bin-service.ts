@@ -577,7 +577,9 @@ export async function executeBinAudit(
 
   const presented = await gantry.presentBinForAudit({ binCode: bin.code }).catch(() => null);
   if (!presented || presented.status !== "COMPLETED") {
-    await prisma.bin.updateMany({ where: { id: bin.id, status: "AUDITING" }, data: { status: originalStatus } });
+    if (!presented?.reconciliationRequired) {
+      await prisma.bin.updateMany({ where: { id: bin.id, status: "AUDITING" }, data: { status: originalStatus } });
+    }
     return failAudit(audit.id, bin.code, audit.expectedQuantity, "audit_move_failed", simulated ? "SIMULATION" : "PROD");
   }
   await reportAuditMovementPhase(audit.id, "AT_SCAN");

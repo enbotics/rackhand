@@ -1258,7 +1258,7 @@ export function WarehouseRack({
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <WarehouseActionsMenu onManageBins={onManageBins} />
-          <AuditCaptureModeToggle />
+          <AuditCaptureModeToggle mode={rawGantry?.mode ?? null} locked={rawGantry?.simulationLocked ?? true} />
         </div>
       </div>
       {error && (

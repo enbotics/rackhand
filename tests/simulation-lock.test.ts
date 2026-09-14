@@ -21,6 +21,7 @@ import { requestPutawayCameraCapture } from "@/lib/warehouse/putaway-verificatio
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("WAREHOUSE_SIMULATION_LOCKED", "true");
   resetGantryController();
   fixture.lease.mockImplementation((work: () => Promise<unknown>) => work());
   for (const name of ["MOVE", "PICK", "DROP", "HOME", "BIN_TRANSFER"]) vi.stubEnv(`GANTRY_SIM_${name}_DELAY_MS`, "0");

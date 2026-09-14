@@ -9,6 +9,12 @@ vi.mock("@/components/warehouse/session", () => ({ useWarehouseSession: () => ({
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("simulation guide", () => {
+  it("labels a production deployment without showing the Simulation lock or guide", () => {
+    render(<AuditCaptureModeToggle mode="PRODUCTION" locked={false} />);
+    expect(screen.getByText("Production · Klipper")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Simulation locked — view demo guide" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
   it("opens the floating dialog by default with the lock, allowed bins and prompts", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
