@@ -22,6 +22,7 @@
  */
 import { prisma } from "./db";
 import { getInventoryByBin, getInventoryForPart } from "./inventory-service";
+import { retrievalStockIssue } from "./retrieval-stock";
 import { getBinByCode, getPartById, getPartBySku, updateMovementStatus } from "./repository";
 import {
   RETRIEVAL_DESTINATION,
@@ -149,13 +150,9 @@ export async function executeRetrieval(input: RetrievalRequest): Promise<Retriev
 
   /* 4-5 — fresh inventory, re-queried rather than remembered. */
   const summary = await getInventoryForPart(part.sku);
-  if (summary.totalQuantity <= 0) {
-    return fail(
-      requestId,
-      "out_of_stock",
-      `${part.sku} is in the catalog but no bin currently holds any stock of it.`,
-      { partId: part.id },
-    );
+  const stockIssue = retrievalStockIssue(summary, input.sourceBinCode);
+  if (stockIssue) {
+    return fail(requestId, stockIssue.reason, stockIssue.message, { partId: part.id, sourceBinCode: stockIssue.sourceBinCode });
   }
 
   /* 6 — source bin. Supplied bins are validated exactly like chosen ones. */

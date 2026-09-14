@@ -74,7 +74,10 @@ vi.mock("@/lib/warehouse/repository", () => ({
 }));
 vi.mock("@/lib/warehouse/inventory-service", () => ({
   getInventoryByBin: async () => [{ sku: fixture.part.sku, quantity: fixture.stock.quantity }],
-  getInventoryForPart: async () => ({ totalQuantity: fixture.stock.quantity,
+  getInventoryForPart: async () => ({ part: { id: fixture.part.id, sku: fixture.part.sku, canonicalName: fixture.part.canonicalName },
+    totalQuantity: fixture.bin.status === "OCCUPIED" ? fixture.stock.quantity : 0,
+    checkedOutQuantity: fixture.bin.status === "CHECKED_OUT" ? fixture.stock.quantity : 0,
+    recordedQuantity: fixture.stock.quantity,
     locations: [{ binCode: fixture.bin.code, quantity: fixture.stock.quantity, binStatus: fixture.bin.status }] }),
 }));
 vi.mock("@/lib/gantry/factory", () => ({ getGantryController: () => ({
@@ -103,6 +106,20 @@ beforeEach(() => {
 });
 
 describe("user-requested bin checkout and return", () => {
+  it.each(["sku", "bin"])("reports existing checkout stock instead of out_of_stock for a %s request", async (identity) => {
+    fixture.bin.status = "CHECKED_OUT";
+    fixture.stock.quantity = 18;
+    const result = await executeRetrieval(identity === "sku"
+      ? { sku: fixture.part.sku, requestId: "already-out" }
+      : { sourceBinCode: fixture.bin.code, requestId: "already-out" });
+    expect(result).toMatchObject({ ok: false, reason: "source_bin_checked_out", sourceBinCode: fixture.bin.code,
+      message: expect.stringContaining("already at checkout with 18 recorded units") });
+    expect(fixture.retrieve).not.toHaveBeenCalled();
+    expect(fixture.verify).not.toHaveBeenCalled();
+    expect(fixture.movements).toHaveLength(0);
+    expect(fixture.bin.status).toBe("CHECKED_OUT");
+    expect(fixture.stock.quantity).toBe(18);
+  });
   it("preserves reservations and idempotency after an uncertain physical retrieval", async () => {
     fixture.retrieve.mockResolvedValueOnce({ status: "FAILED", operationId: "uncertain-retrieval", error: "movement_timeout", reconciliationRequired: true });
     expect(await executeRetrieval({ sourceBinCode: "B1-02", requestId: "uncertain" }))

@@ -95,16 +95,16 @@ Strands connects an engineering request to scoped capabilities and feeds their
 observed results back into the next model turn. The implementation uses the
 TypeScript SDK, `@strands-agents/sdk`.
 
-| Strands feature | Use in RackHand | Source |
-| --- | --- | --- |
-| `Agent` and `BedrockModel` | Warehouse orchestration, planning, and audit interpretation. | [Warehouse Agent](src/lib/agents/warehouse-agent.ts), [model configuration](src/lib/agents/model.ts) |
-| `Agent.asTool()` | Mount the Materials Planner and Inventory Auditor as specialist tools. | [Agent construction](src/lib/agents/warehouse-agent.ts) |
-| Structured output schemas | Validate specialist requirements and audit responses. | [Materials Planner](src/lib/agents/materials-planner-agent.ts), [Inventory Auditor](src/lib/agents/inventory-auditor-agent.ts) |
-| `HumanInTheLoop` | Interrupt restricted client tool calls before execution. | [Approval boundary](src/lib/agents/tools/index.ts) |
-| `Graph` | Sequence guarded retrieval, putaway, and inventory-audit workflows. | [Workflow graphs](src/lib/warehouse/graphs) |
-| `MemoryManager` | Inject bounded persisted audit-history context into the Auditor. | [Auditor memory store](src/lib/agents/audit-history-memory-store.ts) |
-| `GoalLoop` and `GoogleModel` | Refine and evaluate visual evidence using the same image. | [Vision agents](src/lib/geminiAuditCount.ts) |
-| Lifecycle hooks | Show tool activity and execution results without exposing private reasoning. | [Trace hooks](src/lib/observability/strands-hooks.ts) |
+| Strands feature              | Use in RackHand                                                              | Source                                                                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `Agent` and `BedrockModel`   | Warehouse orchestration, planning, and audit interpretation.                 | [Warehouse Agent](src/lib/agents/warehouse-agent.ts), [model configuration](src/lib/agents/model.ts)                           |
+| `Agent.asTool()`             | Mount the Materials Planner and Inventory Auditor as specialist tools.       | [Agent construction](src/lib/agents/warehouse-agent.ts)                                                                        |
+| Structured output schemas    | Validate specialist requirements and audit responses.                        | [Materials Planner](src/lib/agents/materials-planner-agent.ts), [Inventory Auditor](src/lib/agents/inventory-auditor-agent.ts) |
+| `HumanInTheLoop`             | Interrupt restricted client tool calls before execution.                     | [Approval boundary](src/lib/agents/tools/index.ts)                                                                             |
+| `Graph`                      | Sequence guarded retrieval, putaway, and inventory-audit workflows.          | [Workflow graphs](src/lib/warehouse/graphs)                                                                                    |
+| `MemoryManager`              | Inject bounded persisted audit-history context into the Auditor.             | [Auditor memory store](src/lib/agents/audit-history-memory-store.ts)                                                           |
+| `GoalLoop` and `GoogleModel` | Refine and evaluate visual evidence using the same image.                    | [Vision agents](src/lib/geminiAuditCount.ts)                                                                                   |
+| Lifecycle hooks              | Show tool activity and execution results without exposing private reasoning. | [Trace hooks](src/lib/observability/strands-hooks.ts)                                                                          |
 
 The visible loop is **OBSERVE → DECIDE → ACT → RESULT**: read the goal and
 inventory, select a capability, execute it through services, then use the
@@ -120,13 +120,13 @@ action.
 
 ## Agents
 
-| Agent | Responsibility | Boundary |
-| --- | --- | --- |
-| RackHand / `warehouse-agent` | Coordinate the engineer’s request, invoke specialists and workflows, and report observed outcomes. | Restricted client actions pass through the approval policy. |
-| Parts Planning / `materials-planner-agent` | Read the assembly plan, search catalog and stock, and return exact required SKUs and quantities. | Read-only; cannot move bins or change stock. |
-| `inventory-auditor-agent` | Explain audit results using latest evidence and history. | Client delegation is read-only. Trusted server construction can enable sequential audit execution. |
-| Vision Analyst | Identify contents and anomalies from the captured image. | No inventory-write or motion tools. |
-| Vision Judge | Evaluate qualifying image observations independently. | Reuses evidence; cannot recapture or move the rack. |
+| Agent                                      | Responsibility                                                                                     | Boundary                                                                                           |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| RackHand / `warehouse-agent`               | Coordinate the engineer’s request, invoke specialists and workflows, and report observed outcomes. | Restricted client actions pass through the approval policy.                                        |
+| Parts Planning / `materials-planner-agent` | Read the assembly plan, search catalog and stock, and return exact required SKUs and quantities.   | Read-only; cannot move bins or change stock.                                                       |
+| `inventory-auditor-agent`                  | Explain audit results using latest evidence and history.                                           | Client delegation is read-only. Trusted server construction can enable sequential audit execution. |
+| Vision Analyst                             | Identify contents and anomalies from the captured image.                                           | No inventory-write or motion tools.                                                                |
+| Vision Judge                               | Evaluate qualifying image observations independently.                                              | Reuses evidence; cannot recapture or move the rack.                                                |
 
 The Warehouse Agent also retains bounded, server-owned conversation snapshots
 per session. This memory and pending approvals are process-local and expire or
@@ -138,13 +138,13 @@ The normal Warehouse Agent exposes **15 tools**: nine read/check tools, four
 workflow tools, and two specialist delegations. The allowlist is defined in
 [tools/index.ts](src/lib/agents/tools/index.ts).
 
-| Capability | Tools |
-| --- | --- |
-| Status and activity | `get_gantry_status`, `observe_daily_bin_activity` |
-| Catalog and inventory | `search_catalog`, `get_part`, `search_inventory`, `match_catalog` |
-| Bin lookup | `get_bin_status`, `list_available_bins`, `list_bins` |
-| Physical workflows | `execute_retrieval`, `execute_putaway`, `execute_inventory_audit`, `fulfill_materials_plan` |
-| Specialist delegation | `materials_planner`, `inventory_auditor` |
+| Capability            | Tools                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| Status and activity   | `get_gantry_status`, `observe_daily_bin_activity`                                           |
+| Catalog and inventory | `search_catalog`, `get_part`, `search_inventory`, `match_catalog`                           |
+| Bin lookup            | `get_bin_status`, `list_available_bins`, `list_bins`                                        |
+| Physical workflows    | `execute_retrieval`, `execute_putaway`, `execute_inventory_audit`, `fulfill_materials_plan` |
+| Specialist delegation | `materials_planner`, `inventory_auditor`                                                    |
 
 The Planner has `get_engineering_plan_context`, `search_catalog`, and
 `search_inventory`. The Auditor has `get_latest_inventory_audit` and
@@ -167,14 +167,14 @@ curl -s -X POST http://localhost:3000/api/agent \
 
 **AI for judgment. Deterministic control for physics.**
 
-| Agentic responsibilities | Deterministic responsibilities |
-| --- | --- |
-| Understand the engineer’s goal. | Validate request schemas and authorization. |
-| Resolve requirements using plan and stock context. | Sequence bin movement and maintain workflow state. |
-| Choose specialists and high-level tools. | Authenticate captures and validate sensor evidence. |
-| Interpret structured results and explain exceptions. | Subtract tare and calculate count from known item weight. |
-| Decide what capability to invoke next. | Apply confidence, identity, capacity, and inventory-baseline gates. |
-| Summarize readiness and shortages. | Commit inventory updates and complete safe return. |
+| Agentic responsibilities                             | Deterministic responsibilities                                      |
+| ---------------------------------------------------- | ------------------------------------------------------------------- |
+| Understand the engineer’s goal.                      | Validate request schemas and authorization.                         |
+| Resolve requirements using plan and stock context.   | Sequence bin movement and maintain workflow state.                  |
+| Choose specialists and high-level tools.             | Authenticate captures and validate sensor evidence.                 |
+| Interpret structured results and explain exceptions. | Subtract tare and calculate count from known item weight.           |
+| Decide what capability to invoke next.               | Apply confidence, identity, capacity, and inventory-baseline gates. |
+| Summarize readiness and shortages.                   | Commit inventory updates and complete safe return.                  |
 
 Models do not generate motor coordinates, invent scale readings, calculate
 inventory quantities, or bypass reconciliation rules. Once an authorized
@@ -189,7 +189,7 @@ evidence through authenticated application endpoints.
 
 The rack uses bins and a three-axis gantry. The public demo defaults to simulated
 movement. Private deployments can use the **Klipper gantry controller**, which
-sends configured macros through Moonraker at `https://kli-prod.enbotics.tech`.
+sends configured macros through Moonraker at `PRODUCTION_BASE_URL`.
 Klipper owns calibrated movement and gripper control; RackHand owns approvals,
 workflow sequencing, camera/scale verification, and inventory commits.
 
@@ -218,12 +218,12 @@ The default box tare is **107 g**, configurable with
 `PUTAWAY_CONTAINER_TARE_GRAMS`. Item weights are explicitly supplied in
 [putaway-weight.ts](src/lib/warehouse/putaway-weight.ts):
 
-| Part | Item weight |
-| --- | ---: |
-| `HARDWARE-ROUND-SPACER` | 6.2 g |
-| V-groove bearing wheel hardware kit | 19 g |
-| `DRIVER-MKS-TMC2160-OC-V1` | 47.12 g |
-| `ELECTRONICS-SENSOR-MODULE-MIXED` | 1.56 g |
+| Part                                | Item weight |
+| ----------------------------------- | ----------: |
+| `HARDWARE-ROUND-SPACER`             |       6.2 g |
+| V-groove bearing wheel hardware kit |        19 g |
+| `DRIVER-MKS-TMC2160-OC-V1`          |     47.12 g |
+| `ELECTRONICS-SENSOR-MODULE-MIXED`   |      1.56 g |
 
 Item weight is never inferred by dividing total or net weight by a camera
 count. An unknown item weight, missing scale data, reading below tare, or an
@@ -272,19 +272,19 @@ cp .env.example .env.local
 Edit `.env.local` and replace the placeholders. Configure these settings before
 installing dependencies, because Prisma generation reads `DIRECT_URL`:
 
-| Setting                     | Purpose                                                                                                                         |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`              | PostgreSQL connection used by the running application. For Supabase, use the transaction pooler URL.                            |
-| `DIRECT_URL`                | PostgreSQL connection used by Prisma migrations. Use a direct connection or session-mode pooler, not a transaction-mode pooler. |
-| `SUPABASE_URL`              | Your Supabase project URL.                                                                                                      |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase key for camera Storage and Realtime.                                                                       |
-| `AWS_REGION`                | AWS region where your selected Bedrock model is accessible.                                                                     |
-| `BEDROCK_MODEL_ID`          | Bedrock model or inference-profile ID enabled for your account.                                                                 |
-| `GEMINI_API_KEY`            | Gemini key for camera measurement and inventory verification.                                                                   |
-| `WAREHOUSE_SIMULATION_LOCKED` | Default `true` protects the public demo. Only a private server setting of `false` unlocks physical deployment.                 |
-| `GANTRY_MODE`               | `simulation` by default; `production` selects Klipper when the server lock is disabled.                                        |
-| `AUDIT_CAPTURE_MODE`        | `SIMULATION` for the public demo; `PROD` is required with the production gantry.                                                 |
-| `KLIPPER_BASE_URL`          | Moonraker API URL: `https://kli-prod.enbotics.tech`. Set `KLIPPER_API_KEY` if authentication requires it.                         |
+| Setting                       | Purpose                                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                | PostgreSQL connection used by the running application. For Supabase, use the transaction pooler URL.                            |
+| `DIRECT_URL`                  | PostgreSQL connection used by Prisma migrations. Use a direct connection or session-mode pooler, not a transaction-mode pooler. |
+| `SUPABASE_URL`                | Your Supabase project URL.                                                                                                      |
+| `SUPABASE_SERVICE_ROLE_KEY`   | Server-only Supabase key for camera Storage and Realtime.                                                                       |
+| `AWS_REGION`                  | AWS region where your selected Bedrock model is accessible.                                                                     |
+| `BEDROCK_MODEL_ID`            | Bedrock model or inference-profile ID enabled for your account.                                                                 |
+| `GEMINI_API_KEY`              | Gemini key for camera measurement and inventory verification.                                                                   |
+| `WAREHOUSE_SIMULATION_LOCKED` | Default `true` protects the public demo. Only a private server setting of `false` unlocks physical deployment.                  |
+| `GANTRY_MODE`                 | `simulation` by default; `production` selects Klipper when the server lock is disabled.                                         |
+| `AUDIT_CAPTURE_MODE`          | `SIMULATION` for the public demo; `PROD` is required with the production gantry.                                                |
+| `KLIPPER_BASE_URL`            | Moonraker API URL: `MOONRAKER_PRODUCTION_URL`. Set `KLIPPER_API_KEY` if authentication requires it.                             |
 
 Bedrock uses the standard AWS credential chain. Configure an AWS profile or set
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN` for
@@ -406,7 +406,7 @@ In the private application's `.env.local` (or deployment environment), set:
 WAREHOUSE_SIMULATION_LOCKED=false
 GANTRY_MODE=production
 AUDIT_CAPTURE_MODE=PROD
-KLIPPER_BASE_URL=https://kli-prod.enbotics.tech
+KLIPPER_BASE_URL=PRODUCTION_MOONRAKER_URL
 # KLIPPER_API_KEY=your-server-only-moonraker-key
 KLIPPER_HOME_MACRO=RACKHAND_HOME
 KLIPPER_PUTAWAY_MACRO=RACKHAND_PUTAWAY
@@ -491,37 +491,37 @@ when needed. Restart the application after changing environment settings.
 
 #### Bin movement and verification
 
-| Parameter                             | Example / configuration | Purpose                                                                                                 |
-| ------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| `WAREHOUSE_SIMULATION_LOCKED`         | `true`                  | Server-only public demo lock. Only explicit `false` permits production settings.                         |
-| `GANTRY_MODE`                         | `simulation`            | `production` selects Klipper when unlocked; `PROD` and legacy `HARDWARE` are accepted aliases.             |
-| `AUDIT_CAPTURE_MODE`                  | `SIMULATION`            | `PROD` uses physical camera/scale evidence when unlocked. Required for production gantry movement.         |
-| `GANTRY_SIM_MOVE_DELAY_MS`            | `300`                   | Simulator movement delay, in milliseconds.                                                              |
-| `GANTRY_SIM_PICK_DELAY_MS`            | `200`                   | Simulator bin-pick delay, in milliseconds.                                                              |
-| `GANTRY_SIM_DROP_DELAY_MS`            | `200`                   | Simulator bin-drop delay, in milliseconds.                                                              |
-| `GANTRY_SIM_HOME_DELAY_MS`            | `400`                   | Simulator homing delay, in milliseconds.                                                                |
-| `GANTRY_SIM_BIN_TRANSFER_DELAY_MS`    | `5000`                  | Guided bin presentation/return delay, in milliseconds.                                                  |
-| `PUTAWAY_INACTIVITY_TIMEOUT_MS`       | `240000`                | Workflow inactivity window, in milliseconds; successful camera/retry transitions refresh it.            |
-| `PUTAWAY_CONTAINER_TARE_GRAMS`        | `107`                   | Empty-bin weight subtracted from scale readings; configure the actual weight in grams.                  |
+| Parameter                          | Example / configuration | Purpose                                                                                            |
+| ---------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------- |
+| `WAREHOUSE_SIMULATION_LOCKED`      | `true`                  | Server-only public demo lock. Only explicit `false` permits production settings.                   |
+| `GANTRY_MODE`                      | `simulation`            | `production` selects Klipper when unlocked; `PROD` and legacy `HARDWARE` are accepted aliases.     |
+| `AUDIT_CAPTURE_MODE`               | `SIMULATION`            | `PROD` uses physical camera/scale evidence when unlocked. Required for production gantry movement. |
+| `GANTRY_SIM_MOVE_DELAY_MS`         | `300`                   | Simulator movement delay, in milliseconds.                                                         |
+| `GANTRY_SIM_PICK_DELAY_MS`         | `200`                   | Simulator bin-pick delay, in milliseconds.                                                         |
+| `GANTRY_SIM_DROP_DELAY_MS`         | `200`                   | Simulator bin-drop delay, in milliseconds.                                                         |
+| `GANTRY_SIM_HOME_DELAY_MS`         | `400`                   | Simulator homing delay, in milliseconds.                                                           |
+| `GANTRY_SIM_BIN_TRANSFER_DELAY_MS` | `5000`                  | Guided bin presentation/return delay, in milliseconds.                                             |
+| `PUTAWAY_INACTIVITY_TIMEOUT_MS`    | `240000`                | Workflow inactivity window, in milliseconds; successful camera/retry transitions refresh it.       |
+| `PUTAWAY_CONTAINER_TARE_GRAMS`     | `107`                   | Empty-bin weight subtracted from scale readings; configure the actual weight in grams.             |
 
 #### Klipper / Moonraker
 
 These settings are server-only. Configure installed macro names to match the
 contract below; do not put scripts or parameter expressions in the bindings.
 
-| Parameter | Default / example | Purpose |
-| --- | --- | --- |
-| `KLIPPER_BASE_URL` | `https://kli-prod.enbotics.tech` | Required in production; HTTP(S) Moonraker API root. |
-| `KLIPPER_API_KEY` | Optional secret | Moonraker `X-Api-Key` authentication. Omit only if the server is already authorized. |
-| `KLIPPER_REQUEST_TIMEOUT_MS` | `90000` | Time allowed for a macro and queued motion to finish. |
-| `KLIPPER_STATUS_TIMEOUT_MS` | `5000` | Time allowed for a read-only printer status request. |
-| `KLIPPER_HOME_MACRO` | `RACKHAND_HOME` | Home X, Y and Z. |
-| `KLIPPER_PUTAWAY_MACRO` | `RACKHAND_PUTAWAY` | Store a bin from INTAKE and park the unloaded carriage. |
-| `KLIPPER_RETRIEVE_MACRO` | `RACKHAND_RETRIEVE` | Fetch a bin to OUTPUT. |
-| `KLIPPER_PRESENT_BIN_MACRO` | `RACKHAND_RETRIEVE` | Present a shelf bin at INTAKE for guided putaway. |
-| `KLIPPER_RETURN_BIN_MACRO` | `RACKHAND_RETURN` | Return a bin from OUTPUT or INTAKE and park the unloaded carriage. |
-| `KLIPPER_AUDIT_PRESENT_MACRO` | `RACKHAND_RETRIEVE` | Present a bin at SCAN_STATION for an audit. |
-| `KLIPPER_AUDIT_RETURN_MACRO` | `RACKHAND_RETURN` | Return a bin from SCAN_STATION and park the unloaded carriage. |
+| Parameter                     | Default / example                                   | Purpose                                                                              |
+| ----------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `KLIPPER_BASE_URL`            | Required in production; HTTP(S) Moonraker API root. |
+| `KLIPPER_API_KEY`             | Optional secret                                     | Moonraker `X-Api-Key` authentication. Omit only if the server is already authorized. |
+| `KLIPPER_REQUEST_TIMEOUT_MS`  | `90000`                                             | Time allowed for a macro and queued motion to finish.                                |
+| `KLIPPER_STATUS_TIMEOUT_MS`   | `5000`                                              | Time allowed for a read-only printer status request.                                 |
+| `KLIPPER_HOME_MACRO`          | `RACKHAND_HOME`                                     | Home X, Y and Z.                                                                     |
+| `KLIPPER_PUTAWAY_MACRO`       | `RACKHAND_PUTAWAY`                                  | Store a bin from INTAKE and park the unloaded carriage.                              |
+| `KLIPPER_RETRIEVE_MACRO`      | `RACKHAND_RETRIEVE`                                 | Fetch a bin to OUTPUT.                                                               |
+| `KLIPPER_PRESENT_BIN_MACRO`   | `RACKHAND_RETRIEVE`                                 | Present a shelf bin at INTAKE for guided putaway.                                    |
+| `KLIPPER_RETURN_BIN_MACRO`    | `RACKHAND_RETURN`                                   | Return a bin from OUTPUT or INTAKE and park the unloaded carriage.                   |
+| `KLIPPER_AUDIT_PRESENT_MACRO` | `RACKHAND_RETRIEVE`                                 | Present a bin at SCAN_STATION for an audit.                                          |
+| `KLIPPER_AUDIT_RETURN_MACRO`  | `RACKHAND_RETURN`                                   | Return a bin from SCAN_STATION and park the unloaded carriage.                       |
 
 #### Camera worker connection and capture limits
 
@@ -545,32 +545,31 @@ These are application-server settings. The Pi has its own
 Use either the standard AWS credential chain or a Bedrock bearer token;
 not every credential parameter needs to be set.
 
-| Parameter                  | Example / configuration                          | Purpose                                                                                                             |
-| -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `AWS_REGION`               | `us-west-2`                                      | AWS region used for Bedrock requests.                                                                               |
-| `BEDROCK_MODEL_ID`         | Code default: `us.amazon.nova-lite-v1:0`         | Choose an accessible Bedrock model/inference profile; ids require the supported inference-profile prefix (`us.`/`global.`). |
-| `AWS_BEARER_TOKEN_BEDROCK` | Secret Bedrock bearer token                      | Alternative Bedrock authentication.                                                                                 |
-| `AWS_ACCESS_KEY_ID`        | Your AWS access key ID                           | AWS signature-based authentication, paired with the secret key.                                                     |
-| `AWS_SECRET_ACCESS_KEY`    | Your AWS secret access key                       | Secret for AWS signature-based authentication.                                                                      |
-| `AWS_SESSION_TOKEN`        | Your temporary AWS session token                 | Required when using temporary AWS access-key credentials.                                                           |
-| `GEMINI_API_KEY`           | Your Google AI Studio API key                    | Camera measurement and image-based inventory analysis.                                                              |
+| Parameter                  | Example / configuration                  | Purpose                                                                                                                     |
+| -------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `AWS_REGION`               | `us-west-2`                              | AWS region used for Bedrock requests.                                                                                       |
+| `BEDROCK_MODEL_ID`         | Code default: `us.amazon.nova-lite-v1:0` | Choose an accessible Bedrock model/inference profile; ids require the supported inference-profile prefix (`us.`/`global.`). |
+| `AWS_BEARER_TOKEN_BEDROCK` | Secret Bedrock bearer token              | Alternative Bedrock authentication.                                                                                         |
+| `AWS_ACCESS_KEY_ID`        | Your AWS access key ID                   | AWS signature-based authentication, paired with the secret key.                                                             |
+| `AWS_SECRET_ACCESS_KEY`    | Your AWS secret access key               | Secret for AWS signature-based authentication.                                                                              |
+| `AWS_SESSION_TOKEN`        | Your temporary AWS session token         | Required when using temporary AWS access-key credentials.                                                                   |
+| `GEMINI_API_KEY`           | Your Google AI Studio API key            | Camera measurement and image-based inventory analysis.                                                                      |
 
 #### Optional engineering-plan integration
 
 Configure these only when using spreadsheet-based plan analysis. For private
 sheets, use the service account and share the sheet with its email.
 
-| Parameter                             | Example / configuration                      | Purpose                                                                      |
-| ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
-| `ENGINEERING_PLAN_SPREADSHEET_ID`     | Replace `YOUR_SPREADSHEET_ID`                | Spreadsheet containing the engineering plan.                                 |
-| `ENGINEERING_PLAN_SHEET_RANGE`        | `UpdatedPlan!A1:O250`                        | Sheet tab and cell range to read.                                            |
-| `ENGINEERING_PLAN_TIME_ZONE`          | `Asia/Ulaanbaatar`                           | Time zone used to determine the upcoming plan date.                          |
-| `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` | Your service-account email                   | Read-only spreadsheet authentication identity.                               |
-| `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`  | Secret PEM key, quoted with `\n` line breaks | Service-account key paired with its email.                                   |
-| `GOOGLE_SHEETS_API_KEY`               | Your Google Sheets API key                   | Alternative only for sheets intentionally accessible through API-key access. |
+| Parameter                             | Example / configuration                      | Purpose                                                                                                     |
+| ------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `ENGINEERING_PLAN_SPREADSHEET_ID`     | Replace `YOUR_SPREADSHEET_ID`                | Spreadsheet containing the engineering plan.                                                                |
+| `ENGINEERING_PLAN_SHEET_RANGE`        | `UpdatedPlan!A1:O250`                        | Sheet tab and cell range to read.                                                                           |
+| `ENGINEERING_PLAN_TIME_ZONE`          | `Asia/Ulaanbaatar`                           | Time zone used to determine the upcoming plan date.                                                         |
+| `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` | Your service-account email                   | Read-only spreadsheet authentication identity.                                                              |
+| `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`  | Secret PEM key, quoted with `\n` line breaks | Service-account key paired with its email.                                                                  |
+| `GOOGLE_SHEETS_API_KEY`               | Your Google Sheets API key                   | Alternative only for sheets intentionally accessible through API-key access.                                |
 | `ENGINEERING_PLAN_AUTO_ENABLED`       | `false` (default) / `true`                   | Enables automatic analysis when the sheet changes. Enable on the single deployment that owns the warehouse. |
-| `ENGINEERING_PLAN_WEBHOOK_SECRET`     | Random secret, 32+ characters                | Shared secret signing the sheet-change webhook. Must match the Apps Script property. |
-
+| `ENGINEERING_PLAN_WEBHOOK_SECRET`     | Random secret, 32+ characters                | Shared secret signing the sheet-change webhook. Must match the Apps Script property.                        |
 
 </details>
 
@@ -620,7 +619,6 @@ npm test
 
 `npm run agent:smoke` makes real, billable Bedrock calls. It reports blocked
 when AWS credentials are unavailable; it is not an offline unit test.
-
 
 ## AgentCore deployment
 
@@ -686,18 +684,18 @@ configured database, so use a development/demo database.
 
 ## Safety / failure behavior
 
-| Situation | Behavior |
-| --- | --- |
-| Restricted client workflow requested | Strands `HumanInTheLoop` interrupts before execution. Trusted internal mode is selected only by server code. |
-| Unknown item weight or missing/invalid scale evidence | Quantity is unverified; no automatic quantity-changing acceptance. |
-| Foreign objects, wrong part, uncertain visibility, or inadequate confidence | Preserve evidence and require attention or a retry. |
-| Estimated count exceeds bin capacity | Reject verified acceptance and request correction. |
-| Analysis fails | Retain the image; supported putaway analysis can retry the saved frame. |
-| Stale/superseded capture or changed inventory baseline | Reject or withhold reconciliation. |
-| Duplicate automatic acceptance | Acceptance is idempotent to handle client/server races. |
-| Browser closes during trusted verification | Server-owned automatic acceptance continues the workflow. |
-| Return verification fails | Keep stock unapproved and do not complete a successful return. |
-| Klipper macro fails or completion is uncertain | Fail the movement, block further commands, and require machine/bin reconciliation before restarting. No automatic command retry. |
+| Situation                                                                   | Behavior                                                                                                                         |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Restricted client workflow requested                                        | Strands `HumanInTheLoop` interrupts before execution. Trusted internal mode is selected only by server code.                     |
+| Unknown item weight or missing/invalid scale evidence                       | Quantity is unverified; no automatic quantity-changing acceptance.                                                               |
+| Foreign objects, wrong part, uncertain visibility, or inadequate confidence | Preserve evidence and require attention or a retry.                                                                              |
+| Estimated count exceeds bin capacity                                        | Reject verified acceptance and request correction.                                                                               |
+| Analysis fails                                                              | Retain the image; supported putaway analysis can retry the saved frame.                                                          |
+| Stale/superseded capture or changed inventory baseline                      | Reject or withhold reconciliation.                                                                                               |
+| Duplicate automatic acceptance                                              | Acceptance is idempotent to handle client/server races.                                                                          |
+| Browser closes during trusted verification                                  | Server-owned automatic acceptance continues the workflow.                                                                        |
+| Return verification fails                                                   | Keep stock unapproved and do not complete a successful return.                                                                   |
+| Klipper macro fails or completion is uncertain                              | Fail the movement, block further commands, and require machine/bin reconciliation before restarting. No automatic command retry. |
 
 Interactive retrieve/return checks can ask for removal and retry. Upcoming-plan
 audits retain report-only review outcomes; they do not use the same interaction.

@@ -62,6 +62,8 @@ export const RETRIEVAL_FAILURE_REASONS = [
   "invalid_request",
   "part_not_found",
   "out_of_stock",
+  /** Recorded stock is already at checkout, so no second retrieval is needed. */
+  "source_bin_checked_out",
   "source_bin_not_found",
   /** Bin-only identity (no sku/partId given) resolved to a bin holding nothing. */
   "source_bin_empty",

@@ -183,6 +183,7 @@ function synthesizeResult(
       reason: graph.reason,
       requestId: run?.data.requestId ?? "",
       message: graph.message,
+      ...(run?.data.sourceBinCode ? { sourceBinCode: run.data.sourceBinCode } : {}),
     };
   }
   throw new Error(

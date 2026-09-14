@@ -15,6 +15,7 @@
  */
 import { prisma } from "../db";
 import { getInventoryByBin, getInventoryForPart } from "../inventory-service";
+import { retrievalStockIssue } from "../retrieval-stock";
 import { getBinByCode, getPartById, getPartBySku } from "../repository";
 import {
   chooseRetrievalSourceBinCode,
@@ -218,7 +219,7 @@ export class RetrievalInventoryNode extends WorkflowNode<
     super(RETRIEVAL_NODE_IDS.inventory, "Read authoritative stock for the part.");
   }
 
-  protected async run({ data }: RetrievalContext): Promise<NodeOutcome> {
+  protected async run({ request, data }: RetrievalContext): Promise<NodeOutcome> {
     if (data.duplicate) return { kind: "PROCEED", summary: "Skipping live stock checks for an idempotent replay." };
     if (!data.sku) {
       return {
@@ -229,12 +230,10 @@ export class RetrievalInventoryNode extends WorkflowNode<
     }
 
     const summary = await getInventoryForPart(data.sku);
-    if (summary.totalQuantity <= 0) {
-      return {
-        kind: "BLOCKED",
-        reason: "out_of_stock",
-        message: `${data.sku} is in the catalog but no bin currently holds any stock of it.`,
-      };
+    const stockIssue = retrievalStockIssue(summary, request.sourceBinCode);
+    if (stockIssue) {
+      data.sourceBinCode = stockIssue.sourceBinCode;
+      return { kind: "BLOCKED", reason: stockIssue.reason, message: stockIssue.message };
     }
 
     const stocked = summary.locations.filter(
@@ -282,6 +281,11 @@ export class RetrievalSourceNode extends WorkflowNode<RetrievalGraphRequest, Ret
     }
 
     const summary = await getInventoryForPart(data.sku);
+    const stockIssue = retrievalStockIssue(summary, request.sourceBinCode);
+    if (stockIssue) {
+      data.sourceBinCode = stockIssue.sourceBinCode;
+      return { kind: "BLOCKED", reason: stockIssue.reason, message: stockIssue.message };
+    }
     const stocked = summary.locations.filter(
       (location) => location.quantity > 0 && location.binStatus === "OCCUPIED",
     );
