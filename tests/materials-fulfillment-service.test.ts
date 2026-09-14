@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { WarehouseError } from "@/lib/warehouse/errors";
 
 const inventoryBySku = new Map<
   string,
@@ -9,7 +10,7 @@ const untrustedBins = new Set<string>();
 vi.mock("@/lib/warehouse/inventory-service", () => ({
   getInventoryForPart: vi.fn(async (sku: string) => {
     const locations = inventoryBySku.get(sku);
-    if (!locations) throw new Error("part not found");
+    if (!locations) throw new WarehouseError("part_not_found", "part not found");
     return {
       part: { id: `part-${sku}`, sku, canonicalName: sku },
       totalQuantity: locations
@@ -51,6 +52,7 @@ vi.mock("@/lib/warehouse/bin-verification-evidence", () => ({
 }));
 
 import { prepareMaterialsFulfillment } from "@/lib/warehouse/materials-fulfillment-service";
+import { getInventoryForPart } from "@/lib/warehouse/inventory-service";
 
 const requirement = (sku: string, quantity: number) => ({
   sku,
@@ -65,6 +67,20 @@ beforeEach(() => {
 });
 
 describe("materials fulfillment preparation", () => {
+  it("reports an invented planner SKU as invalid rather than a stock shortage", async () => {
+    expect(await prepareMaterialsFulfillment([requirement("SCREW-ST-6-32", 11)], {
+      requireTrustedEvidence: false, includeCheckedOutBins: true,
+    })).toMatchObject({ ok: false, reason: "materials_plan_invalid", selectedBins: [], shortages: [],
+      message: expect.stringContaining("unknown catalog SKU: SCREW-ST-6-32"),
+    });
+  });
+
+  it("does not turn a database failure into zero available stock", async () => {
+    vi.mocked(getInventoryForPart).mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(prepareMaterialsFulfillment([requirement("SCREW-M4-30", 10)]))
+      .rejects.toThrow("database unavailable");
+  });
+
   it("uses the screws already at checkout for an explicitly opted-in prep", async () => {
     inventoryBySku.set("SCREW-M4-30", [
       { binCode: "B1-01", binStatus: "CHECKED_OUT", quantity: 18 },

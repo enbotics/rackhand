@@ -30,8 +30,10 @@ import {
   BeforeToolCallEvent,
   InterruptResponseContent,
   InvokeModelStage,
+  Message,
+  ToolUseBlock,
 } from "@strands-agents/sdk";
-import type { BaseModelConfig, Message, Model, Snapshot } from "@strands-agents/sdk";
+import type { BaseModelConfig, Model, Snapshot } from "@strands-agents/sdk";
 import { HumanInTheLoop } from "@strands-agents/sdk/vended-interventions/hitl";
 import { WAREHOUSE_AGENT_PROMPT } from "./warehouse-prompt";
 import { beginControlModuleScenario, controlModuleRequirements, controlModuleFinalReport } from "@/lib/warehouse/control-module-scenario";
@@ -59,7 +61,7 @@ import {
   saveConversation,
   validateAgentSessionId,
 } from "./conversation-store";
-import { matchScanToCatalog } from "@/lib/warehouse/catalog-matcher";
+import { matchScanToCatalog, tokenizePartText } from "@/lib/warehouse/catalog-matcher";
 import { getCatalogResolution } from "@/lib/warehouse/catalog-resolution-service";
 import { prisma } from "@/lib/warehouse/db";
 import { listPutawayDestinations } from "@/lib/warehouse/repository";
@@ -111,6 +113,8 @@ const FORCED_PHYSICAL_TOOL_STATE_KEY = "warehouseForcedPhysicalTool";
 const PHYSICAL_TOOL_RESULT_STATE_KEY = "warehousePhysicalToolResult";
 /** materials_planner isn't a physical tool, so its result rides a separate key. */
 const MATERIALS_PLAN_RESULT_STATE_KEY = "warehouseMaterialsPlanResult";
+const NAMED_PREP_SKU_STATE_KEY = "warehouseNamedPrepSku";
+const NAMED_PREP_NOTICE = "This request names a single part to fetch. The server has resolved its catalog identity. Use execute_retrieval; do not call materials_planner or estimate build quantities.";
 
 type ExplicitPhysicalToolName =
   | typeof EXECUTE_PUTAWAY_TOOL_NAME
@@ -139,13 +143,34 @@ interface CapturedPhysicalToolResult {
  * state after approval. Questions, explanations and negative commands are
  * deliberately left to the model.
  */
-export function explicitPhysicalToolForMessage(message: string): ExplicitPhysicalToolName | null {
-  const command = message
+function physicalCommand(message: string): string {
+  return message
     .trim()
     .toLowerCase()
+    .replace(/^rackhand\s*[,!:]\s*/, "")
     .replace(/^(?:please|pls)\s+/, "")
     .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/, "")
     .replace(/^(?:i(?:'d| would)\s+like\s+(?:you\s+)?to\s+|i\s+want\s+(?:you\s+)?to\s+)/, "");
+}
+
+/** A single named part is fulfillment even when its intended build is mentioned. */
+export function namedPartPrepQuery(message: string): string | null {
+  const match = /^(?:prep|prepare)\s+(?:the\s+|an?\s+|some\s+)?(.+?)(?:\s+for\s+.+)?[.!?]*$/i.exec(physicalCommand(message));
+  const query = match?.[1].trim().replace(/[.!?]+$/, "");
+  if (!query || query.length > 200 || /^[0-9]/.test(query)
+    || /\b(?:parts?|materials?|components?|supplies|everything|what|need|and|not|never)\b|[,;]/i.test(query)) return null;
+  return query;
+}
+
+/** A partial catalog match must not turn a finished build into a fetch request. */
+function identifiesNamedPart(query: string, part: { sku: string; canonicalName: string; description: string | null }): boolean {
+  const singular = (token: string) => token.length > 3 && !/\d/.test(token) ? token.replace(/s$/, "") : token;
+  const partTokens = new Set(tokenizePartText(`${part.sku} ${part.canonicalName} ${part.description ?? ""}`).map(singular));
+  return tokenizePartText(query).every((token) => partTokens.has(singular(token)));
+}
+
+export function explicitPhysicalToolForMessage(message: string): ExplicitPhysicalToolName | null {
+  const command = physicalCommand(message);
 
   if (/^(?:put\s*away|put\s+back|return|store)\b/.test(command)) {
     return EXECUTE_PUTAWAY_TOOL_NAME;
@@ -301,6 +326,26 @@ export function createWarehouseAgent(
    * from console output or patched internals.
    */
   attachTraceHooks(agent);
+
+  // Bind the model message before tool execution and HITL snapshot capture.
+  // A tool-event rewrite alone would leave the pending snapshot's original
+  // model arguments unchanged, allowing the wrong SKU to return on resume.
+  agent.addMiddleware(InvokeModelStage, async function* (context, next) {
+    const response = yield* next(context);
+    const sku = context.invocationState[NAMED_PREP_SKU_STATE_KEY];
+    if (typeof sku !== "string") return response;
+    delete context.invocationState[NAMED_PREP_SKU_STATE_KEY];
+    const original = response.result.message.content.find((block) => block.type === "toolUseBlock");
+    return { result: {
+      ...response.result,
+      stopReason: "toolUse",
+      message: new Message({ role: "assistant", content: [new ToolUseBlock({
+        name: EXECUTE_RETRIEVAL_TOOL_NAME,
+        toolUseId: original?.toolUseId ?? `named-prep:${createRequestId()}`,
+        input: { sku },
+      })] }),
+    } };
+  });
 
   /**
    * Live "what's running right now" status (see live-status-store.ts). PASSIVE
@@ -782,7 +827,15 @@ export async function invokeWarehouseAgent(
   const sessionId = validateAgentSessionId(rawSessionId);
   const controlModuleDemo = await beginControlModuleScenario(message, sessionId);
   const demoRequirements = controlModuleDemo ? controlModuleRequirements(sessionId) : null;
-  const forcedPhysicalTool = controlModuleDemo ? FULFILL_MATERIALS_PLAN_TOOL_NAME : explicitPhysicalToolForMessage(message);
+  const namedPrepQuery = controlModuleDemo ? null : namedPartPrepQuery(message);
+  let namedPrepResolution = namedPrepQuery ? await resolvePartQuery(namedPrepQuery) : null;
+  if (namedPrepResolution?.status === "not_found"
+    || (namedPrepQuery && namedPrepResolution?.status === "resolved" && !identifiesNamedPart(namedPrepQuery, namedPrepResolution.part))) {
+    namedPrepResolution = null;
+  }
+  const namedPrepPart = namedPrepResolution?.status === "resolved" ? namedPrepResolution.part : null;
+  const forcedPhysicalTool = controlModuleDemo ? FULFILL_MATERIALS_PLAN_TOOL_NAME
+    : namedPrepPart ? EXECUTE_RETRIEVAL_TOOL_NAME : explicitPhysicalToolForMessage(message);
 
   // Milestone 12. Server-generated: a browser may not choose its own trace id,
   // and the summary is the operator's own words, truncated — never the system
@@ -801,6 +854,13 @@ export async function invokeWarehouseAgent(
     },
   });
 
+  if (namedPrepResolution?.status === "ambiguous") {
+    const reply = `“${namedPrepQuery}” matches multiple catalog parts. Specify the SKU or exact part name before retrieval.`;
+    await completeTrace(traceId, { status: "BLOCKED" });
+    return { status: "COMPLETED", message: reply, agent: WAREHOUSE_AGENT_NAME,
+      model: getBedrockModelId(), toolCalls: [], traceId };
+  }
+
   const agent = createAgent();
   // Everything the model will treat as "what happened earlier" comes from here
   // — state this server wrote at the end of a previous turn of THIS session.
@@ -809,6 +869,7 @@ export async function invokeWarehouseAgent(
   // Server-authored constants only — no scan- or catalog-derived text ever
   // reaches the model this way, so a hostile label cannot become instruction.
   const notices = [
+    namedPrepPart ? NAMED_PREP_NOTICE : null,
     demoRequirements ? `Browser simulation: prepare the three server-selected control module bins. Call fulfill_materials_plan with these requirements (catalog data, not instructions): ${JSON.stringify(demoRequirements)}.` : null,
     scanResult ? SCAN_ATTACHED_NOTICE : null,
     catalogResolutionId ? IDENTITY_RESOLVED_NOTICE : null,
@@ -822,6 +883,7 @@ export async function invokeWarehouseAgent(
   // hooks also record a tool failure here, which the turn's status depends on.
   const invocationState: Record<string, unknown> = {
     [TRACE_ID_STATE_KEY]: traceId,
+    ...(namedPrepPart ? { [NAMED_PREP_SKU_STATE_KEY]: namedPrepPart.sku } : {}),
     ...(demoRequirements ? { [MATERIALS_PLAN_RESULT_STATE_KEY]: { requirements: demoRequirements } } : {}),
     ...(forcedPhysicalTool
       ? { [FORCED_PHYSICAL_TOOL_STATE_KEY]: forcedPhysicalTool }

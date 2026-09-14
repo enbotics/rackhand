@@ -18,6 +18,7 @@ import {
 } from "./bin-verification-evidence";
 import { getInventoryForPart } from "./inventory-service";
 import type { MaterialRequirement } from "./materials-plan-service";
+import { isWarehouseError } from "./errors";
 
 export interface MaterialsFulfillmentBin {
   sku: string;
@@ -127,14 +128,27 @@ export async function prepareMaterialsFulfillment(
   >();
   const includeCheckedOut = options.includeCheckedOutBins === true
     && options.requireTrustedEvidence === false;
+  const unknownSkus: string[] = [];
 
   for (const requirement of normalized) {
     try {
       const inventory = await getInventoryForPart(requirement.sku);
       locationsBySku.set(requirement.sku, inventory.locations);
-    } catch {
-      locationsBySku.set(requirement.sku, []);
+    } catch (error) {
+      if (!isWarehouseError(error) || error.code !== "part_not_found") throw error;
+      unknownSkus.push(requirement.sku);
     }
+  }
+
+  if (unknownSkus.length > 0) {
+    return {
+      ok: false,
+      reason: "materials_plan_invalid",
+      message: `The materials plan contains unknown catalog SKU${unknownSkus.length === 1 ? "" : "s"}: ${unknownSkus.join(", ")}. Resolve the requested parts against the catalog before preparation. No bin moved.`,
+      requirements: normalized,
+      selectedBins: [],
+      shortages: [],
+    };
   }
 
   const evidenceByBin = await getBinVerificationEvidence(
