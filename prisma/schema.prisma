@@ -395,6 +395,9 @@ model EngineeringPlanAnalysisRun {
   /// One warehouse has one physical gantry/camera. Null once terminal.
   activeKey          String?                        @unique
   workDate           String
+  sourceFingerprint  String?
+  sourceContextJson  String?
+  checkpointJson     String?
   rowsFound          Int                            @default(0)
   currentBinCode     String?
   planRowsJson       String                         @default("[]")
@@ -410,6 +413,35 @@ model EngineeringPlanAnalysisRun {
 
   @@index([ownerSessionId, createdAt])
   @@index([status])
+}
+
+/// Latest Sheet-change signal. Drained by the Node coordinator, not browsers.
+model EngineeringPlanInbox {
+  id              String   @id
+  signalAt        DateTime
+  dueAt           DateTime
+  pending         Boolean  @default(true)
+  lastFingerprint String?
+  lastWorkDate    String?
+  lastError       String?
+  leaseToken      String?
+  leaseUntil      DateTime?
+  updatedAt       DateTime @updatedAt
+}
+
+/// Cross-process exclusion for motion and a complete audit camera/return cycle.
+model WarehouseHardwareLease {
+  id         String   @id
+  token      String
+  expiresAt  DateTime
+}
+
+/// Submitted client turns take priority at the next background safe boundary.
+model WarehouseClientActivity {
+  id        String   @id
+  expiresAt DateTime
+
+  @@index([expiresAt])
 }
 
 /// Ordered, operator-readable progress emitted by one engineering-plan run.

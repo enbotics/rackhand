@@ -149,6 +149,9 @@ export function WarehouseView() {
             inventory={session.inventory}
             onDismissMaterialsPlan={session.dismissMaterialsPlan}
             todayPlanAnalysis={session.todayPlanAnalysis}
+            automaticPlanAnalysis={session.automaticPlanAnalysis}
+            sheetChangePendingAt={session.sheetChangePendingAt}
+            sheetChangeError={session.sheetChangeError}
             latestAudit={session.latestAudit}
             onAuditChanged={session.refresh}
           />

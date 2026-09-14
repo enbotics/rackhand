@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resumeWarehouseAgent } from "@/lib/agents/warehouse-agent";
 import { AgentError, classifyAgentFailure } from "@/lib/agents/errors";
+import { withWarehouseClientActivity, withWarehouseHardwareLease } from "@/lib/warehouse/hardware-lease";
 
 /**
  * POST /api/agent/approve — { approvalId, decision: "APPROVE" | "DENY" }
@@ -37,7 +38,9 @@ export async function POST(request: Request) {
       throw new AgentError("agent_invalid_request", ['decision must be "APPROVE" or "DENY"']);
     }
 
-    const result = await resumeWarehouseAgent(approvalId, decision);
+    const result = await withWarehouseClientActivity(() => decision === "APPROVE"
+      ? withWarehouseHardwareLease(() => resumeWarehouseAgent(approvalId, decision), 120_000)
+      : resumeWarehouseAgent(approvalId, decision));
     if (!result.ok) {
       // A refused decision is a normal outcome, not a server fault, but it must
       // never read as success.

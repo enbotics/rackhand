@@ -183,6 +183,9 @@ export interface WarehouseSession {
 
   /* ---- durable, no-HITL analysis of tomorrow's engineering plan ---- */
   todayPlanAnalysis: TodayPlanAnalysisRunView | null;
+  automaticPlanAnalysis: TodayPlanAnalysisRunView | null;
+  sheetChangePendingAt: number | null;
+  sheetChangeError: string | null;
   todayPlanAnalysisTriggering: boolean;
   todayPlanAnalysisError: string | null;
   triggerTodayPlanAnalysis: () => Promise<boolean>;
@@ -284,12 +287,26 @@ export function WarehouseSessionProvider({
   const [actionInFlight, setActionInFlight] = useState(false);
   const {
     run: todayPlanAnalysis,
+    automaticRun: automaticPlanAnalysis,
+    sheetChangePendingAt,
+    sheetChangeError,
     triggering: todayPlanAnalysisTriggering,
     error: todayPlanAnalysisError,
     trigger: triggerTodayPlanAnalysis,
   } = useTodayPlanAnalysis();
+  // QUEUED counts as "in flight" for both — not just RUNNING. A manual run
+  // reserves its slot and starts immediately, so the distinction rarely
+  // mattered there, but an automatic (SHEET_CHANGE) run can sit QUEUED in
+  // WAITING_FOR_IDLE for a while before the background coordinator actually
+  // starts it. Waiting for RUNNING here meant gantry polling (below) stayed
+  // at its slow 5s idle cadence right up until the coordinator began moving
+  // the gantry, and by the time the fast cadence caught up, a short
+  // simulated audit cycle could already be over — the rack's own movement
+  // animation never had a chance to render.
   const planAnalysisInFlight =
     todayPlanAnalysisTriggering ||
+    automaticPlanAnalysis?.status === "QUEUED" ||
+    automaticPlanAnalysis?.status === "RUNNING" ||
     todayPlanAnalysis?.status === "QUEUED" ||
     todayPlanAnalysis?.status === "RUNNING";
   const { overview, loading, error: overviewError, refresh } =
@@ -1195,6 +1212,9 @@ export function WarehouseSessionProvider({
       },
 
       todayPlanAnalysis,
+      automaticPlanAnalysis,
+      sheetChangePendingAt,
+      sheetChangeError,
       todayPlanAnalysisTriggering,
       todayPlanAnalysisError,
       triggerTodayPlanAnalysis,
@@ -1253,6 +1273,9 @@ export function WarehouseSessionProvider({
     liveToolName,
     send,
     todayPlanAnalysis,
+    automaticPlanAnalysis,
+    sheetChangePendingAt,
+    sheetChangeError,
     todayPlanAnalysisTriggering,
     todayPlanAnalysisError,
     triggerTodayPlanAnalysis,

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { invokeWarehouseAgent } from "@/lib/agents/warehouse-agent";
 import { createRequestId } from "@/lib/agents/request-context";
 import { AgentError, classifyAgentFailure } from "@/lib/agents/errors";
+import { withWarehouseClientActivity } from "@/lib/warehouse/hardware-lease";
 
 /**
  * POST /api/agent — { "message": "...", "scanResult"?: ScanResult, "sessionId"?: string }
@@ -65,7 +66,7 @@ export async function POST(request: Request) {
     // One HTTP request gets one id, which becomes the default idempotency key
     // for any state-changing tool the agent calls — so a model that retries a
     // retrieval inside a single turn fetches one part, not two.
-    const reply = await invokeWarehouseAgent(
+    const reply = await withWarehouseClientActivity(() => invokeWarehouseAgent(
       message,
       scanResult,
       createRequestId(),
@@ -75,7 +76,7 @@ export async function POST(request: Request) {
       // Shape-checked in lib/agents/conversation-store.ts, alongside the other
       // validators, so one place decides what a valid session handle is.
       sessionId,
-    );
+    ));
     return NextResponse.json(reply);
   } catch (err) {
     // Every path returns a fixed safe message; provider detail stays in the
