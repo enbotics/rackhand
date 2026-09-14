@@ -43,6 +43,7 @@ import { controlModuleFrame, isControlModuleScenarioBin, controlModuleCurrentPar
 import {
   calculatePutawayWeight,
   configuredFallbackTotalWeightGrams,
+  knownPartUnitWeightGrams,
   verifyPhysicalWeight,
 } from "./putaway-weight";
 
@@ -108,7 +109,7 @@ function captureView(input: {
   evidenceUrl: string | null;
   foreignObjectsJson: string | null;
   notes: string | null;
-  movement: { type?: string; destinationLocation?: string | null; destinationBin: { code: string } | null; sourceBin?: { code: string } | null };
+  movement: { type?: string; part?: { sku: string; canonicalName: string }; destinationLocation?: string | null; destinationBin: { code: string } | null; sourceBin?: { code: string } | null };
 }, outcome: PutawayCaptureOutcome, captureMode: "PROD" | "SIMULATION"): PutawayCaptureView {
   const legacyFallback =
     captureMode === "PROD" &&
@@ -130,6 +131,9 @@ function captureView(input: {
     outcome,
     expectedQuantity: input.expectedQuantity,
     observedQuantity: input.observedQuantity,
+    quantitySource: input.weightSource === "SCALE" && input.movement.part
+      && knownPartUnitWeightGrams(input.movement.part) != null
+      && input.unitWeightGrams === knownPartUnitWeightGrams(input.movement.part) ? "SCALE" : "VISION",
     confidencePercent: input.countConfidence === null ? null : confidencePercent(input.countConfidence),
     totalWeightGrams: input.totalWeightGrams ?? legacyFallback?.totalWeightGrams ?? null,
     tareWeightGrams: input.tareWeightGrams ?? legacyFallback?.tareWeightGrams ?? null,
@@ -215,7 +219,7 @@ export async function pendingPutawayCapture(ownerSessionId: string) {
         include: {
           destinationBin: true,
           sourceBin: true,
-          part: { select: { canonicalName: true } },
+          part: { select: { sku: true, canonicalName: true } },
         },
       },
     },
@@ -252,7 +256,7 @@ export async function requestPutawayCameraCapture(
 > {
   const capture = await prisma.putawayCaptureRequest.findUnique({
     where: { id },
-    include: { movement: { include: { destinationBin: true, sourceBin: true } } },
+    include: { movement: { include: { part: true, destinationBin: true, sourceBin: true } } },
   });
   if (capture && ownerSessionId && capture.ownerSessionId !== ownerSessionId) {
     throw new Error("This putaway verification belongs to another operator session.");
@@ -566,7 +570,7 @@ async function analyzePutawayCapture(
     if (processingRenewed.count !== 1) {
       throw new Error("This capture stopped being processable during image analysis.");
     }
-    const observed = vision.observedCount;
+    const knownUnitWeight = knownPartUnitWeightGrams(part);
     const reference = await prisma.movement.findFirst({
       where: {
         id: { not: movement.id }, partId: part.id, status: "COMPLETED",
@@ -578,12 +582,16 @@ async function analyzePutawayCapture(
       select: { unitWeightGrams: true },
     });
     const scale = verifyPhysicalWeight({
-      totalWeightGrams: input.totalWeightGrams, quantity: observed,
+      totalWeightGrams: input.totalWeightGrams, quantity: vision.observedCount,
       weightSource: input.weightSource, referenceUnitWeightGrams: reference?.unitWeightGrams ?? null,
       simulated: captureMode === "SIMULATION", expectedQuantity: capture.expectedQuantity,
+      knownUnitWeightGrams: knownUnitWeight,
     });
+    const observed = scale.quantity ?? vision.observedCount;
     const weight = scale.measurement;
-    const visionAssessment = classifyPutawayVision(vision, capture.expectedQuantity, bin.capacity);
+    const visionAssessment = classifyPutawayVision(
+      { ...vision, observedCount: observed }, capture.expectedQuantity, bin.capacity,
+    );
     const foreignObjects = visionAssessment.foreignObjects;
     const outcome = !scale.verified && ["READY", "INCREASED", "REVIEW_DECREASE"].includes(visionAssessment.outcome)
       ? "LOW_CONFIDENCE" : visionAssessment.outcome;
@@ -619,7 +627,7 @@ async function analyzePutawayCapture(
     if (persisted.count !== 1) throw new Error("This capture attempt was superseded during analysis.");
     const updated = await prisma.putawayCaptureRequest.findUniqueOrThrow({
       where: { id },
-      include: { movement: { include: { destinationBin: true, sourceBin: true } } },
+      include: { movement: { include: { part: true, destinationBin: true, sourceBin: true } } },
     });
     return captureView(updated, outcome, captureMode);
   } catch (error) {
@@ -652,7 +660,7 @@ async function analyzePutawayCapture(
     });
     const failed = await prisma.putawayCaptureRequest.findUniqueOrThrow({
       where: { id },
-      include: { movement: { include: { destinationBin: true, sourceBin: true } } },
+      include: { movement: { include: { part: true, destinationBin: true, sourceBin: true } } },
     });
     return captureView(failed, "ANALYSIS_FAILED", captureMode);
   }
@@ -672,7 +680,7 @@ export async function reanalyzePutawayCapture(
 ): Promise<PutawayCaptureView> {
   const capture = await prisma.putawayCaptureRequest.findUnique({
     where: { id },
-    include: { movement: { include: { destinationBin: true, sourceBin: true } } },
+    include: { movement: { include: { part: true, destinationBin: true, sourceBin: true } } },
   });
   if (!capture || capture.ownerSessionId !== ownerSessionId) {
     throw new Error("This putaway verification belongs to another operator session.");

@@ -63,7 +63,7 @@ sudo systemctl restart warehouse-camera.service
 ```
 
 `SCALE_UNIT` is used only when the scale sends a number without a unit. The
-server subtracts `PUTAWAY_CONTAINER_TARE_GRAMS` (117 g by default), then divides
+server subtracts `PUTAWAY_CONTAINER_TARE_GRAMS` (107 g by default), then divides
 the net weight by the camera-confirmed quantity. If the scale presents itself
 as a USB HID device instead of a serial port, a model-specific HID reader is
 required.

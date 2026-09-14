@@ -171,17 +171,17 @@ cp .env.example .env.local
 Edit `.env.local` and replace the placeholders. Configure these settings before
 installing dependencies, because Prisma generation reads `DIRECT_URL`:
 
-| Setting | Purpose |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL connection used by the running application. For Supabase, use the transaction pooler URL. |
-| `DIRECT_URL` | PostgreSQL connection used by Prisma migrations. Use a direct connection or session-mode pooler, not a transaction-mode pooler. |
-| `SUPABASE_URL` | Your Supabase project URL. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase key for camera Storage and Realtime. |
-| `AWS_REGION` | AWS region where your selected Bedrock model is accessible. |
-| `BEDROCK_MODEL_ID` | Bedrock model or inference-profile ID enabled for your account. |
-| `GEMINI_API_KEY` | Gemini key for camera measurement and inventory verification. |
-| `GANTRY_MODE` | Keep `simulation`; real gantry control is not implemented. |
-| `AUDIT_CAPTURE_MODE` | `PROD` for the Raspberry Pi, or `SIMULATION` for supported demo captures. |
+| Setting                     | Purpose                                                                                                                         |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`              | PostgreSQL connection used by the running application. For Supabase, use the transaction pooler URL.                            |
+| `DIRECT_URL`                | PostgreSQL connection used by Prisma migrations. Use a direct connection or session-mode pooler, not a transaction-mode pooler. |
+| `SUPABASE_URL`              | Your Supabase project URL.                                                                                                      |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase key for camera Storage and Realtime.                                                                       |
+| `AWS_REGION`                | AWS region where your selected Bedrock model is accessible.                                                                     |
+| `BEDROCK_MODEL_ID`          | Bedrock model or inference-profile ID enabled for your account.                                                                 |
+| `GEMINI_API_KEY`            | Gemini key for camera measurement and inventory verification.                                                                   |
+| `GANTRY_MODE`               | Keep `simulation`; real gantry control is not implemented.                                                                      |
+| `AUDIT_CAPTURE_MODE`        | `PROD` for the Raspberry Pi, or `SIMULATION` for supported demo captures.                                                       |
 
 Bedrock uses the standard AWS credential chain. Configure an AWS profile or set
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus `AWS_SESSION_TOKEN` for
@@ -241,7 +241,7 @@ AUDIT_CAPTURE_MODE=PROD
 CAMERA_DEVICE_ID=warehouse-camera-01
 CAMERA_DEVICE_TOKEN=replace-with-a-long-random-device-secret
 CAMERA_STREAM_URL=http://warehouse-pi.local:8000/stream.mjpg
-PUTAWAY_CONTAINER_TARE_GRAMS=117
+PUTAWAY_CONTAINER_TARE_GRAMS=107
 ```
 
 Use the actual empty-bin weight for `PUTAWAY_CONTAINER_TARE_GRAMS`.
@@ -300,29 +300,29 @@ when needed. Restart the application after changing environment settings.
 
 ### Database and Supabase
 
-| Parameter | Example / configuration | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | Your PostgreSQL runtime URL | Application queries; use the Supabase transaction pooler when applicable. |
-| `DIRECT_URL` | Your direct or session-mode PostgreSQL URL | Prisma generation and migrations. Point at the same database as `DATABASE_URL`. |
-| `SUPABASE_URL` | `https://PROJECT_REF.supabase.co` | Supabase project used by camera Storage and Realtime. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Secret from your Supabase project | Server-only access; never expose to the browser or Pi. |
-| `TEST_DATABASE_URL` | A dedicated PostgreSQL URL containing `test-warehouse` | Full test suite only. Export in the test terminal; never use production. |
-| `SEED_DEMO_CATALOG` | `0` to disable; otherwise omit | Skip example catalog creation during seeding; shelf bins are still seeded. |
+| Parameter                   | Example / configuration                                | Purpose                                                                         |
+| --------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `DATABASE_URL`              | Your PostgreSQL runtime URL                            | Application queries; use the Supabase transaction pooler when applicable.       |
+| `DIRECT_URL`                | Your direct or session-mode PostgreSQL URL             | Prisma generation and migrations. Point at the same database as `DATABASE_URL`. |
+| `SUPABASE_URL`              | `https://PROJECT_REF.supabase.co`                      | Supabase project used by camera Storage and Realtime.                           |
+| `SUPABASE_SERVICE_ROLE_KEY` | Secret from your Supabase project                      | Server-only access; never expose to the browser or Pi.                          |
+| `TEST_DATABASE_URL`         | A dedicated PostgreSQL URL containing `test-warehouse` | Full test suite only. Export in the test terminal; never use production.        |
+| `SEED_DEMO_CATALOG`         | `0` to disable; otherwise omit                         | Skip example catalog creation during seeding; shelf bins are still seeded.      |
 
 ### Bin movement and verification
 
-| Parameter | Example / configuration | Purpose |
-| --- | --- | --- |
-| `GANTRY_MODE` | `simulation` | Simulated bin movement. Hardware mode is not implemented. |
-| `AUDIT_CAPTURE_MODE` | `PROD` or `SIMULATION` | Initial camera mode; simulation supports only configured demo bins. |
-| `GANTRY_SIM_MOVE_DELAY_MS` | `300` | Simulator movement delay, in milliseconds. |
-| `GANTRY_SIM_PICK_DELAY_MS` | `200` | Simulator bin-pick delay, in milliseconds. |
-| `GANTRY_SIM_DROP_DELAY_MS` | `200` | Simulator bin-drop delay, in milliseconds. |
-| `GANTRY_SIM_HOME_DELAY_MS` | `400` | Simulator homing delay, in milliseconds. |
-| `GANTRY_SIM_BIN_TRANSFER_DELAY_MS` | `5000` | Guided bin presentation/return delay, in milliseconds. |
-| `PUTAWAY_INACTIVITY_TIMEOUT_MS` | `240000` | Workflow inactivity window, in milliseconds; successful camera/retry transitions refresh it. |
-| `PUTAWAY_CONTAINER_TARE_GRAMS` | `117` | Empty-bin weight subtracted from scale readings; configure the actual weight in grams. |
-| `PUTAWAY_FALLBACK_TOTAL_WEIGHT_GRAMS` | `150` | Fallback gross weight in grams when no usable scale reading is supplied; not trusted physical evidence. |
+| Parameter                             | Example / configuration | Purpose                                                                                                 |
+| ------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GANTRY_MODE`                         | `simulation`            | Simulated bin movement. Hardware mode is not implemented.                                               |
+| `AUDIT_CAPTURE_MODE`                  | `PROD` or `SIMULATION`  | Initial camera mode; simulation supports only configured demo bins.                                     |
+| `GANTRY_SIM_MOVE_DELAY_MS`            | `300`                   | Simulator movement delay, in milliseconds.                                                              |
+| `GANTRY_SIM_PICK_DELAY_MS`            | `200`                   | Simulator bin-pick delay, in milliseconds.                                                              |
+| `GANTRY_SIM_DROP_DELAY_MS`            | `200`                   | Simulator bin-drop delay, in milliseconds.                                                              |
+| `GANTRY_SIM_HOME_DELAY_MS`            | `400`                   | Simulator homing delay, in milliseconds.                                                                |
+| `GANTRY_SIM_BIN_TRANSFER_DELAY_MS`    | `5000`                  | Guided bin presentation/return delay, in milliseconds.                                                  |
+| `PUTAWAY_INACTIVITY_TIMEOUT_MS`       | `240000`                | Workflow inactivity window, in milliseconds; successful camera/retry transitions refresh it.            |
+| `PUTAWAY_CONTAINER_TARE_GRAMS`        | `107`                   | Empty-bin weight subtracted from scale readings; configure the actual weight in grams.                  |
+| `PUTAWAY_FALLBACK_TOTAL_WEIGHT_GRAMS` | `150`                   | Fallback gross weight in grams when no usable scale reading is supplied; not trusted physical evidence. |
 
 ### Camera worker connection and capture limits
 
@@ -330,45 +330,45 @@ These are application-server settings. The Pi has its own
 [camera.env.example](hardware/warehouse-camera/camera.env.example); its
 `CAMERA_DEVICE_ID` and `CAMERA_DEVICE_TOKEN` must match the server.
 
-| Parameter | Example / configuration | Purpose |
-| --- | --- | --- |
-| `CAMERA_DEVICE_ID` | `warehouse-camera-01` | Identifies the authenticated Pi worker. |
-| `CAMERA_DEVICE_TOKEN` | Your long random device secret | Authenticates the Pi; keep private on the server and Pi. |
-| `CAMERA_STREAM_URL` | `http://warehouse-pi.local:8000/stream.mjpg` | Pi's reachable live-preview URL. |
-| `CAMERA_CAPTURE_TIMEOUT_SECONDS` | `120` | Renewable lease duration after a worker claims a capture, in seconds. |
-| `CAMERA_ABANDONED_TIMEOUT_SECONDS` | `86400` | Long-stop cleanup interval for abandoned queued captures, in seconds. |
-| `CAMERA_PROCESSING_TIMEOUT_SECONDS` | `300` | Processing lease limit for an uploaded frame, in seconds. |
-| `CAMERA_MAX_UPLOAD_MB` | `12` | Maximum accepted JPEG upload size, in MB. |
-| `CAMERA_CAPTURE_DIR` | `data/camera-captures` by default | Local capture directory; override with a persistent absolute path if needed. |
+| Parameter                           | Example / configuration                      | Purpose                                                                      |
+| ----------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| `CAMERA_DEVICE_ID`                  | `warehouse-camera-01`                        | Identifies the authenticated Pi worker.                                      |
+| `CAMERA_DEVICE_TOKEN`               | Your long random device secret               | Authenticates the Pi; keep private on the server and Pi.                     |
+| `CAMERA_STREAM_URL`                 | `http://warehouse-pi.local:8000/stream.mjpg` | Pi's reachable live-preview URL.                                             |
+| `CAMERA_CAPTURE_TIMEOUT_SECONDS`    | `120`                                        | Renewable lease duration after a worker claims a capture, in seconds.        |
+| `CAMERA_ABANDONED_TIMEOUT_SECONDS`  | `86400`                                      | Long-stop cleanup interval for abandoned queued captures, in seconds.        |
+| `CAMERA_PROCESSING_TIMEOUT_SECONDS` | `300`                                        | Processing lease limit for an uploaded frame, in seconds.                    |
+| `CAMERA_MAX_UPLOAD_MB`              | `12`                                         | Maximum accepted JPEG upload size, in MB.                                    |
+| `CAMERA_CAPTURE_DIR`                | `data/camera-captures` by default            | Local capture directory; override with a persistent absolute path if needed. |
 
 ### Bedrock and Gemini
 
 Use either the standard AWS credential chain or a Bedrock bearer token;
 not every credential parameter needs to be set.
 
-| Parameter | Example / configuration | Purpose |
-| --- | --- | --- |
-| `AWS_REGION` | `us-west-2` | AWS region used for Bedrock requests. |
-| `BEDROCK_MODEL_ID` | Code default: `global.anthropic.claude-sonnet-5` | Choose an accessible Bedrock model/inference profile; Anthropic IDs require the supported inference-profile prefix. |
-| `AWS_BEARER_TOKEN_BEDROCK` | Secret Bedrock bearer token | Alternative Bedrock authentication. |
-| `AWS_ACCESS_KEY_ID` | Your AWS access key ID | AWS signature-based authentication, paired with the secret key. |
-| `AWS_SECRET_ACCESS_KEY` | Your AWS secret access key | Secret for AWS signature-based authentication. |
-| `AWS_SESSION_TOKEN` | Your temporary AWS session token | Required when using temporary AWS access-key credentials. |
-| `GEMINI_API_KEY` | Your Google AI Studio API key | Camera measurement and image-based inventory analysis. |
+| Parameter                  | Example / configuration                          | Purpose                                                                                                             |
+| -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `AWS_REGION`               | `us-west-2`                                      | AWS region used for Bedrock requests.                                                                               |
+| `BEDROCK_MODEL_ID`         | Code default: `global.anthropic.claude-sonnet-5` | Choose an accessible Bedrock model/inference profile; Anthropic IDs require the supported inference-profile prefix. |
+| `AWS_BEARER_TOKEN_BEDROCK` | Secret Bedrock bearer token                      | Alternative Bedrock authentication.                                                                                 |
+| `AWS_ACCESS_KEY_ID`        | Your AWS access key ID                           | AWS signature-based authentication, paired with the secret key.                                                     |
+| `AWS_SECRET_ACCESS_KEY`    | Your AWS secret access key                       | Secret for AWS signature-based authentication.                                                                      |
+| `AWS_SESSION_TOKEN`        | Your temporary AWS session token                 | Required when using temporary AWS access-key credentials.                                                           |
+| `GEMINI_API_KEY`           | Your Google AI Studio API key                    | Camera measurement and image-based inventory analysis.                                                              |
 
 ### Optional engineering-plan integration
 
 Configure these only when using spreadsheet-based plan analysis. For private
 sheets, use the service account and share the sheet with its email.
 
-| Parameter | Example / configuration | Purpose |
-| --- | --- | --- |
-| `ENGINEERING_PLAN_SPREADSHEET_ID` | Replace `YOUR_SPREADSHEET_ID` | Spreadsheet containing the engineering plan. |
-| `ENGINEERING_PLAN_SHEET_RANGE` | `UpdatedPlan!A1:O250` | Sheet tab and cell range to read. |
-| `ENGINEERING_PLAN_TIME_ZONE` | `Asia/Ulaanbaatar` | Time zone used to determine the upcoming plan date. |
-| `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` | Your service-account email | Read-only spreadsheet authentication identity. |
-| `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY` | Secret PEM key, quoted with `\n` line breaks | Service-account key paired with its email. |
-| `GOOGLE_SHEETS_API_KEY` | Your Google Sheets API key | Alternative only for sheets intentionally accessible through API-key access. |
+| Parameter                             | Example / configuration                      | Purpose                                                                      |
+| ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| `ENGINEERING_PLAN_SPREADSHEET_ID`     | Replace `YOUR_SPREADSHEET_ID`                | Spreadsheet containing the engineering plan.                                 |
+| `ENGINEERING_PLAN_SHEET_RANGE`        | `UpdatedPlan!A1:O250`                        | Sheet tab and cell range to read.                                            |
+| `ENGINEERING_PLAN_TIME_ZONE`          | `Asia/Ulaanbaatar`                           | Time zone used to determine the upcoming plan date.                          |
+| `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` | Your service-account email                   | Read-only spreadsheet authentication identity.                               |
+| `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`  | Secret PEM key, quoted with `\n` line breaks | Service-account key paired with its email.                                   |
+| `GOOGLE_SHEETS_API_KEY`               | Your Google Sheets API key                   | Alternative only for sheets intentionally accessible through API-key access. |
 
 ## Production run
 
@@ -448,7 +448,12 @@ curl -s -X POST http://localhost:3000/api/agent \
 ```
 
 ```json
-{ "message": "...", "agent": "warehouse-agent", "model": "...", "toolCalls": ["get_gantry_status"] }
+{
+  "message": "...",
+  "agent": "warehouse-agent",
+  "model": "...",
+  "toolCalls": ["get_gantry_status"]
+}
 ```
 
 Messages must be a non-empty string of at most 4000 characters. Requests are

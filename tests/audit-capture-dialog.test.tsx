@@ -103,9 +103,9 @@ describe("AuditCaptureProvider", () => {
         observedQuantity: 5,
         confidencePercent: 100,
         totalWeightGrams: 150,
-        tareWeightGrams: 117,
-        netWeightGrams: 33,
-        unitWeightGrams: 6.6,
+        tareWeightGrams: 107,
+        netWeightGrams: 43,
+        unitWeightGrams: 8.6,
         weightSource: "FALLBACK",
         previousImageUrl: null,
         currentImageUrl: null,
@@ -153,6 +153,7 @@ describe("AuditCaptureProvider", () => {
       captureMode: "PROD",
       analysis: {
         operation,
+        quantitySource: "SCALE",
         captureMode: "PROD",
         captureId: "capture-decrease",
         binCode: "B6-03",
@@ -161,10 +162,10 @@ describe("AuditCaptureProvider", () => {
         expectedQuantity: 30,
         observedQuantity: 27,
         confidencePercent: 80,
-        totalWeightGrams: 288.87,
-        tareWeightGrams: 117,
-        netWeightGrams: 171.87,
-        unitWeightGrams: 6.366,
+        totalWeightGrams: 274.4,
+        tareWeightGrams: 107,
+        netWeightGrams: 167.4,
+        unitWeightGrams: 6.2,
         weightSource: "SCALE",
         previousImageUrl: null,
         currentImageUrl: null,
@@ -174,7 +175,7 @@ describe("AuditCaptureProvider", () => {
     });
   }
 
-  it("shows a verified mismatch, saves it and closes automatically", async () => {
+  it("shows the scale-derived quantity taken during putaway and closes automatically", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -204,9 +205,11 @@ describe("AuditCaptureProvider", () => {
     expect(screen.getByText("Counted")).toBeTruthy();
     expect(screen.getByText("Decision")).toBeTruthy();
     expect(screen.getByText("Verified")).toBeTruthy();
-    expect(screen.getByText("Inventory mismatch found")).toBeTruthy();
+    expect(screen.queryByText("Inventory mismatch found")).toBeNull();
+    expect(screen.getByText("Engineer took 3 items")).toBeTruthy();
+    expect(screen.getByText("Scale: 167.4 g net ÷ 6.2 g per item")).toBeTruthy();
     expect(
-      screen.getByText(/RackHand corrected inventory:/).textContent,
+      screen.getByText(/Verified inventory:/).textContent,
     ).toContain("30 → 27");
     expect(screen.getByText("✓ Returning bin automatically")).toBeTruthy();
     expect(screen.queryByText("Confidence")).toBeNull();

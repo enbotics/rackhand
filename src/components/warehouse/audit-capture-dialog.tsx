@@ -557,6 +557,10 @@ export function AuditCaptureDialog() {
               : null;
     const partName = audit.pending.partName?.trim() || "Bin contents";
     const retrieving = result?.operation === "RETRIEVAL";
+    const takenQuantity =
+      result?.observedQuantity != null
+        ? Math.max(0, result.expectedQuantity - result.observedQuantity)
+        : 0;
     return (
       <Modal
         title={`Physical verification · ${partName}`}
@@ -570,77 +574,22 @@ export function AuditCaptureDialog() {
           <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
             Bin {audit.pending.binCode}
           </p>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <ComparisonImage
-              label={simulation ? "Simulation baseline" : "Previous snapshot"}
-              src={result?.previousImageUrl ?? null}
-            />
-            <ComparisonImage
-              label={simulation ? "Simulated capture" : "Current verification"}
-              src={result?.currentImageUrl ?? null}
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <Metric
-              label="Recorded"
-              value={result?.expectedQuantity ?? "—"}
-            />
-            <Metric
-              label={canAccept ? result?.isReturn ? "Remaining" : "Counted" : "Estimated"}
-              value={result?.observedQuantity ?? "—"}
-              tone={result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
-            />
-            <Metric
-              label="Decision"
-              value={verificationStatus}
-              tone={canAccept ? "ok" : "warn"}
-            />
-          </div>
-          {result?.totalWeightGrams != null && (
-            <div>
-              {result.weightSource === "FALLBACK" && (
-                <p className="mb-2 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-xs text-warn">
-                  Scale unavailable · using the configured{" "}
-                  {result.totalWeightGrams} g fallback total.
-                </p>
-              )}
-              {result.weightSource === "SIMULATION" && (
-                <p className="mb-2 text-xs text-ink-faint">Simulated scale reading · not a physical measurement</p>
-              )}
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <Metric
-                  label="Total weight"
-                  value={result.totalWeightGrams}
-                  unit="g"
-                />
-                <Metric
-                  label="Box tare"
-                  value={result.tareWeightGrams ?? "—"}
-                  unit="g"
-                />
-                <Metric
-                  label="Net weight"
-                  value={result.netWeightGrams ?? "—"}
-                  unit="g"
-                />
-                <Metric
-                  label="Each item"
-                  value={result.unitWeightGrams ?? "—"}
-                  unit="g"
-                  tone="accent"
-                />
-              </div>
-            </div>
-          )}
           {inventoryMismatch && result && (
-            <div className="rounded-xl border border-warn/40 bg-warn-soft p-3 text-sm text-warn">
+            <div className={`rounded-xl border p-3 text-sm ${retrieving ? "border-warn/40 bg-warn-soft text-warn" : "border-accent-soft/60 bg-accent-tint text-accent"}`}>
               <p className="font-semibold uppercase tracking-wide">
-                Inventory mismatch found
+                {retrieving
+                  ? "Inventory mismatch found"
+                  : takenQuantity > 0 && result.quantitySource === "SCALE"
+                    ? `Engineer took ${takenQuantity} ${takenQuantity === 1 ? "item" : "items"}`
+                    : "Inventory checked"}
               </p>
               <p className="mt-1 text-xs leading-relaxed">
-                RackHand corrected inventory: {result.expectedQuantity} →{" "}
+                {retrieving ? "RackHand corrected inventory" : "Verified inventory"}: {result.expectedQuantity} →{" "}
                 {result.observedQuantity}
               </p>
+              {!retrieving && result.quantitySource === "SCALE" && (
+                <p className="mt-1 text-xs">Scale: {result.netWeightGrams} g net ÷ {result.unitWeightGrams} g per item</p>
+              )}
               {result.isReturn && <p className="mt-1 text-xs">Remaining in bin: {result.observedQuantity} · inventory updated</p>}
               <p className="mt-1 text-xs font-medium">{retrieving ? "✓ Bin ready at checkout automatically" : "✓ Returning bin automatically"}</p>
             </div>
@@ -701,6 +650,68 @@ export function AuditCaptureDialog() {
               </button>
             )}
           </div>}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ComparisonImage
+              label={simulation ? "Simulation baseline" : "Previous snapshot"}
+              src={result?.previousImageUrl ?? null}
+            />
+            <ComparisonImage
+              label={simulation ? "Simulated capture" : "Current verification"}
+              src={result?.currentImageUrl ?? null}
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <Metric
+              label="Recorded"
+              value={result?.expectedQuantity ?? "—"}
+            />
+            <Metric
+              label={canAccept ? result?.isReturn ? "Remaining" : "Counted" : "Estimated"}
+              value={result?.observedQuantity ?? "—"}
+              tone={retrieving && result?.outcome === "REVIEW_DECREASE" ? "warn" : "accent"}
+            />
+            <Metric
+              label="Decision"
+              value={verificationStatus}
+              tone={canAccept ? "ok" : "warn"}
+            />
+          </div>
+          {result?.totalWeightGrams != null && (
+            <div>
+              {result.weightSource === "FALLBACK" && (
+                <p className="mb-2 rounded-lg border border-warn/40 bg-warn-soft px-3 py-2 text-xs text-warn">
+                  Scale unavailable · using the configured{" "}
+                  {result.totalWeightGrams} g fallback total.
+                </p>
+              )}
+              {result.weightSource === "SIMULATION" && (
+                <p className="mb-2 text-xs text-ink-faint">Simulated scale reading · not a physical measurement</p>
+              )}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Metric
+                  label="Total weight"
+                  value={result.totalWeightGrams}
+                  unit="g"
+                />
+                <Metric
+                  label="Box tare"
+                  value={result.tareWeightGrams ?? "—"}
+                  unit="g"
+                />
+                <Metric
+                  label="Net weight"
+                  value={result.netWeightGrams ?? "—"}
+                  unit="g"
+                />
+                <Metric
+                  label="Each item"
+                  value={result.unitWeightGrams ?? "—"}
+                  unit="g"
+                  tone="accent"
+                />
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
     );

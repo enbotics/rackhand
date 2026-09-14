@@ -1,6 +1,18 @@
-const DEFAULT_CONTAINER_TARE_GRAMS = 117;
+const DEFAULT_CONTAINER_TARE_GRAMS = 107;
 const DEFAULT_FALLBACK_TOTAL_WEIGHT_GRAMS = 150;
 const PER_ITEM_WEIGHT_TOLERANCE_GRAMS = 5;
+
+/** Measured reference weights supplied for the warehouse's stocked parts. */
+export function knownPartUnitWeightGrams(part: {
+  sku?: string | null;
+  canonicalName?: string | null;
+}): number | null {
+  const sku = part.sku?.toUpperCase();
+  if (sku === "HARDWARE-ROUND-SPACER") return 6.2;
+  if (sku === "DRIVER-MKS-TMC2160-OC-V1") return 47.12;
+  if (part.canonicalName?.toLowerCase() === "v-groove bearing wheel hardware kit") return 19;
+  return null;
+}
 
 export interface PutawayWeightMeasurement {
   totalWeightGrams: number;
@@ -93,7 +105,34 @@ export function verifyPhysicalWeight(input: {
   referenceUnitWeightGrams: number | null;
   simulated: boolean;
   expectedQuantity: number;
-}): { measurement: PutawayWeightMeasurement | null; verified: boolean; source: "SCALE" | "SIMULATION" | null } {
+  knownUnitWeightGrams?: number | null;
+}): { measurement: PutawayWeightMeasurement | null; verified: boolean; source: "SCALE" | "SIMULATION" | null; quantity?: number } {
+  const knownUnitWeight = input.knownUnitWeightGrams;
+  if (knownUnitWeight != null && Number.isFinite(knownUnitWeight) && knownUnitWeight > 0) {
+    const tare = configuredContainerTareGrams();
+    const total = input.simulated && input.quantity != null
+      ? tare + knownUnitWeight * input.quantity
+      : input.totalWeightGrams;
+    if (total == null || !Number.isFinite(total) || total < tare
+      || (!input.simulated && input.weightSource !== "SCALE")) {
+      return { measurement: null, verified: false, source: null };
+    }
+    const net = total - tare;
+    const quantity = Math.round(net / knownUnitWeight);
+    // Reject readings near the boundary between two possible quantities.
+    const verified = Math.abs(net - quantity * knownUnitWeight) <= knownUnitWeight * 0.45;
+    return {
+      measurement: {
+        totalWeightGrams: roundedGrams(total),
+        tareWeightGrams: tare,
+        netWeightGrams: roundedGrams(net),
+        unitWeightGrams: knownUnitWeight,
+      },
+      verified,
+      source: input.simulated ? "SIMULATION" : "SCALE",
+      quantity,
+    };
+  }
   if (input.quantity === null || !Number.isInteger(input.quantity) || input.quantity < 0) {
     return { measurement: null, verified: false, source: null };
   }

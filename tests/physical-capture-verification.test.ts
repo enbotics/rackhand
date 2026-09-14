@@ -137,6 +137,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   fixture.movement.status = "AWAITING_VERIFICATION";
+  fixture.movement.part.sku = "SENSOR";
   fixture.movement.newQuantity = null;
   fixture.movement.previousQuantity = 12;
   fixture.movement.destinationLocation = "OUTPUT";
@@ -160,7 +161,7 @@ async function startCheck() {
   return { completion };
 }
 
-function processFrame(totalWeightGrams = 217, workflowAttempt = 0) {
+function processFrame(totalWeightGrams = 207, workflowAttempt = 0) {
   const now = new Date();
   return processPutawayCameraCapture("capture-1", {
     imageBuffer: Buffer.from("frame"),
@@ -177,13 +178,30 @@ function processFrame(totalWeightGrams = 217, workflowAttempt = 0) {
 }
 
 describe("physical verification state machine", () => {
+  it("saves and accepts the scale count instead of the spacer camera count", async () => {
+    fixture.movement.part.sku = "HARDWARE-ROUND-SPACER";
+    fixture.movement.previousQuantity = 30;
+    fixture.inspect.mockResolvedValueOnce({
+      countable: true, observedCount: 27, countConfidence: 0.8,
+      expectedPartPresent: true, foreignObjectSuspected: false,
+      foreignObjects: [], occlusion: "NONE", notes: "Spacers visible",
+    });
+    const { completion } = await startCheck();
+    expect(await processFrame(282.03)).toMatchObject({
+      outcome: "REVIEW_DECREASE", observedQuantity: 28, quantitySource: "SCALE",
+      unitWeightGrams: 6.2, netWeightGrams: 175.03,
+    });
+    await vi.advanceTimersByTimeAsync(5_500);
+    await expect(completion).resolves.toMatchObject({ quantity: 28, inventoryUpdateApproved: true });
+    expect(fixture.movement.newQuantity).toBe(28);
+  });
   it("automatically verifies B4-01's matching count with small per-kit weight variation", async () => {
     fixture.movement.previousQuantity = 10;
     const { completion } = await startCheck();
     fixture.database.movement.findFirst.mockResolvedValueOnce({
       unitWeightGrams: 16.251,
     });
-    expect((await processFrame(303.15)).outcome).toBe("READY");
+    expect((await processFrame(293.15)).outcome).toBe("READY");
     await vi.advanceTimersByTimeAsync(5_500);
     await expect(completion).resolves.toMatchObject({
       quantity: 10,
@@ -206,7 +224,7 @@ describe("physical verification state machine", () => {
     fixture.database.cameraCaptureJob.findFirst.mockResolvedValueOnce({
       id: "camera-1",
       requestedAt: now,
-      totalWeightGrams: 217,
+      totalWeightGrams: 207,
       weightSource: "SCALE",
     });
     await vi.advanceTimersByTimeAsync(300);
@@ -235,7 +253,7 @@ describe("physical verification state machine", () => {
     fixture.database.cameraCaptureJob.findFirst.mockResolvedValueOnce({
       id: "camera-1",
       requestedAt: new Date(now.getTime() + 1_000),
-      totalWeightGrams: 217,
+      totalWeightGrams: 207,
       weightSource: "SCALE",
     });
     await vi.advanceTimersByTimeAsync(2_000);
@@ -271,7 +289,7 @@ describe("physical verification state machine", () => {
 
   it("still rejects an old retry attempt without analyzing or changing stock", async () => {
     const { completion } = await startCheck();
-    await expect(processFrame(217, 99)).rejects.toThrow(
+    await expect(processFrame(207, 99)).rejects.toThrow(
       "stale or no longer pending",
     );
     expect(fixture.inspect).not.toHaveBeenCalled();
@@ -295,7 +313,7 @@ describe("physical verification state machine", () => {
     fixture.database.cameraCaptureJob.findFirst.mockResolvedValueOnce({
       id: "camera-1",
       requestedAt: fixture.capture.capturedAt as Date,
-      totalWeightGrams: 217,
+      totalWeightGrams: 207,
       weightSource: "SCALE",
     });
     expect(
@@ -334,6 +352,7 @@ describe("physical verification state machine", () => {
   });
 
   it("waits for human removal and retry when an unexpected object is present", async () => {
+    fixture.movement.part.sku = "HARDWARE-ROUND-SPACER";
     const { completion } = await startCheck();
     fixture.inspect.mockResolvedValueOnce({
       countable: true,
@@ -345,7 +364,7 @@ describe("physical verification state machine", () => {
       occlusion: "NONE",
       notes: "Key present",
     });
-    expect((await processFrame()).outcome).toBe("FOREIGN_OBJECTS");
+    expect((await processFrame(169)).outcome).toBe("FOREIGN_OBJECTS");
     await vi.advanceTimersByTimeAsync(6_000);
     expect(fixture.capture.status).toBe("RETRY_REQUIRED");
     expect(fixture.movement.newQuantity).toBeNull();
@@ -358,7 +377,7 @@ describe("physical verification state machine", () => {
     await decidePutawayCapture("capture-1", "RETRY", "session-1");
     // Prisma's increment is represented explicitly in this in-memory fixture.
     fixture.capture.attempt = 1;
-    expect((await processFrame(217, 1)).outcome).toBe("REVIEW_DECREASE");
+    expect((await processFrame(169, 1)).outcome).toBe("REVIEW_DECREASE");
     await vi.advanceTimersByTimeAsync(5_500);
     await expect(completion).resolves.toMatchObject({
       quantity: 10,

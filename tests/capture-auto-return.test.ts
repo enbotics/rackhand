@@ -88,7 +88,10 @@ beforeEach(() => {
   mocks.auditCaptureUpdate.mockResolvedValue({});
   mocks.binUpdateMany.mockResolvedValue({ count: 1 });
   mocks.binAuditUpdate.mockResolvedValue({});
-  mocks.inventoryFindUnique.mockResolvedValue({ id: "inventory-1", quantity: 4 });
+  mocks.inventoryFindUnique.mockResolvedValue({
+    id: "inventory-1",
+    quantity: 4,
+  });
   mocks.inventoryUpdate.mockResolvedValue({});
   mocks.snapshotFindFirst.mockResolvedValue(null);
 });
@@ -136,7 +139,7 @@ describe("five-second capture return", () => {
       evidenceUrl: "/evidence/current.jpg",
       capturedAt: new Date("2026-09-12T12:00:00Z"),
       totalWeightGrams: 200,
-      tareWeightGrams: 117,
+      tareWeightGrams: 107,
       netWeightGrams: 83,
       unitWeightGrams: 11.857,
       weightSource: "SCALE",
