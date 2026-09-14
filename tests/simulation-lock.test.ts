@@ -107,13 +107,15 @@ describe("locked public simulation", () => {
     expect(fixture.lease).not.toHaveBeenCalled();
   });
 
-  it("provides B1-02 simulation evidence from recorded quantity without scale readings", async () => {
+  it("provides B1-02 reference photo evidence with recorded quantity and no scale readings", async () => {
     expect(await hasSimulationEvidence("B1-02")).toBe(true);
-    const baseline = await simulationBaselineUrl("B1-02", 40);
+    const baseline = await simulationBaselineUrl("B1-02", 6);
+    expect(baseline).toBe("/audit-simulation/B1-02/snapshot.jpg");
     expect(isSimulationEvidenceUrl(baseline)).toBe(true);
-    for (const quantity of [0, 40]) {
+    for (const quantity of [0, 6]) {
       const sample = await nextSimulationEvidence("B1-02", quantity);
-      expect(sample.bytes.subarray(1, 4).toString()).toBe("PNG");
+      expect(sample.bytes.subarray(0, 2).toString("hex")).toBe("ffd8");
+      expect(sample.url).toBe(baseline);
       expect(sample.simulatedInspection).toMatchObject({ observedCount: quantity, notes: expect.stringContaining("no physical camera or scale reading") });
       expect(isSimulationEvidenceUrl(sample.url)).toBe(true);
     }

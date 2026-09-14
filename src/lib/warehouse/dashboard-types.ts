@@ -34,11 +34,11 @@ export interface BinContentView {
   imageUrl: string | null;
 }
 
-/** Most recent placement-verification or inventory-audit photo for one bin. */
+/** Most recent placement, inventory-audit or operator-adjustment photo for one bin. */
 export interface BinSnapshotView {
   imageUrl: string;
   capturedAt: number;
-  source: "PUTAWAY" | "INVENTORY_AUDIT";
+  source: "PUTAWAY" | "INVENTORY_AUDIT" | "ADJUSTMENT";
   recordId: string;
   status: string;
   confidencePercent?: number | null;

@@ -10,6 +10,9 @@ import { tool } from "@strands-agents/sdk";
 import { z } from "zod";
 import { runRetrievalGraph } from "@/lib/warehouse/graphs/retrieval-graph";
 import { prepareMaterialsFulfillment } from "@/lib/warehouse/materials-fulfillment-service";
+import { resumeMaterialsCheckout } from "@/lib/warehouse/materials-checkout-service";
+import { getAuditCaptureMode } from "@/lib/warehouse/audit-capture-mode";
+import type { RetrievalResult } from "@/lib/warehouse/retrieval-types";
 import {
   getContextRequestId,
   recordContextWorkflow,
@@ -38,7 +41,7 @@ export const fulfillMaterialsPlanInputSchema = z.object({
 export const fulfillMaterialsPlanTool = tool({
   name: FULFILL_MATERIALS_PLAN_TOOL_NAME,
   description:
-    "Prepare and start physical fulfillment of every exact requirement returned by materials_planner. THIS TOOL REQUIRES OPERATOR APPROVAL. After approval it revalidates recorded shelf stock, selects enough OCCUPIED bins for all requirements, and retrieves the first to OUTPUT even when a bin already has trusted verification evidence. The server then requires a fresh-photo return for that exact bin before continuing the remaining selected bins one by one; never call execute_retrieval separately for these requirements.",
+    "Prepare and start physical fulfillment of every exact requirement returned by materials_planner. THIS TOOL REQUIRES OPERATOR APPROVAL. After approval it revalidates stock and selects enough bins for all requirements. In Simulation, it may first use a bin already at checkout after validating its completed contents check; no second retrieval runs. Otherwise it retrieves the first OCCUPIED bin to OUTPUT even when a bin already has trusted verification evidence. The server then requires a fresh-photo return for that exact bin before continuing the remaining selected bins one by one; never call execute_retrieval separately for these requirements.",
   inputSchema: fulfillMaterialsPlanInputSchema,
   callback: async ({ requirements }) => {
     try {
@@ -53,6 +56,7 @@ export const fulfillMaterialsPlanTool = tool({
       }
       const plan = demoPlan ?? await prepareMaterialsFulfillment(requirements, {
         requireTrustedEvidence: false,
+        includeCheckedOutBins: getAuditCaptureMode() === "SIMULATION",
       });
 
       if (!plan.ok) {
@@ -74,15 +78,20 @@ export const fulfillMaterialsPlanTool = tool({
       }
 
       const requestId = getContextRequestId();
-      const run = await runRetrievalGraph({
-        verifyContents: true,
-        sku: first.sku,
-        sourceBinCode: first.binCode,
-        requestId: requestId ? `${requestId}:fulfillment:1` : undefined,
-      });
-      recordContextWorkflow(run.graph);
-
-      const result = run.result;
+      const fulfillmentRequestId = requestId ? `${requestId}:fulfillment:1` : undefined;
+      let result: RetrievalResult;
+      if (first.alreadyCheckedOut) {
+        result = await resumeMaterialsCheckout(first, fulfillmentRequestId ?? `materials-checkout:${first.binCode}`);
+      } else {
+        const run = await runRetrievalGraph({
+          verifyContents: true,
+          sku: first.sku,
+          sourceBinCode: first.binCode,
+          requestId: fulfillmentRequestId,
+        });
+        recordContextWorkflow(run.graph);
+        result = run.result;
+      }
       logTool(
         FULFILL_MATERIALS_PLAN_TOOL_NAME,
         `first=${first.binCode} selected=${plan.selectedBins.length}`,

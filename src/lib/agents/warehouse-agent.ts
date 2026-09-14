@@ -220,6 +220,9 @@ function groundedPhysicalReply(result: CapturedPhysicalToolResult | null): strin
     const bin = String(payload.sourceBinCode ?? "the bin");
     const quantity =
       typeof payload.checkedOutQuantity === "number" ? payload.checkedOutQuantity : null;
+    if (payload.alreadyAtCheckout === true) {
+      return `Bin ${bin} is already at checkout and ready for this preparation. Take the parts you need, then use the return card; no new retrieval ran.`;
+    }
     return `Bin ${bin} was retrieved to ${String(payload.destination ?? "OUTPUT")}${quantity === null ? "." : ` with ${quantity} last-verified item(s).`}`;
   }
   const completed = Number(payload.binsCompleted ?? 0);
@@ -1010,7 +1013,7 @@ function supersededNote(summary: ApprovalSummary): string {
 function approvalPrompt(summary: ApprovalSummary): string {
   const superseded = supersededNote(summary);
   if (summary.autoSuggested) {
-    return `${superseded}Bin ${summary.destination ?? "it"} was just retrieved — put it back now?`;
+    return `${superseded}Bin ${summary.destination ?? "it"} is ready at checkout — put it back now?`;
   }
   if (summary.action === "INVENTORY_AUDIT") {
     return (
@@ -1573,7 +1576,7 @@ export async function resumeWarehouseAgent(
             [FORCED_PHYSICAL_TOOL_STATE_KEY]: EXECUTE_PUTAWAY_TOOL_NAME,
           };
           const followUp = await agent.invoke(
-            `[system: execute_retrieval just completed successfully for bin ${binCode}. ` +
+            `[system: The approved preparation or retrieval confirmed bin ${binCode} is at checkout. ` +
               `Call execute_putaway now with binCode "${binCode}" to offer putting it back — this is ` +
               `the ONLY bin this instruction concerns, regardless of any other bin code mentioned ` +
               `earlier in this conversation.]`,
@@ -1779,14 +1782,19 @@ export async function resumeWarehouseAgent(
       // wording, so the lightweight confirm question can never appear for a
       // putaway the operator actually asked for.
       const nextCall = parseInterruptReason(result.interrupts[0].reason);
+      const physicalResult = capturedPhysicalToolResult(invocationState);
+      const verifiedCheckoutReused =
+        physicalResult?.toolName === FULFILL_MATERIALS_PLAN_TOOL_NAME
+        && physicalResult.payload?.ok === true
+        && physicalResult.payload.alreadyAtCheckout === true;
       const autoSuggestedReturn =
         nextCall?.name === EXECUTE_PUTAWAY_TOOL_NAME &&
         ((decision === "APPROVE" &&
           (parked.toolName === EXECUTE_RETRIEVAL_TOOL_NAME ||
             parked.toolName === FULFILL_MATERIALS_PLAN_TOOL_NAME) &&
-          workflows.some(
+          (verifiedCheckoutReused || workflows.some(
             (run) => run.workflow === "RETRIEVAL" && run.status === "COMPLETED",
-          )) ||
+          ))) ||
           (parked.toolName === EXECUTE_PUTAWAY_TOOL_NAME &&
             forcedFulfillmentTotal !== undefined));
 

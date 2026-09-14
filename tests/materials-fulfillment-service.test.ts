@@ -15,7 +15,9 @@ vi.mock("@/lib/warehouse/inventory-service", () => ({
       totalQuantity: locations
         .filter((location) => location.binStatus === "OCCUPIED")
         .reduce((sum, location) => sum + location.quantity, 0),
-      checkedOutQuantity: 0,
+      checkedOutQuantity: locations
+        .filter((location) => location.binStatus === "CHECKED_OUT")
+        .reduce((sum, location) => sum + location.quantity, 0),
       recordedQuantity: locations.reduce(
         (sum, location) => sum + location.quantity,
         0,
@@ -63,6 +65,61 @@ beforeEach(() => {
 });
 
 describe("materials fulfillment preparation", () => {
+  it("uses the screws already at checkout for an explicitly opted-in prep", async () => {
+    inventoryBySku.set("SCREW-M4-30", [
+      { binCode: "B1-01", binStatus: "CHECKED_OUT", quantity: 18 },
+    ]);
+    const plan = await prepareMaterialsFulfillment([requirement("SCREW-M4-30", 10)], {
+      requireTrustedEvidence: false, includeCheckedOutBins: true,
+    });
+    expect(plan).toMatchObject({ ok: true, selectedBins: [
+      { sku: "SCREW-M4-30", binCode: "B1-01", recordedQuantity: 18, alreadyCheckedOut: true },
+    ] });
+  });
+
+  it("still excludes checkout stock from shelf analysis and prep without opt-in", async () => {
+    inventoryBySku.set("SCREW-M4-30", [
+      { binCode: "B1-01", binStatus: "CHECKED_OUT", quantity: 18 },
+    ]);
+    for (const options of [{}, { requireTrustedEvidence: false }, { includeCheckedOutBins: true }]) {
+      expect(await prepareMaterialsFulfillment([requirement("SCREW-M4-30", 10)], options))
+        .toMatchObject({ ok: false, reason: "materials_shortage", shortages: [{ available: 0 }] });
+    }
+  });
+
+  it("uses checkout first even if that material is later in the requirements", async () => {
+    inventoryBySku.set("BRACKET", [{ binCode: "B1-02", binStatus: "OCCUPIED", quantity: 6 }]);
+    inventoryBySku.set("SCREW-M4-30", [
+      { binCode: "B1-03", binStatus: "OCCUPIED", quantity: 20 },
+      { binCode: "B1-01", binStatus: "CHECKED_OUT", quantity: 18 },
+    ]);
+    const plan = await prepareMaterialsFulfillment([requirement("BRACKET", 2), requirement("SCREW-M4-30", 10)], {
+      requireTrustedEvidence: false, includeCheckedOutBins: true,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.selectedBins.map((bin) => bin.binCode)).toEqual(["B1-01", "B1-02"]);
+  });
+
+  it("reports a real shortage using the actual checkout quantity", async () => {
+    inventoryBySku.set("SCREW-M4-30", [{ binCode: "B1-01", binStatus: "CHECKED_OUT", quantity: 8 }]);
+    expect(await prepareMaterialsFulfillment([requirement("SCREW-M4-30", 10)], {
+      requireTrustedEvidence: false, includeCheckedOutBins: true,
+    })).toMatchObject({ ok: false, reason: "materials_shortage",
+      shortages: [{ sku: "SCREW-M4-30", required: 10, available: 8 }],
+      message: expect.stringContaining("8 are available on the shelf or at checkout"),
+    });
+  });
+
+  it("requires extra checked-out bins to return before starting a queue", async () => {
+    inventoryBySku.set("BRACKET", [{ binCode: "B1-02", binStatus: "CHECKED_OUT", quantity: 6 }]);
+    inventoryBySku.set("SCREW-M4-30", [{ binCode: "B1-01", binStatus: "CHECKED_OUT", quantity: 18 }]);
+    expect(await prepareMaterialsFulfillment([requirement("BRACKET", 2), requirement("SCREW-M4-30", 10)], {
+      requireTrustedEvidence: false, includeCheckedOutBins: true,
+    })).toMatchObject({ ok: false, reason: "materials_plan_invalid",
+      message: expect.stringContaining("More than one selected bin is checked out"),
+    });
+  });
+
   it("selects only enough occupied bins and uses physical shelf order", async () => {
     inventoryBySku.set("SKU-1", [
       { binCode: "B1-01", binStatus: "OCCUPIED", quantity: 4 },

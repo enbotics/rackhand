@@ -25,7 +25,7 @@ import type {
 import { isSimulationEvidenceUrl } from "./simulation-evidence";
 import { confidencePercent } from "./audit-types";
 import { getAuditCaptureMode, isSimulationEligibleBin } from "./audit-capture-mode";
-import { simulationIllustrationUrl } from "./simulation-evidence";
+import { simulationBaselineUrl } from "./simulation-evidence";
 import type { BinStatus, MovementStatus, MovementType } from "./types";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -103,12 +103,12 @@ export async function getInventoryAuditRunView(auditRunId: string): Promise<Inve
 }
 
 /**
- * The locked demo shows curated B1-01 photos and a labeled B1-02 inventory
- * illustration. Other bins retain their stored images for read-only inspection.
+ * The locked demo uses curated reference photos, with an illustration fallback
+ * for B1-02. Other bins retain stored images for read-only inspection.
  */
-function simulationSnapshotOverride(binCode: string, quantity: number): string | null {
+async function simulationSnapshotOverride(binCode: string, quantity: number): Promise<string | null> {
   return getAuditCaptureMode() === "SIMULATION" && isSimulationEligibleBin(binCode)
-    ? simulationIllustrationUrl(binCode, quantity) ?? `/audit-simulation/${binCode}/snapshot.jpg`
+    ? simulationBaselineUrl(binCode, quantity)
     : null;
 }
 
@@ -154,6 +154,7 @@ async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
       orderBy: { verificationCapturedAt: "desc" },
       select: {
         id: true,
+        type: true,
         destinationBinId: true,
         verificationImageUrl: true,
         verificationCapturedAt: true,
@@ -194,7 +195,7 @@ async function loadLatestBinSnapshots(): Promise<Map<string, BinSnapshotView>> {
     byBin.set(row.destinationBinId, {
       imageUrl: row.verificationImageUrl,
       capturedAt: row.verificationCapturedAt.getTime(),
-      source: "PUTAWAY",
+      source: row.type === "ADJUSTMENT" ? "ADJUSTMENT" : "PUTAWAY",
       recordId: row.id,
       status: row.status,
       measuredQuantity,
@@ -247,8 +248,8 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
     }),
   ]);
 
-  const binViews: BinView[] = bins.map((bin) => {
-    const simulationImageUrl = simulationSnapshotOverride(bin.code, bin.inventory.reduce((sum, row) => sum + row.quantity, 0));
+  const binViews: BinView[] = await Promise.all(bins.map(async (bin) => {
+    const simulationImageUrl = await simulationSnapshotOverride(bin.code, bin.inventory.reduce((sum, row) => sum + row.quantity, 0));
     const contents = bin.inventory
       // A zero row is bookkeeping left behind by a retrieval, not stock. It
       // must not draw a part into a bin that is physically empty.
@@ -263,7 +264,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       }));
 
     const realSnapshot = latestBinSnapshots.get(bin.id) ?? null;
-    const latestSnapshot = simulationImageUrl
+    const latestSnapshot = realSnapshot?.source === "ADJUSTMENT" ? realSnapshot : simulationImageUrl
       ? {
           imageUrl: simulationImageUrl,
           capturedAt: realSnapshot?.capturedAt ?? Date.now(),
@@ -284,7 +285,7 @@ export async function getWarehouseOverview(movementLimit?: number): Promise<Ware
       totalQuantity: contents.reduce((sum, item) => sum + item.quantity, 0),
       latestSnapshot,
     };
-  });
+  }));
 
   // Grouped by part so one SKU spread over several bins reads as one line
   // ("Qty 3 — B1-02 (1), B2-01 (2)") rather than as several unrelated rows.

@@ -20,6 +20,8 @@ export default defineConfig({
       "tests/control-module-scenario.test.ts",
       "tests/control-module-tools.test.ts",
       "tests/materials-plan-pipeline-card.test.ts",
+      "tests/materials-fulfillment-service.test.ts",
+      "tests/materials-checkout-service.test.ts",
     ],
     env: { DATABASE_URL: "postgresql://test-warehouse:test-warehouse@127.0.0.1:5432/test-warehouse" },
     fileParallelism: false,

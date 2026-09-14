@@ -8,5 +8,5 @@ export function isSimulationEligibleBin(binCode: string): boolean {
 }
 
 export function simulationScopeMessage(binCode: string): string {
-  return `Bin ${binCode} cannot be moved in this demo. Simulation is locked; only ${SIMULATION_ELIGIBLE_BINS.join(" and ")} can be moved. Try “Bring me bin B1-01” or “Bring me bin B1-02”.`;
+  return `Bin ${binCode} cannot be moved in this demo. Simulation is locked; only ${SIMULATION_ELIGIBLE_BINS.join(" and ")} can be moved. Try “RackHand, prep the self-tapping screws for the sensor enclosure.”.`;
 }

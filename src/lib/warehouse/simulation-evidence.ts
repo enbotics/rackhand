@@ -38,7 +38,7 @@ export function isSimulationEvidenceUrl(url: string | null | undefined): boolean
     && Buffer.from(url.split(",")[1], "base64").toString().includes('data-rackhand-simulation="true"'));
 }
 
-/** B1-02 has no curated photos. Its labeled illustration never invents a physical reading. */
+/** Illustration fallback for B1-02 when no operator-provided reference photo exists. */
 function illustratedFrame(binCode: string, quantity: number) {
   if (binCode !== "B1-02") return null;
   if (!Number.isInteger(quantity) || quantity < 0) throw new SimulationEvidenceError(binCode);
@@ -62,14 +62,12 @@ export function simulationIllustrationUrl(binCode: string, quantity: number): st
 }
 
 export async function simulationBaselineUrl(binCode: string, quantity = 0): Promise<string | null> {
-  const illustration = simulationIllustrationUrl(binCode, quantity);
-  if (illustration) return illustration;
   const file = path.join(ROOT, binCode, "snapshot.jpg");
   try {
     await access(file);
     return `/audit-simulation/${binCode}/snapshot.jpg`;
   } catch {
-    return null;
+    return simulationIllustrationUrl(binCode, quantity);
   }
 }
 
@@ -85,7 +83,7 @@ export async function hasSimulationEvidence(binCode: string): Promise<boolean> {
 
 /**
  * B1-01 returns curated photos in stable round-robin order for Gemini analysis.
- * B1-02 returns a labeled illustration and scripted inspection of recorded stock.
+ * B1-02 uses its reference photo (or an illustration fallback) and scripted inspection of recorded stock.
  */
 export async function nextSimulationEvidence(binCode: string, quantity = 0): Promise<{
   url: string;
@@ -94,6 +92,12 @@ export async function nextSimulationEvidence(binCode: string, quantity = 0): Pro
 }> {
   const illustration = illustratedFrame(binCode, quantity);
   if (illustration) {
+    const baseline = await simulationBaselineUrl(binCode, quantity);
+    if (baseline?.startsWith("/audit-simulation/")) {
+      return { url: baseline, bytes: await readFile(path.join(ROOT, binCode, "snapshot.jpg")),
+        simulatedInspection: { ...illustration.vision,
+          notes: "Curated reference photo; browser simulation uses recorded inventory, with no physical camera or scale reading." } };
+    }
     return { url: illustration.url, bytes: await sharp(Buffer.from(illustration.svg)).png().toBuffer(),
       simulatedInspection: illustration.vision };
   }

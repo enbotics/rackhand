@@ -14,11 +14,9 @@ Physical tests below are reference procedures and are unavailable in this build.
 
 1. Open the **Workspace** at `/` and confirm **GANTRY MODE: SIMULATION** in the header.
 2. Confirm the floating simulation dialog opens automatically, explains the lock, and shows both bins and suggested prompts. Dismiss it with **Got it**; use **Simulation · Locked** to reopen it.
-3. Enter **Bring me bin B1-01**, approve the request in chat, and follow the simulation comparison.
-4. Enter **Return bin B1-01 to its shelf**, then approve the return.
-5. Repeat with **Bring me bin B1-02** and **Return bin B1-02 to its shelf**.
-6. Request **Bring me bin B3-03**. Expect an explanation that only B1-01 and B1-02 may move, without a mode-switch suggestion or movement.
-7. Open **History** and **Activity** to inspect the results.
+3. Enter **RackHand, prep the self-tapping screws for the sensor enclosure.**, approve the request in chat, and follow the simulation comparison.
+4. Request **Bring me bin B3-03**. Expect an explanation that only B1-01 and B1-02 may move, without a mode-switch suggestion or movement.
+5. Open **History** and **Activity** to inspect the results.
 
 Both allowed bins must be stocked. B1-01 uses curated photos; B1-02 uses a
 labeled illustration of recorded inventory. Parts without a configured item
@@ -66,10 +64,10 @@ and have positive recorded stock. The gantry must be idle and the checkout
 station clear. Record starting quantities before each run; the application does
 not reset inventory automatically.
 
-| Bin | Evidence | Quantity for an unweighed demo part |
-| --- | --- | --- |
-| B1-01 | Curated local photos | Preserved recorded quantity |
-| B1-02 | Labeled inventory illustration | Preserved recorded quantity |
+| Bin   | Evidence                       | Quantity for an unweighed demo part |
+| ----- | ------------------------------ | ----------------------------------- |
+| B1-01 | Curated local photos           | Preserved recorded quantity         |
+| B1-02 | Labeled inventory illustration | Preserved recorded quantity         |
 
 The physical reference procedures below use the supplied item weights from
 [putaway-weight.ts](../src/lib/warehouse/putaway-weight.ts). They cannot be run

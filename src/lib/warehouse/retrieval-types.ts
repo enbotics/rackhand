@@ -98,6 +98,8 @@ export interface RetrievalSuccess {
   status: "COMPLETED";
   /** True when this requestId had already been retrieved and nothing new ran. */
   duplicate?: boolean;
+  /** An existing verified checkout was reused; no new retrieval or capture ran. */
+  alreadyAtCheckout?: boolean;
 }
 
 export interface RetrievalFailure {

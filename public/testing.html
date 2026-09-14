@@ -568,17 +568,45 @@
         </p>
         <section id="quick-browser-walkthrough">
           <h2>Quick browser walkthrough</h2>
-          <p><strong>The public workspace is locked to Simulation.</strong> Prod can trigger real hardware, so it cannot be enabled here. Only <strong>B1-01</strong> and <strong>B1-02</strong> may move. Physical procedures elsewhere in this guide are unavailable in this build.</p>
+          <p>
+            <strong>The public workspace is locked to Simulation.</strong> Prod
+            can trigger real hardware, so it cannot be enabled here. Only
+            <strong>B1-01</strong> and <strong>B1-02</strong> may move. Physical
+            procedures elsewhere in this guide are unavailable in this build.
+          </p>
           <ol>
-            <li>Open <strong>Workspace</strong> at <code>/</code> and confirm <strong>GANTRY MODE: SIMULATION</strong> in the header.</li>
-            <li>Confirm the floating simulation dialog opens automatically. Check the lock explanation, allowed bins and suggested prompts. Dismiss it with <strong>Got it</strong>; use <strong>Simulation · Locked</strong> to reopen it.</li>
-            <li>Ask <strong>Bring me bin B1-01</strong>, approve the request in chat, and follow the simulation comparison.</li>
-            <li>Ask <strong>Return bin B1-01 to its shelf</strong> and approve the return.</li>
-            <li>Repeat with <strong>Bring me bin B1-02</strong> and <strong>Return bin B1-02 to its shelf</strong>.</li>
-            <li>Ask <strong>Bring me bin B3-03</strong>. Expect the allowed-bin explanation without movement or a suggestion to enable Prod.</li>
-            <li>Inspect <strong>History</strong> and <strong>Activity</strong>.</li>
+            <li>
+              Open <strong>Workspace</strong> at <code>/</code> and confirm
+              <strong>GANTRY MODE: SIMULATION</strong> in the header.
+            </li>
+            <li>
+              Confirm the floating simulation dialog opens automatically. Check
+              the lock explanation, allowed bins and suggested prompts. Dismiss
+              it with <strong>Got it</strong>; use
+              <strong>Simulation · Locked</strong> to reopen it.
+            </li>
+            <li>
+              Ask
+              <strong
+                >RackHand, prep the self-tapping screws for the sensor
+                enclosure.</strong
+              >, approve the request in chat, and follow the simulation
+              comparison.
+            </li>
+            <li>
+              Ask <strong>Bring me bin B3-03</strong>. Expect the allowed-bin
+              explanation without movement or a suggestion to enable Prod.
+            </li>
+            <li>
+              Inspect <strong>History</strong> and <strong>Activity</strong>.
+            </li>
           </ol>
-          <p>Both allowed bins must be stocked. B1-01 uses curated photos; B1-02 uses a labeled illustration. Parts without a configured item weight keep their recorded quantity, without an invented weight or measured count. The earlier three-bin control-module scenario is unavailable.</p>
+          <p>
+            Both allowed bins must be stocked. B1-01 uses curated photos; B1-02
+            uses a labeled illustration. Parts without a configured item weight
+            keep their recorded quantity, without an invented weight or measured
+            count. The earlier three-bin control-module scenario is unavailable.
+          </p>
         </section>
         <section id="prepare-the-application">
           <h2>Prepare the application</h2>
@@ -622,12 +650,44 @@ PUTAWAY_CONTAINER_TARE_GRAMS=107</code></pre>
           <p>
             Open <a href="http://localhost:3000">http://localhost:3000</a>.
             Confirm that Workspace, Scan, History, and Activity open without a
-            loading or connection error. The mode badge opens the simulation guide; it cannot change capture mode. Gantry and warehouse capture remain in Simulation across restarts.
+            loading or connection error. The mode badge opens the simulation
+            guide; it cannot change capture mode. Gantry and warehouse capture
+            remain in Simulation across restarts.
           </p>
           <h3 id="demo-stock-prerequisites">Demo stock prerequisites</h3>
-          <p>B1-01 and B1-02 must each be <strong>OCCUPIED</strong>, contain exactly one registered SKU, and have positive recorded stock. The gantry must be idle and the checkout station clear. Record starting quantities; inventory is not reset automatically.</p>
-          <div class="table-scroll"><table><thead><tr><th>Bin</th><th>Evidence</th><th>Unweighed demo quantity</th></tr></thead><tbody><tr><td>B1-01</td><td>Curated local photos</td><td>Preserved recorded quantity</td></tr><tr><td>B1-02</td><td>Labeled inventory illustration</td><td>Preserved recorded quantity</td></tr></tbody></table></div>
-          <p>The physical reference procedures below cannot be run through this locked public workspace.</p>
+          <p>
+            B1-01 and B1-02 must each be <strong>OCCUPIED</strong>, contain
+            exactly one registered SKU, and have positive recorded stock. The
+            gantry must be idle and the checkout station clear. Record starting
+            quantities; inventory is not reset automatically.
+          </p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Bin</th>
+                  <th>Evidence</th>
+                  <th>Unweighed demo quantity</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>B1-01</td>
+                  <td>Curated local photos</td>
+                  <td>Preserved recorded quantity</td>
+                </tr>
+                <tr>
+                  <td>B1-02</td>
+                  <td>Labeled inventory illustration</td>
+                  <td>Preserved recorded quantity</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            The physical reference procedures below cannot be run through this
+            locked public workspace.
+          </p>
         </section>
         <section id="test-1-read-only-agent-request">
           <h2><span class="test-number">01</span>read-only agent request</h2>
@@ -660,11 +720,31 @@ PUTAWAY_CONTAINER_TARE_GRAMS=107</code></pre>
           </p>
         </section>
         <section id="test-2-three-bin-browser-preparation">
-          <h2><span class="test-number">02</span>allowed-bin simulation and lock</h2>
-          <p>Follow the quick walkthrough for B1-01 and B1-02 separately. Check that simulated checkout and return complete after approval, each bin returns to its original slot, and unweighed demo parts keep their recorded quantity.</p>
-          <p>Open the floating guide by click or tap. Close it with Escape, its close button, or an outside click. Confirm it is not clipped by the rack panel.</p>
-          <p>Other bins must not move or become reserved. POST <code>{"mode":"PROD"}</code> to <code>/api/warehouse/audit-capture-mode</code> must return HTTP 403 with <code>simulation_mode_locked</code>. GET must still return Simulation, a locked status and both allowed bins.</p>
-          <p class="pass-result"><strong>Pass:</strong> Both allowed bins complete the simulated workflow; UI, API and environment settings cannot enable Prod.</p>
+          <h2>
+            <span class="test-number">02</span>allowed-bin simulation and lock
+          </h2>
+          <p>
+            Follow the quick walkthrough for B1-01 and B1-02 separately. Check
+            that simulated checkout and return complete after approval, each bin
+            returns to its original slot, and unweighed demo parts keep their
+            recorded quantity.
+          </p>
+          <p>
+            Open the floating guide by click or tap. Close it with Escape, its
+            close button, or an outside click. Confirm it is not clipped by the
+            rack panel.
+          </p>
+          <p>
+            Other bins must not move or become reserved. POST
+            <code>{"mode":"PROD"}</code> to
+            <code>/api/warehouse/audit-capture-mode</code> must return HTTP 403
+            with <code>simulation_mode_locked</code>. GET must still return
+            Simulation, a locked status and both allowed bins.
+          </p>
+          <p class="pass-result">
+            <strong>Pass:</strong> Both allowed bins complete the simulated
+            workflow; UI, API and environment settings cannot enable Prod.
+          </p>
         </section>
         <section id="test-3-cancel-before-execution">
           <h2><span class="test-number">03</span>cancel before execution</h2>
@@ -1067,9 +1147,10 @@ npm test</code></pre>
             </li>
           </ul>
           <p>
-            A browser-demo pass requires both allowed-bin workflows and a working simulation lock. A production-verification pass requires fresh measured
-            evidence, 107 g tare, known item weights, correct scale-derived
-            quantities, and safe failure behavior.
+            A browser-demo pass requires both allowed-bin workflows and a
+            working simulation lock. A production-verification pass requires
+            fresh measured evidence, 107 g tare, known item weights, correct
+            scale-derived quantities, and safe failure behavior.
           </p>
         </section>
         <section id="supporting-setup">

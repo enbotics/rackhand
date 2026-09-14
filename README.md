@@ -642,9 +642,9 @@ Prod mode can trigger real hardware. Only stocked `B1-01` and `B1-02` may move.
 Simulation info opens by default as a floating dialog. Dismiss it with **Got it**
 or reopen it from **Simulation · Locked** beside the rack menu.
 
-Try **Bring me bin B1-01** or **Bring me bin B1-02**, approve the request in
+Try **RackHand, prep the self-tapping screws for the sensor enclosure.**, approve the request in
 chat, then return the checked-out bin before requesting another.
-`B1-01` uses curated photos; `B1-02` uses a labeled illustration and scripted
+`B1-01` uses curated photos; `B1-02` uses an operator-provided reference photo and scripted
 inspection of recorded inventory, without a physical camera or scale reading.
 Demo parts without a configured item weight retain their recorded quantity;
 simulation never derives an item weight from an image count.

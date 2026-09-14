@@ -8,6 +8,8 @@
  * evidence: plan audits do, while an explicitly approved preparation job does
  * not because each checked-out bin is verified by its required photo return.
  * If any SKU is short, the whole plan is rejected without moving a bin.
+ * Simulation preparation may explicitly include stock already at checkout;
+ * the caller must validate its completed contents check before using it.
  */
 import { compareBinsInShelfOrder } from "./bin-layout";
 import {
@@ -22,6 +24,8 @@ export interface MaterialsFulfillmentBin {
   binCode: string;
   recordedQuantity: number;
   requiredQuantity: number;
+  /** Simulation prep may continue using a bin that is already at checkout. */
+  alreadyCheckedOut?: boolean;
   /** Present in analysis mode when this bin was selected from trusted evidence. */
   verification?: BinVerificationEvidence;
 }
@@ -94,6 +98,8 @@ export async function prepareMaterialsFulfillment(
      * the existing fresh-photo return reconciles it after the engineer uses it.
      */
     requireTrustedEvidence?: boolean;
+    /** Explicit prep opt-in; shelf-stock analysis must exclude checkout stock. */
+    includeCheckedOutBins?: boolean;
   } = {},
 ): Promise<MaterialsFulfillmentPlan> {
   const normalized = aggregateRequirements(requirements);
@@ -119,6 +125,8 @@ export async function prepareMaterialsFulfillment(
     string,
     Awaited<ReturnType<typeof getInventoryForPart>>["locations"]
   >();
+  const includeCheckedOut = options.includeCheckedOutBins === true
+    && options.requireTrustedEvidence === false;
 
   for (const requirement of normalized) {
     try {
@@ -142,10 +150,13 @@ export async function prepareMaterialsFulfillment(
     const stocked = locations
       .filter(
         (location) =>
-          location.binStatus === "OCCUPIED" && location.quantity > 0,
+          (location.binStatus === "OCCUPIED"
+            || (includeCheckedOut && location.binStatus === "CHECKED_OUT"))
+            && location.quantity > 0,
       )
       .sort((left, right) =>
-        compareBinsInShelfOrder(
+        Number(right.binStatus === "CHECKED_OUT") - Number(left.binStatus === "CHECKED_OUT")
+        || compareBinsInShelfOrder(
           { code: left.binCode },
           { code: right.binCode },
         ),
@@ -173,6 +184,7 @@ export async function prepareMaterialsFulfillment(
           binCode: location.binCode,
           recordedQuantity: location.quantity,
           requiredQuantity: requirement.quantity,
+          ...(location.binStatus === "CHECKED_OUT" ? { alreadyCheckedOut: true } : {}),
         });
         covered += location.quantity;
       }
@@ -252,7 +264,7 @@ export async function prepareMaterialsFulfillment(
       message: `The materials plan cannot start because ${shortages
         .map(
           (shortage) =>
-            `${shortage.sku} needs ${shortage.required}, but ${shortage.available} are shelf-available`,
+            `${shortage.sku} needs ${shortage.required}, but ${shortage.available} are ${includeCheckedOut ? "available on the shelf or at checkout" : "shelf-available"}`,
         )
         .join("; ")}. No bin moved.`,
       requirements: normalized,
@@ -298,6 +310,20 @@ export async function prepareMaterialsFulfillment(
       shortages: [],
     };
   }
+
+  const checkoutBins = selectedBins.filter((bin) => bin.alreadyCheckedOut);
+  if (checkoutBins.length > 1) {
+    return {
+      ok: false,
+      reason: "materials_plan_invalid",
+      message: `More than one selected bin is checked out (${checkoutBins.map((bin) => bin.binCode).join(", ")}). Return the extra bins before starting this preparation. No bin moved.`,
+      requirements: normalized,
+      selectedBins,
+      shortages: [],
+    };
+  }
+  // Finish using and returning the presented bin before retrieving any other SKU.
+  selectedBins.sort((left, right) => Number(Boolean(right.alreadyCheckedOut)) - Number(Boolean(left.alreadyCheckedOut)));
 
   return { ok: true, requirements: normalized, selectedBins };
 }
