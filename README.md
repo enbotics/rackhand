@@ -352,6 +352,52 @@ To analyze an engineering plan, configure:
 intentionally accessible through API-key access. This integration reads the
 plan; it does not edit it.
 
+### Automatic analysis of upcoming work
+
+RackHand can start the upcoming-work analysis by itself when the plan changes.
+Editing the sheet is the only action required; nobody has to open the app.
+
+```text
+Sheet edit  ->  signed webhook  ->  debounced inbox  ->  queued plan card
+            ->  wait for a safe idle warehouse  ->  analysis + bin checks
+```
+
+Disabled by default. Enable it only on the single deployment that owns the
+physical warehouse — two servers draining the same queue would compete for the
+same gantry. See [the setup runbook](docs/automatic-plan-trigger.md) for the
+Apps Script installation and the production rollout steps.
+
+- **What sends the event.** A bound Apps Script
+  ([`hardware/google-sheets/rackhand-plan-trigger.gs`](hardware/google-sheets/rackhand-plan-trigger.gs))
+  fires on edit, on structural change, and on the first open of each day. It
+  POSTs an HMAC-SHA256 signed body carrying only the spreadsheet ID and a
+  timestamp to `/api/agent/plan-analysis/sheet-change`. Failed deliveries retry
+  up to five times and surface an honest error in Apps Script Executions rather
+  than reporting success.
+- **What the server trusts.** The event is a notification, not data. The server
+  verifies the signature and timestamp, then re-reads the plan itself through
+  the existing read-only Sheets integration. Nothing from the request body
+  reaches the analysis.
+- **Why it does not thrash.** Edits debounce for 15 seconds, and the re-read
+  plan is fingerprinted — formatting and row-order changes that leave the
+  actionable rows identical queue no work. A newer edit supersedes a version
+  still waiting, so only the latest plan is ever analyzed.
+- **When it actually runs.** A queued analysis waits for the warehouse to be
+  genuinely free: no client request, no pending approval, every bin on the
+  shelf, no unfinished movement or audit, camera free, and the gantry idle and
+  home. These are database and hardware facts, not a browser timer. While it
+  waits, the plan card explains what it is waiting for.
+- **Where it runs.** A coordinator on the Node server drains the queue every 10
+  seconds, so work proceeds with no browser open. This checks the queue and
+  idle state only — it does not poll Sheets. Only a signed event causes a read.
+- **Recovery.** Analyses are checkpointed between bin checks and hold a
+  database lease. A restart mid-analysis fails that run honestly and releases
+  it for a fresh attempt; it is never blindly replayed.
+
+Automatic analysis performs no fulfillment and has no human-in-the-loop step.
+Unsafe or ambiguous observations are reported as issues in the readiness
+report rather than raised as hidden approval prompts.
+
 ### Private production gantry setup
 
 In the private application's `.env.local` (or deployment environment), set:
@@ -522,6 +568,8 @@ sheets, use the service account and share the sheet with its email.
 | `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` | Your service-account email                   | Read-only spreadsheet authentication identity.                               |
 | `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`  | Secret PEM key, quoted with `\n` line breaks | Service-account key paired with its email.                                   |
 | `GOOGLE_SHEETS_API_KEY`               | Your Google Sheets API key                   | Alternative only for sheets intentionally accessible through API-key access. |
+| `ENGINEERING_PLAN_AUTO_ENABLED`       | `false` (default) / `true`                   | Enables automatic analysis when the sheet changes. Enable on the single deployment that owns the warehouse. |
+| `ENGINEERING_PLAN_WEBHOOK_SECRET`     | Random secret, 32+ characters                | Shared secret signing the sheet-change webhook. Must match the Apps Script property. |
 
 
 </details>
@@ -615,8 +663,11 @@ seven days.
 A useful demonstration is a sensor-array plan requiring 19 modules when records
 show 20 but a physical check finds 18. The final report is short by one. These
 are scenario values: configure the plan and stock to reproduce them. Plan
-analysis is user-triggered; its bin checks are internally selected. There is no
-nightly scheduler or implemented email/chat notification service.
+analysis starts either from an operator in the app or automatically when the
+sheet changes (see [Automatic analysis of upcoming work](#automatic-analysis-of-upcoming-work));
+its bin checks are internally selected in both cases. Automatic runs are
+event-driven — there is no nightly scheduler, no Sheets polling, and no
+implemented email/chat notification service.
 
 ### Production sensing
 
@@ -665,6 +716,7 @@ src/lib/camera/                  Durable camera jobs, evidence, and worker acces
 src/lib/gantry/                  Controller interface and simulated motion
 src/lib/observability/           Tool and graph tracing
 hardware/warehouse-camera/       Python Pi camera and serial-scale worker
+hardware/google-sheets/          Apps Script that signals plan changes
 prisma/                          Database schema, migrations, and seed
 public/architecture.html         Interactive architecture diagram
 scripts/                         Setup and smoke-test utilities
