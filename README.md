@@ -10,6 +10,140 @@ The application uses Next.js, React, TypeScript, Prisma, PostgreSQL/Supabase,
 Amazon Bedrock, and Gemini. Bin movement currently runs in a browser-visible
 simulation; a Raspberry Pi supplies production camera and scale evidence.
 
+## Architecture
+
+Open the [standalone HTML diagram](public/architecture.html) directly in a
+browser, or visit [http://localhost:3000/architecture.html](http://localhost:3000/architecture.html)
+while the app is running. It works offline and includes a Print / Save PDF button.
+The HTML version starts with three selectable user journeys, then shows each
+workflow agent, its tools, and the results passed back to the coordinator.
+It explains the Strands feedback loop and user-facing benefits; infrastructure
+details are expandable. See the
+[hackathon judge brief](docs/hackathon-judge-brief.md) for requirements and
+source-code evidence.
+
+### Three workflow agents, with focused tools
+
+```mermaid
+flowchart TB
+    User["User prompt<br/>Prepare parts or explain an audit"] --> Warehouse
+    Warehouse["Warehouse Agent · Strands + Bedrock<br/>Coordinate requests and report tool outcomes"]
+    Planner["Materials Planner · Strands + Bedrock<br/>Read plan context, search catalog and inventory<br/>Return required parts and quantities"]
+    Auditor["Inventory Auditor · Strands + Bedrock<br/>Read latest audit and history + MemoryManager context<br/>Return an audit explanation"]
+    Lookup["9 read/check tools<br/>Parts, stock, bin status, gantry status, and activity"]
+    Approval["HumanInTheLoop<br/>Approval before restricted client actions"]
+    Graphs["Guarded workflow tools + Strands Graph<br/>fulfill_materials_plan · execute_retrieval<br/>execute_putaway · execute_inventory_audit"]
+    Report["User response<br/>Verified outcome, stock changes, or attention needed"]
+
+    Warehouse <-->|"materials_planner · Agent.asTool()"| Planner
+    Warehouse <-->|"inventory_auditor · Agent.asTool()"| Auditor
+    Warehouse <-->|"Read calls and results"| Lookup
+    Warehouse -->|"Restricted client tool call"| Approval
+    Approval -->|"Approved execution"| Graphs
+    Graphs -->|"Structured execution results"| Warehouse
+    Auditor -.->|"run_inventory_audit · trusted internal mode only"| Graphs
+    Warehouse --> Report
+```
+
+The specialists are branches, not a mandatory Planner → Auditor sequence.
+The Warehouse Agent exposes 15 tools in normal client mode: nine read/check
+tools, four workflow tools, and two specialist delegations. Its tool list is
+defined in [tools/index.ts](src/lib/agents/tools/index.ts).
+
+For prompt-based preparation: request → Warehouse Agent → Materials Planner
+→ exact returned requirements → approved fulfillment → verified bin return
+→ report. The Auditor is consulted when its audit context is useful.
+
+The separate plan-analysis entry point invokes the Materials Planner directly,
+then uses server freshness policy and deterministic audit workflows. It does
+not require the Warehouse Agent or Inventory Auditor language agent.
+The exact control-module SIMULATION prompt is another explicit exception: its
+requirements are server-grounded by the scripted scenario, so it can bypass
+the Planner.
+
+There are also two internal Gemini-backed **Strands vision agents**: the Vision
+Analyst and conditional Vision Judge. Their GoalLoop refines the same image;
+it cannot repeat bin motion or directly update inventory. These are supporting
+inspection roles, not user-request coordinators.
+
+<details>
+<summary>Full infrastructure and capture architecture</summary>
+
+```mermaid
+flowchart TB
+    Browser["Browser<br/>Warehouse UI, bin animation, approvals, and reports"]
+
+    subgraph Server["Next.js application server"]
+        API["API routes<br/>Requests, approvals, status, and event streams"]
+        Agents["Strands AI agents<br/>Warehouse agent + Materials Planner + Inventory Auditor"]
+        Plans["Plan analysis service<br/>Check required stock and select bins to verify"]
+        Workflows["Strands Graph workflows + approval policies<br/>Retrieve, verify, return, and reconcile inventory"]
+        Capture["Camera job and verification services<br/>Durable jobs, evidence checks, and analysis retries"]
+        Prisma["Prisma data access"]
+    end
+
+    subgraph Cloud["AI and plan providers"]
+        Bedrock["Amazon Bedrock<br/>Agent reasoning and tool selection"]
+        Gemini["Gemini<br/>Visual count and object identification"]
+        Sheets["Google Sheets<br/>Optional read-only engineering plan"]
+    end
+
+    subgraph Supabase["Supabase"]
+        DB[("PostgreSQL<br/>Catalog, stock, movements, audits, and camera jobs")]
+        Storage["Private Storage<br/>Camera evidence photos"]
+        Realtime["Realtime<br/>Database change notifications"]
+    end
+
+    subgraph Pi["Raspberry Pi 5 - production capture"]
+        Worker["Authenticated camera worker"]
+        Sensors["Camera Module 3 + USB serial scale"]
+    end
+
+    Gantry["Simulated gantry<br/>Bin movement state shown in the browser"]
+
+    Browser <-->|"Prompts, approvals, progress, and results"| API
+    API --> Agents
+    API --> Plans
+    API --> Capture
+    Agents <-->|"Model reasoning and responses"| Bedrock
+    Agents <-->|"Validated tool calls and structured results"| Workflows
+    Agents -->|"Read catalog, stock, and audit history"| Prisma
+    Agents -->|"Optional plan lookup"| Sheets
+    Plans -->|"Read enabled work"| Sheets
+    Plans -->|"Materials Planner requirements"| Agents
+    Plans -->|"Selected physical audits"| Workflows
+    Workflows --> Gantry
+    Workflows --> Capture
+    Workflows --> Prisma
+    Capture --> Prisma
+    Capture -->|"Image analysis"| Gemini
+    Capture -->|"Store and read evidence"| Storage
+    Prisma --> DB
+    DB -.->|"Job and status changes"| Realtime
+    Realtime -.->|"Wake and update signals"| API
+    API -.->|"Authenticated job events"| Worker
+    Worker -->|"Claim jobs, upload photo and weight, report health"| API
+    Worker -->|"Capture photo and stable weight"| Sensors
+    API -->|"Read movement status"| Gantry
+```
+
+Solid arrows show requests or data access; dotted arrows show notifications.
+The warehouse agent delegates planning and audit explanations to specialist
+agents. Plan analysis can also invoke the Materials Planner directly.
+
+Models select tools and interpret images; server workflows enforce approvals,
+evidence requirements, inventory updates, and safe bin return. Bedrock does not
+receive the camera image bytes. Gemini handles visual inspection, and server
+verification logic combines it with scale evidence.
+
+PostgreSQL is the source of truth. Realtime only signals that work or status
+has changed; the Pi claims durable jobs through authenticated server endpoints.
+Supabase credentials remain on the server. Bin movement is currently simulated,
+not driven by a real gantry. Supported capture simulations use local demo
+evidence instead of the Pi.
+
+</details>
+
 ## Requirements
 
 - Node.js **22.12 or later in the 22.x series**, or **24.x**, with npm. Prisma
@@ -58,6 +192,9 @@ Keep credentials in `.env.local` or your deployment's secret settings. Never
 commit them, expose the Supabase service-role key to the browser, or install
 that key on the Pi. `.env` and `.env.local` are both ignored by Git; the tracked
 `.env.example` contains configuration examples only.
+
+See the [complete environment reference](#environment-variable-reference) for
+all settings, including optional timeouts and simulation controls.
 
 ### 2. Install dependencies
 
@@ -153,6 +290,85 @@ To analyze an engineering plan, configure:
 `GOOGLE_SHEETS_API_KEY` is an alternative only when the spreadsheet is
 intentionally accessible through API-key access. This integration reads the
 plan; it does not edit it.
+
+## Environment variable reference
+
+This reference covers every parameter in [.env.example](.env.example), including
+commented optional settings. Values below are template examples or documented
+defaults, not real credentials. Uncomment optional settings in `.env.local`
+when needed. Restart the application after changing environment settings.
+
+### Database and Supabase
+
+| Parameter | Example / configuration | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | Your PostgreSQL runtime URL | Application queries; use the Supabase transaction pooler when applicable. |
+| `DIRECT_URL` | Your direct or session-mode PostgreSQL URL | Prisma generation and migrations. Point at the same database as `DATABASE_URL`. |
+| `SUPABASE_URL` | `https://PROJECT_REF.supabase.co` | Supabase project used by camera Storage and Realtime. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Secret from your Supabase project | Server-only access; never expose to the browser or Pi. |
+| `TEST_DATABASE_URL` | A dedicated PostgreSQL URL containing `test-warehouse` | Full test suite only. Export in the test terminal; never use production. |
+| `SEED_DEMO_CATALOG` | `0` to disable; otherwise omit | Skip example catalog creation during seeding; shelf bins are still seeded. |
+
+### Bin movement and verification
+
+| Parameter | Example / configuration | Purpose |
+| --- | --- | --- |
+| `GANTRY_MODE` | `simulation` | Simulated bin movement. Hardware mode is not implemented. |
+| `AUDIT_CAPTURE_MODE` | `PROD` or `SIMULATION` | Initial camera mode; simulation supports only configured demo bins. |
+| `GANTRY_SIM_MOVE_DELAY_MS` | `300` | Simulator movement delay, in milliseconds. |
+| `GANTRY_SIM_PICK_DELAY_MS` | `200` | Simulator bin-pick delay, in milliseconds. |
+| `GANTRY_SIM_DROP_DELAY_MS` | `200` | Simulator bin-drop delay, in milliseconds. |
+| `GANTRY_SIM_HOME_DELAY_MS` | `400` | Simulator homing delay, in milliseconds. |
+| `GANTRY_SIM_BIN_TRANSFER_DELAY_MS` | `5000` | Guided bin presentation/return delay, in milliseconds. |
+| `PUTAWAY_INACTIVITY_TIMEOUT_MS` | `240000` | Workflow inactivity window, in milliseconds; successful camera/retry transitions refresh it. |
+| `PUTAWAY_CONTAINER_TARE_GRAMS` | `117` | Empty-bin weight subtracted from scale readings; configure the actual weight in grams. |
+| `PUTAWAY_FALLBACK_TOTAL_WEIGHT_GRAMS` | `150` | Fallback gross weight in grams when no usable scale reading is supplied; not trusted physical evidence. |
+
+### Camera worker connection and capture limits
+
+These are application-server settings. The Pi has its own
+[camera.env.example](hardware/warehouse-camera/camera.env.example); its
+`CAMERA_DEVICE_ID` and `CAMERA_DEVICE_TOKEN` must match the server.
+
+| Parameter | Example / configuration | Purpose |
+| --- | --- | --- |
+| `CAMERA_DEVICE_ID` | `warehouse-camera-01` | Identifies the authenticated Pi worker. |
+| `CAMERA_DEVICE_TOKEN` | Your long random device secret | Authenticates the Pi; keep private on the server and Pi. |
+| `CAMERA_STREAM_URL` | `http://warehouse-pi.local:8000/stream.mjpg` | Pi's reachable live-preview URL. |
+| `CAMERA_CAPTURE_TIMEOUT_SECONDS` | `120` | Renewable lease duration after a worker claims a capture, in seconds. |
+| `CAMERA_ABANDONED_TIMEOUT_SECONDS` | `86400` | Long-stop cleanup interval for abandoned queued captures, in seconds. |
+| `CAMERA_PROCESSING_TIMEOUT_SECONDS` | `300` | Processing lease limit for an uploaded frame, in seconds. |
+| `CAMERA_MAX_UPLOAD_MB` | `12` | Maximum accepted JPEG upload size, in MB. |
+| `CAMERA_CAPTURE_DIR` | `data/camera-captures` by default | Local capture directory; override with a persistent absolute path if needed. |
+
+### Bedrock and Gemini
+
+Use either the standard AWS credential chain or a Bedrock bearer token;
+not every credential parameter needs to be set.
+
+| Parameter | Example / configuration | Purpose |
+| --- | --- | --- |
+| `AWS_REGION` | `us-west-2` | AWS region used for Bedrock requests. |
+| `BEDROCK_MODEL_ID` | Code default: `global.anthropic.claude-sonnet-5` | Choose an accessible Bedrock model/inference profile; Anthropic IDs require the supported inference-profile prefix. |
+| `AWS_BEARER_TOKEN_BEDROCK` | Secret Bedrock bearer token | Alternative Bedrock authentication. |
+| `AWS_ACCESS_KEY_ID` | Your AWS access key ID | AWS signature-based authentication, paired with the secret key. |
+| `AWS_SECRET_ACCESS_KEY` | Your AWS secret access key | Secret for AWS signature-based authentication. |
+| `AWS_SESSION_TOKEN` | Your temporary AWS session token | Required when using temporary AWS access-key credentials. |
+| `GEMINI_API_KEY` | Your Google AI Studio API key | Camera measurement and image-based inventory analysis. |
+
+### Optional engineering-plan integration
+
+Configure these only when using spreadsheet-based plan analysis. For private
+sheets, use the service account and share the sheet with its email.
+
+| Parameter | Example / configuration | Purpose |
+| --- | --- | --- |
+| `ENGINEERING_PLAN_SPREADSHEET_ID` | Replace `YOUR_SPREADSHEET_ID` | Spreadsheet containing the engineering plan. |
+| `ENGINEERING_PLAN_SHEET_RANGE` | `UpdatedPlan!A1:O250` | Sheet tab and cell range to read. |
+| `ENGINEERING_PLAN_TIME_ZONE` | `Asia/Ulaanbaatar` | Time zone used to determine the upcoming plan date. |
+| `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` | Your service-account email | Read-only spreadsheet authentication identity. |
+| `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY` | Secret PEM key, quoted with `\n` line breaks | Service-account key paired with its email. |
+| `GOOGLE_SHEETS_API_KEY` | Your Google Sheets API key | Alternative only for sheets intentionally accessible through API-key access. |
 
 ## Production run
 

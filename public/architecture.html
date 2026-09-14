@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="RackHand judge architecture for Agents for Humans: Strands agentic loop, Bedrock, guarded workflow graphs, camera and scale evidence, and assembly-readiness reports.">
+    <title>RackHand — Agents for Humans Judge Architecture</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a1119;
+        --panel: #101b28;
+        --card: #152333;
+        --border: #2b3f53;
+        --text: #edf4fa;
+        --muted: #a1b3c5;
+        --blue: #77c7ff;
+        --green: #73d9b0;
+        --amber: #f0c675;
+        --line: #7695b0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: 100%; max-width: 1480px; margin: auto; padding: 44px 32px; }
+      header { display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+      header > div { min-width: 0; max-width: 100%; }
+      .eyebrow { margin: 0 0 6px; color: var(--blue); font-size: 12px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.035em; line-height: 1.2; }
+      .intro { max-width: 880px; margin: 14px 0 24px; color: var(--muted); }
+      a { color: var(--blue); text-underline-offset: 3px; }
+      .pitch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+      .pitch article { border-left: 2px solid var(--blue); padding: 4px 18px; }
+      .pitch h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--blue); }
+      .pitch p { margin: 0; color: var(--muted); font-size: 14px; }
+      .build-status { margin-bottom: 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font-size: 13px; }
+      .build-status strong { color: var(--text); }
+      .section-heading { margin: 28px 0 12px; font-size: 21px; }
+      .section-copy { margin: 0 0 16px; max-width: 1000px; color: var(--muted); font-size: 14px; }
+      .flow-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+      .flow-controls button[aria-pressed="true"] { color: var(--blue); border-color: var(--blue); background: var(--panel); }
+      [hidden] { display: none !important; }
+      .journey { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; list-style: none; padding: 0; margin: 16px 0; counter-reset: step; }
+      .journey li { position: relative; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); counter-increment: step; }
+      .journey li::before { content: counter(step, decimal-leading-zero); display: block; margin-bottom: 12px; color: var(--blue); font-size: 12px; font-weight: 750; letter-spacing: .1em; }
+      .journey strong { display: block; font-size: 16px; line-height: 1.35; }
+      .journey p { margin: 10px 0; color: var(--muted); font-size: 13px; }
+      .actor { display: block; color: var(--green); font-size: 11px; font-weight: 650; }
+      code { font: .9em/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+      .flow-note { color: var(--muted); font-size: 13px; }
+      .svg-code { fill: var(--muted); font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .connector.scoped { stroke-dasharray: 3 6; }
+      .strands-section { margin: 30px 0; }
+      .strands-section .decision-table td:first-child { width: 24%; }
+      details.technical { padding: 20px; border: 1px solid var(--border); border-radius: 14px; margin-top: 30px; }
+      details.technical > summary { cursor: pointer; font-size: 18px; font-weight: 650; }
+      details.technical > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+      .loop-section { margin-bottom: 30px; }
+      .loop-diagram svg { min-width: 920px; }
+      .review-panels { margin-top: 30px; }
+      .decision-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      .decision-table th, .decision-table td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .decision-table th { color: var(--blue); font-weight: 650; }
+      .decision-table td { color: var(--muted); }
+      .decision-table td strong { color: var(--text); }
+      .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+      .decision-table { min-width: 760px; }
+      .demo-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+      .demo-paths article { border: 1px solid var(--border); padding: 20px; border-radius: 12px; }
+      .demo-paths p, .demo-paths li { color: var(--muted); font-size: 14px; }
+      .demo-paths ol { padding-left: 20px; margin: 12px 0 0; }
+      .demo-paths li { margin: 8px 0; }
+      .scope-note { margin-top: 16px; color: var(--amber); font-size: 13px; }
+      .judge-links { margin-top: 26px; color: var(--muted); font-size: 13px; }
+      button {
+        flex-shrink: 0; border: 1px solid var(--border); border-radius: 10px;
+        background: var(--card); color: var(--text); padding: 12px 18px;
+        cursor: pointer; font: inherit;
+      }
+      button:hover { border-color: var(--blue); }
+      button:focus-visible, .diagram:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+      .legend { display: flex; flex-wrap: wrap; gap: 12px 26px; margin-bottom: 18px; color: var(--muted); font-size: 13px; }
+      .legend span { display: inline-flex; align-items: center; gap: 8px; }
+      .swatch { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); }
+      .swatch.real { background: var(--green); }
+      .swatch.sim { background: var(--amber); }
+      .line-key { width: 26px; border-top: 2px solid var(--line); }
+      .line-key.events { border-top-style: dashed; }
+      figure { margin: 0; }
+      .diagram { overflow-x: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 18px; }
+      svg { display: block; width: 100%; min-width: 1050px; height: auto; }
+      svg text { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .group { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 5 5; }
+      .group-title { fill: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 1.6px; }
+      .node { fill: var(--card); stroke: var(--border); stroke-width: 1.5; }
+      .node.core { stroke: var(--blue); }
+      .node.physical { stroke: var(--green); }
+      .node.simulated { stroke: var(--amber); }
+      .kicker { fill: var(--blue); font-size: 11px; font-weight: 700; letter-spacing: 1.3px; }
+      .physical-label { fill: var(--green); }
+      .simulation-label { fill: var(--amber); }
+      .node-title { fill: var(--text); font-size: 20px; font-weight: 650; }
+      .node-copy { fill: var(--muted); font-size: 14px; }
+      .connector { fill: none; stroke: var(--line); stroke-width: 1.8; marker-end: url(#arrow); }
+      .connector.events { stroke-dasharray: 5 5; }
+      .connector.two-way { marker-start: url(#arrow); }
+      .arrowhead { fill: var(--line); }
+      .edge-label { fill: var(--muted); font-size: 11px; font-weight: 600; }
+      .edge-bg { fill: var(--panel); }
+      figcaption { margin: 12px 2px 0; color: var(--muted); font-size: 13px; }
+      .notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 28px; }
+      .note { padding: 20px; border: 1px solid var(--border); border-radius: 12px; }
+      h2 { margin: 0 0 8px; font-size: 16px; }
+      .note p { margin: 0; color: var(--muted); font-size: 14px; }
+      footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
+      @media (max-width: 720px) {
+        main { padding: 26px 16px; }
+        header { align-items: flex-start; flex-direction: column; gap: 16px; }
+        .notes, .pitch, .demo-paths { grid-template-columns: 1fr; }
+        .journey { grid-template-columns: 1fr; }
+      }
+      @media (min-width: 721px) and (max-width: 1100px) {
+        .journey { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @page { size: landscape; margin: 10mm; }
+      @media print {
+        :root {
+          color-scheme: light; --bg: #fff; --panel: #fff; --card: #f4f7fa;
+          --border: #b4c1ce; --text: #152333; --muted: #415970;
+          --blue: #12679f; --green: #187252; --amber: #8a5a0a; --line: #536e86;
+        }
+        main { max-width: none; padding: 0; }
+        h1 { font-size: 26px; }
+        .intro { margin: 8px 0 12px; font-size: 12px; }
+        button, footer, .pitch, .review-panels, .judge-links, details.technical { display: none; }
+        .journey { gap: 8px; }
+        .journey li { padding: 10px; }
+        .journey li::before { margin-bottom: 6px; }
+        .journey strong { font-size: 12px; }
+        .journey p, .actor, .flow-note { font-size: 9px; }
+        .section-copy { font-size: 10px; }
+        .strands-section { margin: 16px 0; }
+        .strands-section .decision-table { min-width: 0; font-size: 10px; }
+        .strands-section th, .strands-section td { padding: 8px; }
+        .table-scroll { overflow: visible; }
+        .build-status { padding: 8px 12px; margin-bottom: 10px; font-size: 10px; }
+        .section-heading { font-size: 14px; margin: 12px 0 8px; }
+        .loop-section { margin-bottom: 12px; }
+        .loop-diagram svg { min-width: 0; max-height: 34mm; }
+        figure { break-inside: avoid; }
+        .legend { font-size: 11px; margin-bottom: 10px; }
+        .diagram { overflow: visible; border: 0; }
+        svg { min-width: 0; max-height: 150mm; }
+        .notes { margin-top: 14px; gap: 10px; }
+        .note { padding: 12px; break-inside: avoid; }
+        .note p, figcaption { font-size: 10px; }
+        h2 { font-size: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Agents for Humans / Judge architecture</p>
+          <h1>RackHand: how the agents work together.</h1>
+        </div>
+        <button type="button" id="print-diagram">Print / Save PDF</button>
+      </header>
+      <p class="intro">Strands connects a coordinating Warehouse Agent with two focused specialists. Each agent uses a limited set of tools, returns results the next step can use, and keeps physical actions inside guarded workflows.</p>
+      <section class="pitch" aria-label="Three workflow agents and their roles">
+        <article><h2>Warehouse Agent</h2><p>The coordinator: understands the request, chooses a specialist or tool, handles approval, and reports the outcome.</p></article>
+        <article><h2>Materials Planner</h2><p>The parts specialist: reads work context, searches the catalog and stock, and returns required parts and quantities. It never moves bins.</p></article>
+        <article><h2>Inventory Auditor</h2><p>The audit specialist: explains recent checks and history. Physical audit execution is enabled only by trusted server configuration.</p></article>
+      </section>
+      <p class="build-status"><strong>3 workflow agents + 2 supporting vision agents.</strong> The main three use Bedrock; the Vision Analyst and Vision Judge use Gemini through Strands. Motion is simulated. Production camera/scale integration is implemented; AgentCore deployment and scheduled unattended audits are not claimed.</p>
+
+      <section class="user-flow" aria-labelledby="journey-heading">
+        <h2 class="section-heading" id="journey-heading">1. Follow a user request</h2>
+        <p class="section-copy">Choose a journey to see who acts, which tool is used, and what moves to the next step. These are explanations of implemented paths, not a live warehouse simulation.</p>
+        <div class="flow-controls" role="group" aria-label="Choose a user journey">
+          <button type="button" data-flow="prepare" aria-controls="flow-prepare" aria-pressed="true">Prepare parts</button>
+          <button type="button" data-flow="audit" aria-controls="flow-audit" aria-pressed="false">Explain an audit</button>
+          <button type="button" data-flow="plan" aria-controls="flow-plan" aria-pressed="false">Analyze upcoming plan</button>
+        </div>
+        <div id="flow-panels" aria-live="polite">
+          <div class="scenario-panel" id="flow-prepare">
+            <p class="section-copy"><strong>Example request:</strong> “Prepare the parts for the upcoming assembly.”</p>
+            <ol class="journey">
+              <li><strong>Understand the task</strong><p>Receive the request and decide that a grounded parts list is needed.</p><span class="actor">Warehouse Agent · Strands Agent</span></li>
+              <li><strong>Find the required parts</strong><p>Call <code>materials_planner</code>. The specialist reads work context and searches catalog and stock.</p><span class="actor">Materials Planner · Agent.asTool()</span></li>
+              <li><strong>Approve preparation</strong><p>Use the returned requirements in <code>fulfill_materials_plan</code>. Restricted client execution pauses for approval.</p><span class="actor">Warehouse Agent · HumanInTheLoop</span></li>
+              <li><strong>Check and return bins</strong><p>Guarded workflows retrieve bins, verify contents, let the user take parts, then check and save the remainder on return.</p><span class="actor">Server tools · Strands Graph</span></li>
+              <li><strong>Report the real outcome</strong><p>Use structured tool results and verified bin status to report completion, stock changes, or an issue—not an assumed success.</p><span class="actor">Warehouse Agent · tool feedback</span></li>
+            </ol>
+            <p class="flow-note">The Auditor is consulted when audit explanation or history is needed; it is not a mandatory step in preparation. The exact control-module SIMULATION prompt is a separate scripted shortcut with server-grounded requirements, so it can bypass the Planner.</p>
+          </div>
+          <div class="scenario-panel" id="flow-audit" hidden>
+            <p class="section-copy"><strong>Example request:</strong> “Explain the latest check for bin B5-01.”</p>
+            <ol class="journey">
+              <li><strong>Receive the question</strong><p>Recognize that this is an audit-context question, not permission to move a bin.</p><span class="actor">Warehouse Agent</span></li>
+              <li><strong>Ask the audit specialist</strong><p>Call <code>inventory_auditor</code> through the same controlled specialist interface.</p><span class="actor">Warehouse Agent · Agent.asTool()</span></li>
+              <li><strong>Read previous evidence</strong><p>Use latest-audit and history tools. MemoryManager also supplies relevant persisted audit context.</p><span class="actor">Inventory Auditor · MemoryManager</span></li>
+              <li><strong>Explain the result</strong><p>Return a typed explanation; the Warehouse Agent presents the check status and reason to the user.</p><span class="actor">Inventory Auditor → Warehouse Agent</span></li>
+              <li><strong>Separate checking from explaining</strong><p>If a physical audit is requested, the Warehouse Agent uses <code>execute_inventory_audit</code> with client approval.</p><span class="actor">Optional next action · HumanInTheLoop</span></li>
+            </ol>
+            <p class="flow-note">Client delegation is read-only. The Auditor's <code>run_inventory_audit</code> tool is available only in trusted internal mode, chosen by server code—not by prompt text.</p>
+          </div>
+          <div class="scenario-panel" id="flow-plan" hidden>
+            <p class="section-copy"><strong>User action:</strong> start analysis of the upcoming enabled work.</p>
+            <ol class="journey">
+              <li><strong>Read the working plan</strong><p>The plan-analysis service reads enabled work for the selected date.</p><span class="actor">User → Analysis service</span></li>
+              <li><strong>Resolve all required parts</strong><p>Invoke the Materials Planner directly with the read plan. Validate its returned parts and quantities.</p><span class="actor">Materials Planner · structured output</span></li>
+              <li><strong>Choose which bins to check</strong><p>Reuse recent unchanged evidence. Checks at least seven days old, missing, changed, or unresolved need verification.</p><span class="actor">Server evidence policy</span></li>
+              <li><strong>Verify selected bins</strong><p>Run server-selected physical audits, return bins to their original slots, and record uncertain results for the report.</p><span class="actor">Trusted audit service · Strands Graph</span></li>
+              <li><strong>Show assembly readiness</strong><p>Report ready materials, shortages, check reasons, and issues based on accepted evidence.</p><span class="actor">Analysis service → browser report</span></li>
+            </ol>
+            <p class="flow-note">This entry point does not pass through the Warehouse Agent. It also does not require the Inventory Auditor language agent: the service calls the deterministic audit workflow directly.</p>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="delegation-heading">
+        <h2 class="section-heading" id="delegation-heading">2. Who calls whom—and what comes back</h2>
+        <p class="section-copy">The Warehouse Agent is the front door for prompts. It delegates only the specialist task, receives its result, and selects the next permitted tool. This diagram shows that prompt-based path; the plan-analysis entry point is explained above.</p>
+        <figure>
+          <div class="diagram" tabindex="0" role="region" aria-label="Scrollable three-agent delegation and tools diagram">
+            <svg viewBox="0 0 1360 835" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="delegation-title delegation-description">
+              <title id="delegation-title">Warehouse Agent coordinates two specialists and guarded workflow tools</title>
+              <desc id="delegation-description">A user prompt reaches the Warehouse Agent. It can call the Materials Planner through materials_planner to obtain a grounded parts list, or the Inventory Auditor through inventory_auditor to obtain audit context. Specialist results return to the coordinator. The coordinator calls lookup tools or approval-gated warehouse workflow tools and returns their observed outcome to the user. The Auditor can call run_inventory_audit only in trusted internal mode. Specialists are optional branches, not an always-running sequence.</desc>
+              <defs><marker id="delegation-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M 0 0 L 10 5 L 0 10 z"/></marker></defs>
+              <g>
+                <path class="connector" style="marker-end: url(#delegation-arrow)" d="M 290 135 H 410"/>
+                <path class="connector" style="marker-end: url(#delegation-arrow)" d="M 810 135 H 1060"/>
+                <path class="connector" style="marker-start: url(#delegation-arrow); marker-end: url(#delegation-arrow)" d="M 500 235 V 285 H 385 V 335"/>
+                <path class="connector" style="marker-start: url(#delegation-arrow); marker-end: url(#delegation-arrow)" d="M 750 235 V 285 H 945 V 335"/>
+                <path class="connector" style="marker-start: url(#delegation-arrow); marker-end: url(#delegation-arrow)" d="M 810 215 H 1000 V 260 H 1280 V 705 H 1060"/>
+                <path class="connector scoped" style="marker-end: url(#delegation-arrow)" d="M 945 545 V 635"/>
+              </g>
+              <g data-role="request">
+                <rect class="node" x="30" y="70" width="260" height="130" rx="14"/>
+                <text class="kicker" x="50" y="100">USER PROMPT</text>
+                <text class="node-title" x="50" y="134">Prepare or explain</text>
+                <text class="node-copy" x="50" y="165">One conversational entry point</text>
+                <text class="node-copy" x="50" y="188">No manual specialist selection</text>
+              </g>
+              <g data-role="warehouse">
+                <rect class="node core" x="410" y="35" width="400" height="200" rx="14"/>
+                <text class="kicker" x="430" y="66">COORDINATOR · STRANDS + BEDROCK</text>
+                <text class="node-title" x="430" y="101">Warehouse Agent</text>
+                <text class="node-copy" x="430" y="133">Understand → choose a tool → use the result</text>
+                <text class="node-copy" x="430" y="159">9 lookup tools + 4 guarded workflow tools</text>
+                <text class="node-copy" x="430" y="185">2 specialists exposed through Agent.asTool()</text>
+                <text class="node-copy" x="430" y="216">15 callable tools in normal client mode</text>
+              </g>
+              <g data-role="response">
+                <rect class="node" x="1060" y="70" width="270" height="130" rx="14"/>
+                <text class="kicker" x="1080" y="100">USER RESPONSE</text>
+                <text class="node-title" x="1080" y="134">A grounded outcome</text>
+                <text class="node-copy" x="1080" y="165">Verified stock, audit explanation,</text>
+                <text class="node-copy" x="1080" y="188">completion, or attention needed</text>
+              </g>
+              <g data-role="planner">
+                <rect class="node core" x="170" y="335" width="430" height="210" rx="14"/>
+                <text class="kicker" x="190" y="366">SPECIALIST · STRANDS + BEDROCK</text>
+                <text class="node-title" x="190" y="400">Materials Planner</text>
+                <text class="node-copy" x="190" y="427">Identify parts from work context and real stock</text>
+                <text class="svg-code" x="190" y="457">get_engineering_plan_context</text>
+                <text class="svg-code" x="190" y="482">search_catalog · search_inventory</text>
+                <text class="node-copy" x="190" y="522">Returns: required parts and quantities · read-only</text>
+              </g>
+              <g data-role="auditor">
+                <rect class="node core" x="730" y="335" width="430" height="210" rx="14"/>
+                <text class="kicker" x="750" y="366">SPECIALIST · STRANDS + BEDROCK</text>
+                <text class="node-title" x="750" y="400">Inventory Auditor</text>
+                <text class="node-copy" x="750" y="427">Understand the latest check and previous results</text>
+                <text class="svg-code" x="750" y="457">get_latest_inventory_audit</text>
+                <text class="svg-code" x="750" y="482">get_inventory_audit_history</text>
+                <text class="node-copy" x="750" y="522">Returns: audit explanation + persisted context</text>
+              </g>
+              <g data-role="workflow-tools">
+                <rect class="node core" x="360" y="635" width="700" height="155" rx="14"/>
+                <text class="kicker" x="380" y="666">GUARDED WORKFLOW TOOLS · NOT FREE-FORM MODEL ACTIONS</text>
+                <text class="svg-code" x="380" y="700">fulfill_materials_plan · execute_retrieval</text>
+                <text class="svg-code" x="380" y="726">execute_putaway · execute_inventory_audit</text>
+                <text class="node-copy" x="380" y="761">Client HITL approval · Strands Graph guards · verification · saved results</text>
+              </g>
+              <rect class="edge-bg" x="292" y="105" width="115" height="22" rx="4"/>
+              <text class="edge-label" x="305" y="121">1. Understand</text>
+              <rect class="edge-bg" x="865" y="105" width="145" height="22" rx="4"/>
+              <text class="edge-label" x="877" y="121">4. Report the result</text>
+              <rect class="edge-bg" x="242" y="272" width="287" height="27" rx="4"/>
+              <text class="edge-label" x="255" y="289">2a. materials_planner ↔ typed requirements</text>
+              <rect class="edge-bg" x="784" y="272" width="316" height="27" rx="4"/>
+              <text class="edge-label" x="795" y="289">2b. inventory_auditor ↔ typed explanation</text>
+              <rect class="edge-bg" x="1110" y="571" width="210" height="25" rx="4"/>
+              <text class="edge-label" x="1122" y="588">3. Tool call ↔ execution result</text>
+              <rect class="edge-bg" x="744" y="574" width="364" height="25" rx="4"/>
+              <text class="edge-label" x="758" y="591">run_inventory_audit · trusted internal only</text>
+            </svg>
+          </div>
+          <figcaption>Two-way arrows mean a task goes out and a structured result comes back. Planner and Auditor are optional specialist branches. The dotted Auditor route is a trusted-server-only capability; client physical audits still go through the Warehouse Agent's approval-gated tool. On small screens, scroll the diagram horizontally.</figcaption>
+        </figure>
+      </section>
+
+      <section class="loop-section" aria-labelledby="loop-heading">
+        <h2 class="section-heading" id="loop-heading">3. How Strands keeps the task moving</h2>
+        <figure>
+          <div class="diagram loop-diagram" tabindex="0" role="region" aria-label="Scrollable Strands agentic loop diagram">
+            <svg viewBox="0 0 1240 255" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="loop-title loop-description">
+              <title id="loop-title">Model-driven Strands agentic loop with structured tool feedback</title>
+              <desc id="loop-description">User intent enters the Strands agent, which uses Amazon Bedrock reasoning to select typed tools or delegate to specialists. Structured tool results return to the agent for another decision. When finished, the agent responds with progress, inventory results, and verified bin status. Restricted physical tools pause for human approval before execution.</desc>
+              <defs>
+                <marker id="loop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M 0 0 L 10 5 L 0 10 z"/></marker>
+              </defs>
+              <path class="connector" style="marker-end: url(#loop-arrow)" d="M 210 105 H 270"/>
+              <path class="connector" style="marker-end: url(#loop-arrow)" d="M 530 105 H 595"/>
+              <path class="connector" style="marker-end: url(#loop-arrow)" d="M 735 170 V 215 H 400 V 170"/>
+              <path class="connector" style="marker-end: url(#loop-arrow)" d="M 400 50 V 22 H 1100 V 50"/>
+              <rect class="node" x="25" y="50" width="185" height="120" rx="12"/>
+              <text class="kicker" x="43" y="79">USER INTENT</text>
+              <text class="node-title" x="43" y="112">Prep the parts</text>
+              <text class="node-copy" x="43" y="141">Web prompt or plan run</text>
+              <rect class="node core" x="270" y="50" width="260" height="120" rx="12"/>
+              <text class="kicker" x="288" y="79">STRANDS AGENT</text>
+              <text class="node-title" x="288" y="112">Bedrock reasoning</text>
+              <text class="node-copy" x="288" y="141">Select tools or delegate</text>
+              <rect class="node core" x="595" y="50" width="280" height="120" rx="12"/>
+              <text class="kicker" x="613" y="79">TYPED TOOLS + SPECIALISTS</text>
+              <text class="node-title" x="613" y="112">Grounded execution</text>
+              <text class="node-copy" x="613" y="141">Catalog · guarded graphs · audits</text>
+              <rect class="node" x="985" y="50" width="230" height="120" rx="12"/>
+              <text class="kicker" x="1003" y="79">USER RESPONSE</text>
+              <text class="node-title" x="1003" y="112">Results and next step</text>
+              <text class="node-copy" x="1003" y="141">Progress · stock · returned bins</text>
+              <rect class="edge-bg" x="461" y="202" width="226" height="26" rx="4"/>
+              <text class="edge-label" x="473" y="219">Structured tool results → next decision</text>
+              <rect class="edge-bg" x="652" y="9" width="207" height="26" rx="4"/>
+              <text class="edge-label" x="664" y="26">Respond when the task is complete</text>
+            </svg>
+          </div>
+          <figcaption>Agent.asTool() exposes the Materials Planner and Inventory Auditor as specialists. HumanInTheLoop gates restricted client actions; Graph nodes enforce deterministic execution. Tool results, not model claims, ground the reported outcome.</figcaption>
+        </figure>
+      </section>
+
+      <section class="strands-section" aria-labelledby="strands-heading">
+        <h2 class="section-heading" id="strands-heading">4. What Strands contributes to this user experience</h2>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Strands features and user-facing benefits">
+          <table class="decision-table">
+            <thead><tr><th scope="col">Strands feature</th><th scope="col">How RackHand uses it</th><th scope="col">What the user gains</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Agent + typed tools</strong></td><td>The coordinator reasons with Bedrock and selects tools from an explicit capability list.</td><td>One request can lead to real checks and actions, not just a chat answer.</td></tr>
+              <tr><td><strong>Agent.asTool()</strong></td><td>Planner and Auditor become callable specialists that return structured results.</td><td>The right specialist handles the task without the user choosing agents.</td></tr>
+              <tr><td><strong>HumanInTheLoop</strong></td><td>Restricted client workflow calls pause before execution; server policy decides what is allowed.</td><td>A request to explain stock does not silently authorize bin movement.</td></tr>
+              <tr><td><strong>Graph</strong></td><td>Deterministic nodes validate the request, stock, slot, and machine state before execution and outcome checks.</td><td>A defined sequence controls retrieval and return rather than model-authored low-level commands.</td></tr>
+              <tr><td><strong>MemoryManager</strong></td><td>The Auditor receives up to three relevant persisted audit entries alongside its explicit history tools.</td><td>Explanations can use previous evidence instead of treating every check as isolated.</td></tr>
+              <tr><td><strong>GoalLoop</strong></td><td>The supporting Vision Analyst refines the same photo; a Vision Judge checks qualifying proposals.</td><td>Image refinement cannot repeat bin movement or directly change stock.</td></tr>
+              <tr><td><strong>Structured outputs + lifecycle hooks</strong></td><td>Validate result shapes and observe tool start/end events and graph outcomes.</td><td>Progress and final results are tied to recorded execution, not an assumed success.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="flow-note">The two Gemini-backed vision agents are supporting inspection roles, not user-request coordinators. They provide image evidence; server logic combines it with scale readings and decides whether inventory can change.</p>
+      </section>
+
+      <details class="technical">
+      <summary>Technical details: integrations, evidence, and demo boundaries</summary>
+      <h2 class="section-heading">Full system architecture and trust boundaries</h2>
+      <div class="legend" aria-label="Diagram legend">
+        <span><i class="swatch" aria-hidden="true"></i>Application and AI</span>
+        <span><i class="swatch real" aria-hidden="true"></i>Production camera and scale</span>
+        <span><i class="swatch sim" aria-hidden="true"></i>Simulated bin movement</span>
+        <span><i class="line-key" aria-hidden="true"></i>Requests and data</span>
+        <span><i class="line-key events" aria-hidden="true"></i>Notifications</span>
+      </div>
+      <figure>
+        <div class="diagram" tabindex="0" role="region" aria-label="Scrollable RackHand architecture diagram">
+          <svg viewBox="0 0 1420 1050" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="diagram-title diagram-description">
+            <title id="diagram-title">RackHand application architecture</title>
+            <desc id="diagram-description">The browser sends prompts and approvals to Next.js API routes. The server invokes Strands agents or the plan analysis service. Agents use Amazon Bedrock, while the plan service reads Google Sheets and selects stock that needs verification. Controlled workflows operate a simulated gantry and request camera jobs. The authenticated Raspberry Pi worker uses a camera and USB scale, connecting through server APIs. Gemini inspects images; server logic combines visual and scale evidence. Prisma accesses PostgreSQL for warehouse records and durable camera jobs. Private Supabase Storage retains photos, and Realtime signals job and status changes.</desc>
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path class="arrowhead" d="M 0 0 L 10 5 L 0 10 z"/>
+              </marker>
+            </defs>
+
+            <!-- Boundaries separate the server, external providers, and endpoints. -->
+            <rect class="group" x="325" y="38" width="690" height="732" rx="18"/>
+            <text class="group-title" x="350" y="70">NEXT.JS APPLICATION SERVER</text>
+            <rect class="group" x="1090" y="38" width="295" height="732" rx="18"/>
+            <text class="group-title" x="1110" y="70">AI + PLAN PROVIDERS</text>
+            <text class="group-title" x="355" y="823">WAREHOUSE DATA</text>
+            <text class="group-title" x="685" y="823">PHYSICAL EVIDENCE</text>
+            <text class="group-title" x="1110" y="823">PHOTO STORAGE</text>
+
+            <!-- Requests, data access, and notification paths. -->
+            <path class="connector two-way" d="M 270 375 H 295 V 190 H 355"/>
+            <path class="connector" d="M 355 160 H 270"/>
+            <path class="connector" d="M 155 230 V 285"/>
+            <path class="connector" d="M 495 265 V 330"/>
+            <path class="connector" d="M 825 265 V 330"/>
+            <path class="connector two-way" d="M 495 490 V 550"/>
+            <path class="connector" d="M 825 490 V 520 H 535 V 550"/>
+            <path class="connector" d="M 635 645 H 685"/>
+            <path class="connector" d="M 355 645 H 270"/>
+            <path class="connector two-way" d="M 635 380 H 655 V 295 H 1060 V 225 H 1110"/>
+            <path class="connector" d="M 965 380 H 1035 V 245 H 1110"/>
+            <path class="connector" d="M 965 425 H 1110"/>
+            <path class="connector" d="M 965 645 H 1110"/>
+            <path class="connector" d="M 495 740 V 850"/>
+            <path class="connector" d="M 730 740 V 792 H 570 V 850"/>
+            <path class="connector two-way" d="M 825 740 V 850"/>
+            <path class="connector" d="M 965 690 H 1050 V 925 H 1110"/>
+            <path class="connector events" d="M 355 925 H 310 V 245 H 355"/>
+
+            <!-- Interface and simulated movement are distinct from physical evidence. -->
+            <g data-component="user-output">
+              <rect class="node core" x="40" y="50" width="230" height="180" rx="14"/>
+              <text class="kicker" x="60" y="80">USER OUTPUT</text>
+              <text class="node-title" x="60" y="115">Actionable report</text>
+              <text class="node-copy" x="60" y="147">Ready parts and shortfalls</text>
+              <text class="node-copy" x="60" y="173">Inventory corrections</text>
+              <text class="node-copy" x="60" y="199">Checked and returned bins</text>
+              <text class="node-copy" x="60" y="221">Why each bin was checked</text>
+            </g>
+            <g data-component="browser">
+              <rect class="node core" x="40" y="285" width="230" height="180" rx="14"/>
+              <text class="kicker" x="60" y="315">USER INTERFACE</text>
+              <text class="node-title" x="60" y="350">Browser</text>
+              <text class="node-copy" x="60" y="382">Prompts and approvals</text>
+              <text class="node-copy" x="60" y="408">Live rack animation</text>
+              <text class="node-copy" x="60" y="434">Verification and reports</text>
+            </g>
+            <g data-component="gantry">
+              <rect class="node simulated" x="40" y="550" width="230" height="190" rx="14"/>
+              <text class="kicker simulation-label" x="60" y="580">SIMULATION ONLY</text>
+              <text class="node-title" x="60" y="615">Gantry controller</text>
+              <text class="node-copy" x="60" y="648">Retrieve and return bins</text>
+              <text class="node-copy" x="60" y="674">State shown in browser</text>
+              <text class="node-copy" x="60" y="700">No real gantry connected</text>
+              <text class="node-copy" x="60" y="723">Process-local simulation</text>
+            </g>
+
+            <!-- Server components. -->
+            <g data-component="api">
+              <rect class="node core" x="355" y="110" width="610" height="155" rx="14"/>
+              <text class="kicker" x="375" y="140">SERVER ENTRY POINT</text>
+              <text class="node-title" x="375" y="176">API routes and event streams</text>
+              <text class="node-copy" x="375" y="208">User requests · approvals · progress · camera authentication</text>
+              <text class="node-copy" x="375" y="236">Browser and Pi connect here; server credentials stay private</text>
+            </g>
+            <g data-component="agents">
+              <rect class="node core" x="355" y="330" width="280" height="160" rx="14"/>
+              <text class="kicker" x="375" y="359">STRANDS · AGENT + AS TOOL</text>
+              <text class="node-title" x="375" y="392">Warehouse agent</text>
+              <text class="node-copy" x="375" y="421">Materials Planner · requirements</text>
+              <text class="node-copy" x="375" y="447">Inventory Auditor · audit context</text>
+              <text class="node-copy" x="375" y="472">Agent.asTool() · typed results</text>
+            </g>
+            <g data-component="plan-analysis">
+              <rect class="node" x="685" y="330" width="280" height="160" rx="14"/>
+              <text class="kicker" x="705" y="359">UPCOMING ASSEMBLY</text>
+              <text class="node-title" x="705" y="392">Plan analysis</text>
+              <text class="node-copy" x="705" y="421">Read enabled work</text>
+              <text class="node-copy" x="705" y="447">Invoke Materials Planner</text>
+              <text class="node-copy" x="705" y="472">Select bins needing a check</text>
+            </g>
+            <g data-component="workflows">
+              <rect class="node core" x="355" y="550" width="280" height="190" rx="14"/>
+              <text class="kicker" x="375" y="580">STRANDS · GRAPH + HITL</text>
+              <text class="node-title" x="375" y="615">Guarded workflows</text>
+              <text class="node-copy" x="375" y="647">Retrieve · verify · return</text>
+              <text class="node-copy" x="375" y="673">HumanInTheLoop approvals</text>
+              <text class="node-copy" x="375" y="699">Deterministic state guards</text>
+              <text class="node-copy" x="375" y="723">Tool and graph event tracing</text>
+            </g>
+            <g data-component="verification">
+              <rect class="node" x="685" y="550" width="280" height="190" rx="14"/>
+              <text class="kicker" x="705" y="580">PHYSICAL VERIFICATION</text>
+              <text class="node-title" x="705" y="615">Camera job services</text>
+              <text class="node-copy" x="705" y="647">Durable jobs and safe retries</text>
+              <text class="node-copy" x="705" y="673">Combine image + scale evidence</text>
+              <text class="node-copy" x="705" y="699">Accept or flag the result</text>
+              <text class="node-copy" x="705" y="723">Retain verification photos</text>
+            </g>
+
+            <!-- External reasoning, planning, and vision providers. -->
+            <g data-component="bedrock">
+              <rect class="node" x="1110" y="145" width="255" height="130" rx="14"/>
+              <text class="kicker" x="1130" y="174">AGENT REASONING</text>
+              <text class="node-title" x="1130" y="208">Amazon Bedrock</text>
+              <text class="node-copy" x="1130" y="239">Tool selection and planning</text>
+              <text class="node-copy" x="1130" y="261">No camera image bytes</text>
+            </g>
+            <g data-component="sheets">
+              <rect class="node" x="1110" y="350" width="255" height="140" rx="14"/>
+              <text class="kicker" x="1130" y="379">OPTIONAL PLAN SOURCE</text>
+              <text class="node-title" x="1130" y="413">Google Sheets</text>
+              <text class="node-copy" x="1130" y="445">Engineering work and materials</text>
+              <text class="node-copy" x="1130" y="472">Read-only integration</text>
+            </g>
+            <g data-component="gemini">
+              <rect class="node" x="1110" y="550" width="255" height="190" rx="14"/>
+              <text class="kicker" x="1130" y="580">VISUAL INSPECTION</text>
+              <text class="node-title" x="1130" y="615">Vision agents / Gemini</text>
+              <text class="node-copy" x="1130" y="647">Vision Analyst: inspect and count</text>
+              <text class="node-copy" x="1130" y="673">Vision Judge: qualifying results</text>
+              <text class="node-copy" x="1130" y="699">GoalLoop: refine the same photo</text>
+              <text class="node-copy" x="1130" y="723">No motion or inventory tools</text>
+            </g>
+
+            <!-- Durable records, authenticated sensors, and private image storage. -->
+            <g data-component="database">
+              <rect class="node" x="355" y="850" width="280" height="155" rx="14"/>
+              <text class="kicker" x="375" y="879">SUPABASE · VIA PRISMA</text>
+              <text class="node-title" x="375" y="912">PostgreSQL</text>
+              <text class="node-copy" x="375" y="943">Stock · catalog · audits · jobs</text>
+              <text class="node-copy" x="375" y="969">Authoritative warehouse state</text>
+              <text class="node-copy" x="375" y="991">Realtime sends change signals</text>
+            </g>
+            <g data-component="pi-worker">
+              <rect class="node physical" x="685" y="850" width="280" height="155" rx="14"/>
+              <text class="kicker physical-label" x="705" y="879">PRODUCTION CAPTURE</text>
+              <text class="node-title" x="705" y="912">Raspberry Pi 5</text>
+              <text class="node-copy" x="705" y="943">Authenticated camera worker</text>
+              <text class="node-copy" x="705" y="969">Camera Module 3 + USB scale</text>
+              <text class="node-copy" x="705" y="991">Upload fresh photo and weight</text>
+            </g>
+            <g data-component="storage">
+              <rect class="node" x="1110" y="850" width="255" height="155" rx="14"/>
+              <text class="kicker" x="1130" y="879">SUPABASE</text>
+              <text class="node-title" x="1130" y="912">Private Storage</text>
+              <text class="node-copy" x="1130" y="943">Durable camera evidence</text>
+              <text class="node-copy" x="1130" y="969">Comparison and analysis retry</text>
+              <text class="node-copy" x="1130" y="991">Images served through the API</text>
+            </g>
+
+            <!-- Label backgrounds keep text legible above connector paths. -->
+            <rect class="edge-bg" x="356" y="279" width="114" height="23" rx="4"/>
+            <text class="edge-label" x="366" y="295">User-requested flow</text>
+            <rect class="edge-bg" x="693" y="279" width="116" height="23" rx="4"/>
+            <text class="edge-label" x="703" y="295">Plan-analysis flow</text>
+            <rect class="edge-bg" x="607" y="505" width="111" height="25" rx="4"/>
+            <text class="edge-label" x="617" y="522">Selected bin audit</text>
+            <rect class="edge-bg" x="275" y="457" width="71" height="22" rx="4"/>
+            <text class="edge-label" x="281" y="472">Realtime</text>
+            <rect class="edge-bg" x="850" y="786" width="154" height="25" rx="4"/>
+            <text class="edge-label" x="860" y="803">Via authenticated APIs</text>
+            <text class="edge-label" x="983" y="632">Image evidence</text>
+          </svg>
+        </div>
+        <figcaption>High-level logical connections, not every endpoint. The Pi claims jobs, receives notifications, and uploads evidence through authenticated API routes; it does not connect directly to Supabase. On smaller screens, scroll horizontally to inspect the diagram.</figcaption>
+      </figure>
+      <section class="review-panels" aria-labelledby="autonomy-heading">
+        <h2 class="section-heading" id="autonomy-heading">Automatic decisions and human attention</h2>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Autonomy and human intervention decisions">
+          <table class="decision-table">
+            <thead><tr><th scope="col">Evidence or situation</th><th scope="col">RackHand decision</th><th scope="col">Human role</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Recent trusted check, no later stock change</strong></td><td>Reuse verification during plan analysis; avoid an unnecessary scan.</td><td>No recount requested.</td></tr>
+              <tr><td><strong>Last check is at least 7 days old, changed, missing, or unresolved</strong></td><td>Select that exact bin for checkout verification and return it to its original shelf slot.</td><td>Plan analysis uses a server-selected audit path; no per-bin recount decision is needed.</td></tr>
+              <tr><td><strong>Trusted count differs from the recorded quantity</strong></td><td>In user-requested retrieve/return workflows, reconcile the accepted count automatically.</td><td>No manual inventory approval for a trusted correction.</td></tr>
+              <tr><td><strong>Unexpected object or unclear physical evidence</strong></td><td>Keep inventory unchanged and surface the problem.</td><td>Interactive checks allow removal/retry. Plan audits record issues in the report instead of requiring the same interactive flow.</td></tr>
+              <tr><td><strong>Parts taken before return</strong></td><td>Verify the remainder during return and persist the accepted stock count.</td><td>The person takes the parts; the server checks and records what remains.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h2 class="section-heading">Demonstration boundaries</h2>
+        <div class="demo-paths">
+          <article>
+            <h2>User-requested parts preparation</h2>
+            <p>“RackHand, prep the parts for the control module.”</p>
+            <ol>
+              <li>Start with stocked demo bins and approve the preparation workflow.</li>
+              <li>Check B4-01; correct the scripted mismatch in B3-03; remove the scripted unexpected object in B6-03 and retry.</li>
+              <li>Take parts, then verify each remainder during return. All three bins must return before the final report.</li>
+            </ol>
+          </article>
+          <article>
+            <h2>Upcoming-plan readiness</h2>
+            <p>User starts analysis of the upcoming enabled work.</p>
+            <ol>
+              <li>Read the plan and resolve every requirement against real catalog stock.</li>
+              <li>Reuse fresh, unchanged verification; check stale or unresolved bins through the audit workflow.</li>
+              <li>Return checked bins and report ready materials, shortages, and issues with the reason for each check.</li>
+            </ol>
+          </article>
+        </div>
+        <p class="scope-note">Demo disclosure: the explicit three-bin SIMULATION scenario supplies scripted images and inspection results, not live Gemini or physical scale evidence. It exercises workflow sequencing and database updates. The PROD path uses Pi captures and Gemini inspection; gantry motion remains simulated. Neither live hardware availability nor production deployment was verified for this architecture review.</p>
+      </section>
+      <section class="notes" aria-label="Architecture boundaries">
+        <article class="note">
+          <h2>AI proposes. Server workflows decide.</h2>
+          <p>Bedrock chooses tools and Gemini inspects photos. Server policies validate evidence, enforce approval requirements, update trusted counts, and record uncertain checks.</p>
+        </article>
+        <article class="note">
+          <h2>Physical evidence is separate from motion.</h2>
+          <p>Production checks use the Pi camera and scale. Gantry movement is currently simulated. Supported capture demos use local fixtures; no real gantry control is implemented.</p>
+        </article>
+        <article class="note">
+          <h2>Inventory remains authoritative.</h2>
+          <p>PostgreSQL stores stock and durable jobs. Realtime is a wake-up signal, not the source of truth. Photos stay in private Storage, and server credentials are never sent to the browser or Pi.</p>
+        </article>
+      </section>
+      </details>
+      <p class="scope-note">Current demo boundary: motion is simulated. The exact three-bin SIMULATION scenario also scripts its image and inspection results; it is not proof of live camera, scale, or Gemini verification. The PROD path implements those integrations separately.</p>
+      <p class="judge-links">Prepared against the <a href="https://agentsforhumans.devpost.com/details/faqs">official architecture guidance</a>, <a href="https://agentsforhumans.devpost.com/rules">rules</a>, and <a href="https://agentsforhumans.devpost.com/">judging criteria</a>, reviewed September 14, 2026. AgentCore is optional according to the FAQ; it is not part of this implementation.</p>
+      <footer>RackHand · Agents for Humans judge overview · Standalone HTML with inline SVG · No external scripts, fonts, or automatic network requests</footer>
+    </main>
+    <script>
+      document.getElementById("print-diagram").addEventListener("click", function () {
+        window.print();
+      });
+      document.querySelectorAll("[data-flow]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var selected = button.getAttribute("data-flow");
+          document.querySelectorAll("[data-flow]").forEach(function (control) {
+            control.setAttribute("aria-pressed", String(control === button));
+          });
+          document.querySelectorAll(".scenario-panel").forEach(function (panel) {
+            panel.hidden = panel.id !== "flow-" + selected;
+          });
+        });
+      });
+    </script>
+  </body>
+</html>
