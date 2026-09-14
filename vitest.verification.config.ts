@@ -11,6 +11,7 @@ export default defineConfig({
       "tests/audit-capture-dialog.test.tsx",
       "tests/user-bin-verification.test.ts",
       "tests/physical-capture-verification.test.ts",
+      "tests/retrieval-graph-timeout.test.ts",
       "tests/approval-card-auto-return.test.tsx",
       "tests/control-module-scenario.test.ts",
       "tests/control-module-tools.test.ts",

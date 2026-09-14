@@ -477,65 +477,73 @@ export class RetrievalVerifyNode extends WorkflowNode<RetrievalGraphRequest, Ret
 
   protected async run({ data, invocationState }: RetrievalContext): Promise<NodeOutcome> {
     const result = invocationState[RETRIEVAL_SERVICE_RESULT_KEY] as RetrievalResult | undefined;
-    const problems: string[] = [];
+    return verifyCommittedRetrieval(data, result);
+  }
+}
 
-    const movement = data.movementId
-      ? await prisma.movement.findUnique({ where: { id: data.movementId } })
-      : null;
-    if (!movement) {
-      problems.push("the movement record is missing");
-    } else if (movement.status !== "COMPLETED") {
-      problems.push(`the movement is ${movement.status}, not COMPLETED`);
+/** Shared read-only check, also used when orchestration expires after commit. */
+export async function verifyCommittedRetrieval(
+  data: RetrievalGraphData,
+  result: RetrievalResult | undefined,
+): Promise<NodeOutcome> {
+  const problems: string[] = [];
+
+  const movement = data.movementId
+    ? await prisma.movement.findUnique({ where: { id: data.movementId } })
+    : null;
+  if (!movement) {
+    problems.push("the movement record is missing");
+  } else if (movement.status !== "COMPLETED") {
+    problems.push(`the movement is ${movement.status}, not COMPLETED`);
+  }
+
+  if (result?.ok && result.duplicate) {
+    return problems.length > 0
+      ? {
+          kind: "FAILED",
+          reason: "verification_failed",
+          message: `The original movement cannot be replayed coherently: ${problems.join("; ")}.`,
+        }
+      : { kind: "PROCEED", summary: "Original completed retrieval replayed; no current state was changed." };
+  }
+
+  const bin = data.sourceBinCode ? await getBinByCode(data.sourceBinCode) : null;
+  if (!bin || !data.partId) {
+    problems.push("the source bin is missing");
+  } else {
+    const stock = await prisma.inventory.findUnique({
+      where: { partId_binId: { partId: data.partId, binId: bin.id } },
+    });
+    const remaining = stock?.quantity ?? 0;
+
+    if (remaining < 0) {
+      problems.push(`inventory in ${bin.code} is negative`);
     }
-
-    if (result?.ok && result.duplicate) {
-      return problems.length > 0
-        ? {
-            kind: "FAILED",
-            reason: "verification_failed",
-            message: `The original movement cannot be replayed coherently: ${problems.join("; ")}.`,
-          }
-        : { kind: "PROCEED", summary: "Original completed retrieval replayed; no current state was changed." };
+    if (result?.ok && remaining !== result.checkedOutQuantity) {
+      problems.push(
+        `${bin.code} records ${remaining}, but the retrieval reported ${result.checkedOutQuantity} checked out`,
+      );
     }
-
-    const bin = data.sourceBinCode ? await getBinByCode(data.sourceBinCode) : null;
-    if (!bin || !data.partId) {
-      problems.push("the source bin is missing");
-    } else {
-      const stock = await prisma.inventory.findUnique({
-        where: { partId_binId: { partId: data.partId, binId: bin.id } },
-      });
-      const remaining = stock?.quantity ?? 0;
-
-      if (remaining < 0) {
-        problems.push(`inventory in ${bin.code} is negative`);
-      }
-      if (result?.ok && remaining !== result.checkedOutQuantity) {
-        problems.push(
-          `${bin.code} records ${remaining}, but the retrieval reported ${result.checkedOutQuantity} checked out`,
-        );
-      }
-      if (bin.status !== "CHECKED_OUT") {
-        problems.push(`bin ${bin.code} is ${bin.status}, not CHECKED_OUT`);
-      }
+    if (bin.status !== "CHECKED_OUT") {
+      problems.push(`bin ${bin.code} is ${bin.status}, not CHECKED_OUT`);
     }
+  }
 
-    if (problems.length > 0) {
-      return {
-        kind: "FAILED",
-        reason: "verification_failed",
-        message:
-          `The retrieval reported success but the warehouse state is not coherent: ${problems.join("; ")}. ` +
-          "Nothing was changed to compensate; this needs manual reconciliation.",
-        summary: "Committed state failed verification.",
-        ...(data.movementId ? { movementId: data.movementId } : {}),
-        ...(data.gantryOperationId ? { gantryOperationId: data.gantryOperationId } : {}),
-      };
-    }
-
+  if (problems.length > 0) {
     return {
-      kind: "PROCEED",
-      summary: `Movement COMPLETED; ${data.sourceBinCode} is CHECKED_OUT with its baseline count preserved.`,
+      kind: "FAILED",
+      reason: "verification_failed",
+      message:
+        `The retrieval reported success but the warehouse state is not coherent: ${problems.join("; ")}. ` +
+        "Nothing was changed to compensate; this needs manual reconciliation.",
+      summary: "Committed state failed verification.",
+      ...(data.movementId ? { movementId: data.movementId } : {}),
+      ...(data.gantryOperationId ? { gantryOperationId: data.gantryOperationId } : {}),
     };
   }
+
+  return {
+    kind: "PROCEED",
+    summary: `Movement COMPLETED; ${data.sourceBinCode} is CHECKED_OUT with its baseline count preserved.`,
+  };
 }
