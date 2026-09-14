@@ -1213,6 +1213,15 @@ export function WarehouseRack({
   const currentAtStation =
     !!gantry?.currentLocation && isGantryStation(gantry.currentLocation);
   const checkedOut = bins.filter((bin) => bin.status === "CHECKED_OUT");
+  // dockBin/presented/absent (below) need "is this bin away from its shelf
+  // right now" — true for a checked-out retrieval AND for a bin mid-audit
+  // trip (see gantryStatusFromAuditMovement, which already animates the arm
+  // correctly for AUDITING bins). Kept separate from `checkedOut` itself:
+  // the bottom-bar "N CHECKED OUT" summary further down is genuine retrieval
+  // stock state, not "currently being photographed and coming right back."
+  const awayFromShelf = bins.filter(
+    (bin) => bin.status === "CHECKED_OUT" || bin.status === "AUDITING",
+  );
   const activeBin = bins.find((bin) => bin.code === arm.focusBin);
   const isReturn =
     operation?.destination && !isGantryStation(operation.destination);
@@ -1226,9 +1235,9 @@ export function WarehouseRack({
     operation?.status !== "FAILED" &&
     (operation?.status === "COMPLETED" ||
       (operation?.source && isGantryStation(operation.source)))
-      ? (activeBin ?? checkedOut.find((bin) => bin.code !== returned))
+      ? (activeBin ?? awayFromShelf.find((bin) => bin.code !== returned))
       : !gantry?.activeOperationId && !arm.carrying
-        ? checkedOut.find((bin) => bin.code !== returned)
+        ? awayFromShelf.find((bin) => bin.code !== returned)
         : null;
   const presented = dockBin?.code ?? null;
   const highlightedBinCode = arm.focusBin ?? dockBin?.code ?? null;
@@ -1355,7 +1364,7 @@ export function WarehouseRack({
                 const highlighted = bin.code === highlightedBinCode;
                 const absent =
                   (!approachingPickup &&
-                    bin.status === "CHECKED_OUT" &&
+                    (bin.status === "CHECKED_OUT" || bin.status === "AUDITING") &&
                     bin.code !== returned) ||
                   bin.code === presented ||
                   (arm.carrying && bin.code === arm.focusBin);

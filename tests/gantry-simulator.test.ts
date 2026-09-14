@@ -401,10 +401,10 @@ describe("controller factory", () => {
     delete process.env.GANTRY_MODE;
   });
 
-  it("defaults to the simulator and returns one process-local instance", () => {
+  it("defaults to the leased simulator and returns one process-local controller", async () => {
     resetGantryController();
     const first = getGantryController();
-    expect(first).toBeInstanceOf(SimulatedGantryController);
+    expect((await first.getStatus()).mode).toBe("SIMULATION");
     expect(getGantryController()).toBe(first);
   });
 

@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+.plan-update-notice, .plan-stage-transition { animation: fade-up 280ms ease-out both; }
+.plan-analysis-card { transition: border-color 250ms ease, background-color 250ms ease; }
+.plan-progress-segment { transition: background-color 350ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .plan-update-notice, .plan-stage-transition, .plan-analysis-card { animation: none; transition: none; }
+  .plan-progress-segment { transition: none; }
+  .plan-analysis-card .animate-glow-pulse { animation: none; }
+}
+
 .workspace-tab-indicator { position: absolute; inset: 4px auto 4px 4px; width: calc((100% - 8px) / 3); border-radius: 8px; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 2px 10px #0002; transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
 .workspace-tab-panel[hidden] { display: none; }
 .workspace-tab-panel:not([hidden]) { animation: workspace-tab-reveal 260ms ease-out both; }

@@ -23,6 +23,10 @@ function errorMessage(payload: unknown, fallback: string): string {
 /** Durable, browser-session-scoped view of tomorrow's RackHand plan analysis. */
 export function useTodayPlanAnalysis() {
   const [run, setRun] = useState<TodayPlanAnalysisRunView | null>(null);
+  const [automaticRun, setAutomaticRun] = useState<TodayPlanAnalysisRunView | null>(null);
+  const [sheetChangePendingAt, setSheetChangePendingAt] = useState<number | null>(null);
+  const [sheetChangeError, setSheetChangeError] = useState<string | null>(null);
+  const automaticActive = useRef(false);
   const [triggering, setTriggering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
@@ -42,8 +46,18 @@ export function useTodayPlanAnalysis() {
         headers: { [WAREHOUSE_SESSION_HEADER]: sessionId },
       });
       if (!response.ok) return null;
-      const payload = (await response.json()) as { run: TodayPlanAnalysisRunView | null };
-      if (mounted.current) setRun(payload.run);
+      const payload = (await response.json()) as {
+        run: TodayPlanAnalysisRunView | null; automaticRun?: TodayPlanAnalysisRunView | null;
+        sheetChangePendingAt?: number | null;
+        sheetChangeError?: string | null;
+      };
+      automaticActive.current = active(payload.automaticRun ?? null) || Boolean(payload.sheetChangePendingAt);
+      if (mounted.current) {
+        setRun(payload.run);
+        setAutomaticRun(payload.automaticRun ?? null);
+        setSheetChangePendingAt(payload.sheetChangePendingAt ?? null);
+        setSheetChangeError(payload.sheetChangeError ?? null);
+      }
       return payload.run;
     } catch {
       return null;
@@ -100,7 +114,7 @@ export function useTodayPlanAnalysis() {
     const tick = async () => {
       const latest = await refresh();
       if (!stopped) {
-        timer = setTimeout(tick, active(latest) ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS);
+        timer = setTimeout(tick, active(latest) || automaticActive.current ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS);
       }
     };
     timer = setTimeout(tick, 0);
@@ -110,5 +124,5 @@ export function useTodayPlanAnalysis() {
     };
   }, [refresh]);
 
-  return { run, triggering, error, trigger, refresh };
+  return { run, automaticRun, sheetChangePendingAt, sheetChangeError, triggering, error, trigger, refresh };
 }

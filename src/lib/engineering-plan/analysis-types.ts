@@ -3,10 +3,12 @@ export type TodayPlanAnalysisStatus =
   | "RUNNING"
   | "COMPLETED"
   | "COMPLETED_WITH_ISSUES"
+  | "SUPERSEDED"
   | "FAILED";
 
 export type TodayPlanAnalysisStage =
   | "QUEUED"
+  | "WAITING_FOR_IDLE"
   | "READING_SHEET"
   | "PLANNING_MATERIALS"
   | "CHECKING_EVIDENCE"
@@ -88,6 +90,7 @@ export interface TodayPlanAnalysisResultView {
 
 export interface TodayPlanAnalysisRunView {
   id: string;
+  trigger?: "MANUAL" | "SHEET_CHANGE";
   status: TodayPlanAnalysisStatus;
   stage: TodayPlanAnalysisStage;
   workDate: string;

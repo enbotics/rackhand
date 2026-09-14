@@ -395,6 +395,9 @@ export function AgentPanel({
   inventory = [],
   onDismissMaterialsPlan,
   todayPlanAnalysis = null,
+  automaticPlanAnalysis = null,
+  sheetChangePendingAt = null,
+  sheetChangeError = null,
   latestAudit,
   onAuditChanged = () => {},
   detectedName,
@@ -434,6 +437,9 @@ export function AgentPanel({
   onDismissMaterialsPlan: () => void;
   /** Durable manual/event-triggered analysis; intentionally survives page refreshes. */
   todayPlanAnalysis?: TodayPlanAnalysisRunView | null;
+  automaticPlanAnalysis?: TodayPlanAnalysisRunView | null;
+  sheetChangePendingAt?: number | null;
+  sheetChangeError?: string | null;
   latestAudit: InventoryAuditView | null;
   /** Re-reads the warehouse snapshot after a human applies/dismisses an audit observation. */
   onAuditChanged?: () => void;
@@ -455,7 +461,7 @@ export function AgentPanel({
   // Only worth asking for while the chat is genuinely empty and idle — the
   // same condition that renders EmptyState below, plus the tab actually
   // being visible so a hidden tab doesn't keep refreshing in the background.
-  const showEmptyState = turns.length === 0 && !busy && !todayPlanAnalysis;
+  const showEmptyState = turns.length === 0 && !busy && !todayPlanAnalysis && !automaticPlanAnalysis && !sheetChangePendingAt;
   const suggestions = useAgentSuggestions(active && showEmptyState);
 
   // The overview intentionally includes the latest durable audit for machine
@@ -567,6 +573,12 @@ export function AgentPanel({
     todayPlanAnalysis?.stage,
     todayPlanAnalysis?.currentBinCode,
     todayPlanAnalysis?.events.length,
+    automaticPlanAnalysis?.id,
+    automaticPlanAnalysis?.stage,
+    automaticPlanAnalysis?.status,
+    automaticPlanAnalysis?.events.length,
+    sheetChangePendingAt,
+    sheetChangeError,
     displayedAudit?.auditRunId,
     displayedAudit?.status,
   ].join("|");
@@ -666,6 +678,15 @@ export function AgentPanel({
           {busy && <AgentWorking liveToolName={liveToolName} />}
 
           {todayPlanAnalysis && <TodayPlanAnalysisCard run={todayPlanAnalysis} />}
+          {sheetChangePendingAt && (
+            <section className="plan-update-notice rounded-xl border border-accent-soft/50 bg-accent-tint/30 px-4 py-3" role="status">
+              <p className="text-sm font-medium text-ink">Google Sheet update received</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                {sheetChangeError ?? "I’m checking whether tomorrow’s plan changed. Any updated plan will wait until the warehouse is free."}
+              </p>
+            </section>
+          )}
+          {automaticPlanAnalysis && <TodayPlanAnalysisCard key={automaticPlanAnalysis.id} run={automaticPlanAnalysis} />}
 
           {/* Trailing "current state" cards — the live tail of the conversation.
               Each one is the SAME component that used to sit beside the chat as

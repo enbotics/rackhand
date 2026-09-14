@@ -28,6 +28,9 @@ export function assertTestDatabase(): void {
  */
 export async function resetWarehouse(): Promise<void> {
   assertTestDatabase();
+  await prisma.engineeringPlanInbox.deleteMany();
+  await prisma.warehouseClientActivity.deleteMany();
+  await prisma.warehouseHardwareLease.deleteMany();
   await prisma.engineeringPlanAnalysisEvent.deleteMany();
   await prisma.engineeringPlanAnalysisRun.deleteMany();
   // Order matters: CatalogResolution.selectedPartId is onDelete: Restrict, so

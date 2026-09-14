@@ -3,6 +3,9 @@ import { readPhysicalCount } from "./physical-count-service";
 import { physicalAvailability } from "./physical-availability";
 import { getInventoryForPart } from "@/lib/warehouse/inventory-service";
 import { getBinVerificationEvidence } from "@/lib/warehouse/bin-verification-evidence";
+import { warehouseIdleReason } from "./idle-service";
+import { withWarehouseHardwareLease } from "@/lib/warehouse/hardware-lease";
+import { getGantryController } from "@/lib/gantry/factory";
 
 import { prisma } from "@/lib/warehouse/db";
 import {
@@ -30,6 +33,15 @@ import type {
 } from "./analysis-types";
 
 const ACTIVE_KEY = "ACTIVE";
+class BackgroundYield extends Error {}
+
+interface AnalysisCheckpoint {
+  attempted: string[];
+  auditedBinCodes: string[];
+  verificationAuditRunIds: string[];
+  auditIssues: TodayPlanAnalysisResultView["auditIssues"];
+  physicalCounts: NonNullable<TodayPlanAnalysisResultView["physicalCounts"]>;
+}
 
 export class TodayPlanAnalysisBusyError extends Error {
   constructor() {
@@ -248,25 +260,28 @@ const ABANDONED_RUN_MS = 3 * 60_000;
  * analysis left activeKey permanently set, so every later attempt — from any
  * session — failed with "already using the shared gantry" forever.
  */
-async function recoverAbandonedTodayPlanAnalysis(): Promise<void> {
+export async function recoverAbandonedTodayPlanAnalysis(): Promise<void> {
+  const cutoff = new Date(Date.now() - ABANDONED_RUN_MS);
   const stuck = await prisma.engineeringPlanAnalysisRun.findFirst({
     where: {
       activeKey: ACTIVE_KEY,
-      updatedAt: { lte: new Date(Date.now() - ABANDONED_RUN_MS) },
+      status: { in: ["RUNNING", "QUEUED"] },
+      updatedAt: { lte: cutoff },
     },
   });
   if (!stuck) return;
-  await appendProgress({
-    runId: stuck.id,
-    stage: "COMPLETE",
-    status: "FAILED",
-    summary:
-      "RackHand lost contact with this analysis, likely from a server restart, and released it for a fresh attempt.",
-    errorCode: "analysis_abandoned",
-    errorMessage:
-      "The process running this analysis stopped responding before it finished.",
-    completedAt: new Date(),
-    release: true,
+  await prisma.$transaction(async (tx) => {
+    const released = await tx.engineeringPlanAnalysisRun.updateMany({
+      where: { id: stuck.id, activeKey: ACTIVE_KEY, status: { in: ["RUNNING", "QUEUED"] }, updatedAt: { lte: cutoff } },
+      data: { stage: "COMPLETE", status: "FAILED", activeKey: null, completedAt: new Date(),
+        errorCode: "analysis_abandoned", errorMessage: "The process running this analysis stopped responding before it finished." },
+    });
+    if (!released.count) return; // A concurrent heartbeat means it is still live.
+    const last = await tx.engineeringPlanAnalysisEvent.findFirst({ where: { runId: stuck.id }, orderBy: { sequence: "desc" } });
+    await tx.engineeringPlanAnalysisEvent.create({ data: {
+      runId: stuck.id, sequence: (last?.sequence ?? 0) + 1, stage: "COMPLETE", status: "FAILED",
+      summary: "RackHand lost contact with this analysis, likely from a server restart, and released it for a fresh attempt.",
+    } });
   });
 }
 
@@ -299,9 +314,22 @@ export async function createTodayPlanAnalysisRun(ownerSessionId: string) {
 }
 
 export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
+  // Automatic waiting runs do not reserve the manual analysis slot.
+  const candidate = await prisma.engineeringPlanAnalysisRun.findUniqueOrThrow({ where: { id: runId } });
+  if (candidate.trigger === "SHEET_CHANGE" && candidate.status === "QUEUED") {
+    try {
+      await prisma.engineeringPlanAnalysisRun.updateMany({
+        where: { id: runId, status: "QUEUED", activeKey: null }, data: { activeKey: ACTIVE_KEY },
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) return;
+      throw error;
+    }
+  }
   const claimed = await prisma.engineeringPlanAnalysisRun.updateMany({
     where: { id: runId, status: "QUEUED", activeKey: ACTIVE_KEY },
-    data: { status: "RUNNING", stage: "READING_SHEET", startedAt: new Date() },
+    data: { status: "RUNNING", stage: candidate.requirementsJson && candidate.requirementsJson !== "[]"
+      ? "CHECKING_EVIDENCE" : "READING_SHEET", startedAt: candidate.startedAt ?? new Date() },
   });
   if (claimed.count !== 1) return;
 
@@ -309,24 +337,41 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
   // camera-capture popup/animation live if a bin actually needs re-auditing —
   // without this, runInventoryAudit has no session to notify and the capture
   // UI never appears for this pipeline's audits, camera state notwithstanding.
-  const { ownerSessionId, workDate } =
+  const { ownerSessionId, workDate, trigger, sourceContextJson, checkpointJson, requirementsJson } =
     await prisma.engineeringPlanAnalysisRun.findUniqueOrThrow({
       where: { id: runId },
-      select: { ownerSessionId: true, workDate: true },
+      select: { ownerSessionId: true, workDate: true, trigger: true, sourceContextJson: true, checkpointJson: true, requirementsJson: true },
     });
 
-  const auditedBinCodes: string[] = [];
-  const verificationAuditRunIds: string[] = [];
-  const auditIssues: TodayPlanAnalysisResultView["auditIssues"] = [];
-  const physicalCounts: NonNullable<TodayPlanAnalysisResultView["physicalCounts"]> = [];
+  const automatic = trigger === "SHEET_CHANGE";
+  const checkpoint = parseJson<AnalysisCheckpoint>(checkpointJson, {
+    attempted: [], auditedBinCodes: [], verificationAuditRunIds: [], auditIssues: [], physicalCounts: [],
+  });
+  const { auditedBinCodes, verificationAuditRunIds, auditIssues, physicalCounts } = checkpoint;
+  const attempted = new Set(checkpoint.attempted);
+  const saveCheckpoint = () => prisma.engineeringPlanAnalysisRun.update({
+    where: { id: runId }, data: { checkpointJson: JSON.stringify({
+      attempted: [...attempted], auditedBinCodes, verificationAuditRunIds, auditIssues, physicalCounts,
+    }) },
+  });
+  const heartbeat = setInterval(() => {
+    void prisma.engineeringPlanAnalysisRun.updateMany({
+      where: { id: runId, status: "RUNNING" }, data: { updatedAt: new Date() },
+    }).catch((error) => console.error("[plan-analysis] heartbeat failed", error));
+  }, 20_000);
+  heartbeat.unref();
   try {
+    const continuing = automatic && requirementsJson && requirementsJson !== "[]";
     await appendProgress({
       runId,
-      stage: "READING_SHEET",
+      stage: continuing ? "CHECKING_EVIDENCE" : "READING_SHEET",
       status: "RUNNING",
-      summary: `Analyzing upcoming work for ${workDate}.`,
+      summary: continuing ? `Continuing tomorrow’s stock check for ${workDate}.` : `Analyzing upcoming work for ${workDate}.`,
     });
-    const context = await getEngineeringPlanContextForWorkDate(workDate);
+    const context = automatic
+      ? parseJson<EngineeringPlanContext | null>(sourceContextJson, null)
+      : await getEngineeringPlanContextForWorkDate(workDate);
+    if (!context) throw new Error("engineering_plan_snapshot_missing");
 
     if (
       context.reason === "not_configured" ||
@@ -355,22 +400,22 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
 
     await appendProgress({
       runId,
-      stage: "PLANNING_MATERIALS",
+      stage: continuing ? "CHECKING_EVIDENCE" : "PLANNING_MATERIALS",
       status: "RUNNING",
-      summary: `Found ${context.rows.length} work item${context.rows.length === 1 ? "" : "s"}. Finding the parts they need.`,
+      summary: continuing ? "Using the saved requirements and completed bin checks."
+        : `Found ${context.rows.length} work item${context.rows.length === 1 ? "" : "s"}. Finding the parts they need.`,
       rowsFound: context.rows.length,
       planRowsJson: JSON.stringify(visibleRows(context.rows)),
     });
 
-    const planner = createMaterialsPlannerAgent({
-      engineeringPlanContext: context,
-    });
-    const plannerResult = await planner.invoke(plannerRequest(context));
-    const parsed = MATERIALS_PLANNER_OUTPUT.safeParse(
-      plannerResult.structuredOutput,
-    );
-    if (!parsed.success) throw new Error("materials_planner_invalid_output");
-    const requirements = parsed.data.requirements;
+    let requirements = parseJson<TodayPlanAnalysisRunView["requirements"]>(requirementsJson, []);
+    if (requirements.length === 0) {
+      const planner = createMaterialsPlannerAgent({ engineeringPlanContext: context });
+      const plannerResult = await planner.invoke(plannerRequest(context));
+      const parsed = MATERIALS_PLANNER_OUTPUT.safeParse(plannerResult.structuredOutput);
+      if (!parsed.success) throw new Error("materials_planner_invalid_output");
+      requirements = parsed.data.requirements;
+    }
 
     if (requirements.length === 0) {
       const result = finalResult(null, [], [], [], {
@@ -399,32 +444,54 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       currentBinCode: null,
     });
 
-    const attempted = new Set<string>();
     let plan = await prepareMaterialsFulfillment(requirements, {
       continueAfterKnownShortage: true,
+      excludeVerificationBinCodes: [...attempted],
     });
     while (!plan.ok && plan.reason === "materials_verification_required") {
       const next = plan.verificationTargets?.find(
         (target) => !attempted.has(target.binCode),
       );
       if (!next || attempted.size >= MAX_MATERIALS_FULFILLMENT_BINS) break;
-      attempted.add(next.binCode);
+      if (!automatic) attempted.add(next.binCode);
 
-      await appendProgress({
+      const announceAudit = () => appendProgress({
         runId,
         stage: "AUDITING_BIN",
         status: "RUNNING",
         summary: `RackHand chose to verify ${next.binCode} for ${next.sku}. Recorded: ${next.recordedQuantity}. Last verified: ${plainVerificationAge(checkReason(next.evidence))}.`,
         currentBinCode: next.binCode,
       });
+      if (!automatic) await announceAudit();
 
       try {
-        const audit = await runInventoryAudit({
+        const inspect = () => runInventoryAudit({
           binCode: next.binCode,
           trigger: "TRUSTED_INTERNAL",
-          ownerSessionId,
+          ownerSessionId: automatic ? null : ownerSessionId,
           reviewPolicy: "REPORT_ONLY",
         });
+        const audit = automatic
+          ? await withWarehouseHardwareLease(async () => {
+              const reason = await warehouseIdleReason(true);
+              if (reason) throw new BackgroundYield(reason);
+              const pendingEdit = await prisma.engineeringPlanInbox.findFirst({ where: { pending: true } });
+              if (pendingEdit) throw new BackgroundYield("A Sheet update arrived. I’ll check the latest tomorrow plan before moving another bin.");
+              // A newer version waiting must win before the next physical action.
+              const newer = await prisma.engineeringPlanAnalysisRun.findFirst({
+                where: { trigger: "SHEET_CHANGE", status: "QUEUED", createdAt: { gt: candidate.createdAt } },
+              });
+              if (newer) throw new BackgroundYield("A newer tomorrow plan is waiting. I’ll use its latest requirements.");
+              await announceAudit();
+              attempted.add(next.binCode);
+              const result = await inspect();
+              if (!result.results.some((item) => item.reason === "audit_return_failed")) {
+                const parked = await getGantryController().home();
+                if (parked.status !== "COMPLETED") throw new Error("audit_home_failed");
+              }
+              return result;
+            })
+          : await inspect();
         verificationAuditRunIds.push(audit.auditRunId);
         const result = audit.results[0];
         if (result) {
@@ -476,6 +543,7 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
         if (result?.reason === "audit_return_failed") {
           throw new Error(`audit_return_failed:${next.binCode}`);
         }
+        if (automatic) await saveCheckpoint();
       } catch (error) {
         if (
           error instanceof Error &&
@@ -547,6 +615,14 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       release: true,
     });
   } catch (error) {
+    if (automatic && (error instanceof BackgroundYield || (error as { code?: string })?.code === "gantry_busy")) {
+      await saveCheckpoint();
+      await appendProgress({
+        runId, stage: "WAITING_FOR_IDLE", status: "QUEUED", release: true, currentBinCode: null,
+        summary: error instanceof BackgroundYield ? error.message : "The gantry is busy. I’ll continue after its safe return.",
+      });
+      return;
+    }
     const message =
       error instanceof Error ? error.message : "today_plan_analysis_failed";
     console.error(`[tomorrow-plan-analysis] run=${runId} failed:`, error);
@@ -561,6 +637,8 @@ export async function executeTodayPlanAnalysis(runId: string): Promise<void> {
       completedAt: new Date(),
       release: true,
     }).catch(() => {});
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -578,9 +656,10 @@ function plainVerificationAge(reason: string): string {
 
 export async function getLatestTodayPlanAnalysis(
   ownerSessionId: string,
+  automatic = false,
 ): Promise<TodayPlanAnalysisRunView | null> {
   const run = await prisma.engineeringPlanAnalysisRun.findFirst({
-    where: { ownerSessionId },
+    where: automatic ? { trigger: "SHEET_CHANGE", workDate: tomorrowEngineeringPlanWorkDate(), status: { not: "SUPERSEDED" } } : { ownerSessionId },
     orderBy: { createdAt: "desc" },
     include: { events: { orderBy: { sequence: "asc" } } },
   });
@@ -610,6 +689,7 @@ export async function getLatestTodayPlanAnalysis(
   }
   return {
     id: run.id,
+    trigger: run.trigger as "MANUAL" | "SHEET_CHANGE",
     status: run.status as TodayPlanAnalysisStatus,
     stage: run.stage as TodayPlanAnalysisStage,
     workDate: run.workDate,

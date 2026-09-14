@@ -10,6 +10,7 @@ import {
   recoverStaleInventoryAudit,
 } from "./audit-recovery-service";
 import { confirmBinAuditObservation } from "./audit-bin-service";
+import { withWarehouseHardwareLease } from "./hardware-lease";
 
 export type InventoryAuditTrigger = "CLIENT" | "TRUSTED_INTERNAL";
 
@@ -95,10 +96,10 @@ export async function runInventoryAudit(input: {
           status: "PENDING",
         },
       });
-      let result = await runInventoryAuditGraph({
+      let result = await withWarehouseHardwareLease(() => runInventoryAuditGraph({
         binAuditId: binAudit.id,
         ownerSessionId: input.ownerSessionId,
-      });
+      }));
       if (input.reviewPolicy === "REPORT_ONLY" && result.status === "REVIEW_REQUIRED") {
         await confirmBinAuditObservation(result.binAuditId, "DISMISS");
         result = { ...result, status: "DISMISSED" };

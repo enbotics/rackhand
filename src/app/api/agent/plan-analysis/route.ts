@@ -7,6 +7,8 @@ import {
   TodayPlanAnalysisBusyError,
 } from "@/lib/engineering-plan/analysis-service";
 import { warehouseSessionIdFromRequest } from "@/lib/warehouse/workflow-session";
+import { prisma } from "@/lib/warehouse/db";
+import { automaticPlansEnabled } from "@/lib/engineering-plan/auto-coordinator";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +24,13 @@ function sessionRequired() {
 export async function GET(request: Request) {
   const sessionId = warehouseSessionIdFromRequest(request);
   if (!sessionId) return sessionRequired();
-  return NextResponse.json({ run: await getLatestTodayPlanAnalysis(sessionId) });
+  const [run, automaticRun, signal] = await Promise.all([
+    getLatestTodayPlanAnalysis(sessionId),
+    automaticPlansEnabled() ? getLatestTodayPlanAnalysis("", true) : null,
+    automaticPlansEnabled() ? prisma.engineeringPlanInbox.findFirst({ where: { pending: true } }) : null,
+  ]);
+  return NextResponse.json({ run, automaticRun, sheetChangePendingAt: signal?.signalAt.getTime() ?? null,
+    sheetChangeError: signal?.lastError ?? null });
 }
 
 export async function POST(request: Request) {

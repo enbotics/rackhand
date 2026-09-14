@@ -12,6 +12,7 @@ import { StatusChip } from "./ui";
 
 const STAGE_LABELS: Record<TodayPlanAnalysisStage, string> = {
   QUEUED: "Waiting",
+  WAITING_FOR_IDLE: "Waiting for a free warehouse",
   READING_SHEET: "Analyzing work plan",
   PLANNING_MATERIALS: "Finding needed parts",
   CHECKING_EVIDENCE: "Checking stock",
@@ -22,6 +23,7 @@ const STAGE_LABELS: Record<TodayPlanAnalysisStage, string> = {
 function statusPresentation(run: TodayPlanAnalysisRunView): StatusPresentation {
   if (run.status === "FAILED")
     return { label: "FAILED", symbol: "×", tone: "danger" };
+  if (run.status === "SUPERSEDED") return { label: "REPLACED", symbol: "○", tone: "muted" };
   if (run.status === "COMPLETED_WITH_ISSUES") {
     return { label: "REPORT READY", symbol: "✓", tone: "warn" };
   }
@@ -306,11 +308,11 @@ export function TodayPlanAnalysisCard({
       }));
 
   return (
-    <section className="animate-fade-up overflow-hidden rounded-xl border border-accent-soft/50 bg-accent-tint/30">
+    <section className="plan-analysis-card animate-fade-up overflow-hidden rounded-xl border border-accent-soft/50 bg-accent-tint/30">
       <header className="flex items-center justify-between gap-3 border-b border-line-soft px-4 py-3">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-accent">
-            Upcoming work plan
+            {run.trigger === "SHEET_CHANGE" ? "RackHand · automatic tomorrow plan" : "Upcoming work plan"}
           </p>
           <p className="mt-1 text-xs text-ink-muted">{run.workDate}</p>
         </div>
@@ -318,7 +320,7 @@ export function TodayPlanAnalysisCard({
       </header>
 
       <div className="space-y-4 p-4">
-        <div className="flex items-center gap-2">
+        <div key={run.stage} className="plan-stage-transition flex items-center gap-2" role="status" aria-live="polite">
           {running && (
             <span
               className="h-2 w-2 animate-glow-pulse rounded-full bg-accent"
@@ -329,6 +331,25 @@ export function TodayPlanAnalysisCard({
             {STAGE_LABELS[run.stage]}
           </p>
         </div>
+        {run.trigger === "SHEET_CHANGE" && (
+          <div className="space-y-3">
+            <p className="text-xs leading-relaxed text-ink-muted" aria-live="polite">
+              {run.events.at(-1)?.summary ?? "Tomorrow’s latest plan is queued. I’ll analyze it when the warehouse is free."}
+            </p>
+            <div className="grid grid-cols-4 gap-1.5" aria-label="Plan analysis progress">
+              {["Queued", "Analyzing", "Checking stock", "Report"].map((label, index) => {
+                const step = run.stage === "COMPLETE" ? 3
+                  : ["CHECKING_EVIDENCE", "AUDITING_BIN"].includes(run.stage) ? 2
+                  : ["READING_SHEET", "PLANNING_MATERIALS"].includes(run.stage) ? 1 : 0;
+                return <div key={label} className="space-y-1.5">
+                  <div className={`plan-progress-segment h-1 rounded-full ${index <= step ? "bg-accent" : "bg-line-soft"}`} />
+                  <p className={`text-[9px] ${index === step ? "text-accent" : "text-ink-faint"}`}>{label}</p>
+                </div>;
+              })}
+            </div>
+            <p className="text-[10px] text-ink-faint">Automatic stock checking only · no material retrieval or human approval</p>
+          </div>
+        )}
 
         {run.rows.length > 0 && (
           <div>

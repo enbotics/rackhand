@@ -24,6 +24,7 @@ import {
   type SimulatorOptions,
 } from "./simulator";
 import { GANTRY_MODES, type GantryMode } from "./types";
+import { withWarehouseHardwareLease } from "@/lib/warehouse/hardware-lease";
 
 /** GANTRY_MODE, case-insensitive; anything unrecognized falls back to SIMULATION. */
 export function getGantryMode(): GantryMode {
@@ -65,6 +66,8 @@ const GANTRY_CONTROLLER_CACHE_VERSION = 2;
 const globalForGantry = globalThis as unknown as {
   gantryController?: GantryController;
   gantryControllerVersion?: number;
+  leasedGantryController?: GantryController;
+  leasedGantrySource?: GantryController;
 };
 
 export function getGantryController(): GantryController {
@@ -84,7 +87,22 @@ export function getGantryController(): GantryController {
     globalForGantry.gantryController = new SimulatedGantryController(readSimulatorOptions());
     globalForGantry.gantryControllerVersion = GANTRY_CONTROLLER_CACHE_VERSION;
   }
-  return globalForGantry.gantryController;
+  const controller = globalForGantry.gantryController;
+  if (globalForGantry.leasedGantrySource !== controller) {
+    globalForGantry.leasedGantrySource = controller;
+    globalForGantry.leasedGantryController = {
+      getStatus: () => controller.getStatus(),
+      getRecentOperations: (limit) => controller.getRecentOperations(limit),
+      home: () => withWarehouseHardwareLease(() => controller.home()),
+      putaway: (input) => withWarehouseHardwareLease(() => controller.putaway(input)),
+      retrieve: (input) => withWarehouseHardwareLease(() => controller.retrieve(input)),
+      presentBin: (input) => withWarehouseHardwareLease(() => controller.presentBin(input)),
+      returnBin: (input) => withWarehouseHardwareLease(() => controller.returnBin(input)),
+      presentBinForAudit: (input) => withWarehouseHardwareLease(() => controller.presentBinForAudit(input)),
+      returnBinFromAudit: (input) => withWarehouseHardwareLease(() => controller.returnBinFromAudit(input)),
+    };
+  }
+  return globalForGantry.leasedGantryController!;
 }
 
 /** Test/dev helper: drop the cached instance so the next call builds a fresh machine. */
